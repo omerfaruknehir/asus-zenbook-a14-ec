@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+- Started the always-on camera and human-presence work as proper kernel,
+  device-tree, firmware and standard sensor-subsystem support.
+- Added a read-only Linux probe covering OV02C10/CAMSS, ADSP remoteproc,
+  QRTR/QMI/RPMSG, device tree, firmware hashes, media topology and IIO state.
+- Added provenance and known-good hashes for the machine-matched QSH camera,
+  OV02C10 and HM1092 firmware/configuration files without redistributing them.
+- Documented the planned upstream patch split and acceptance criteria.
+- Explicitly separated optional GNOME/KDE indicators from core hardware support;
+  desktop helpers may consume standard interfaces but may not implement the
+  camera, QSH transport or sensor ABI.
+
 ## 0.2.0 — 2026-08-04
 
 - Added a shutdown/quiesce path for orderly warm reboot and poweroff.

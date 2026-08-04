@@ -26,7 +26,14 @@ install-deb:
 deb:
 	./scripts/build-deb.sh
 
+aos-probe:
+	sudo ./scripts/a14-aos-kernel-probe.sh
+
+aos-firmware-verify:
+	@test -n "$(DIR)" || { echo "Usage: make aos-firmware-verify DIR=/path/to/extracted/files" >&2; exit 2; }
+	./scripts/verify-a14-aos-firmware.sh "$(DIR)"
+
 dmesg:
 	dmesg --ctime | grep -E 'asus_zenbook_a14_ec|hid_asus_zenbook_a14_ec|asus::kbd_backlight' | tail -n 80
 
-.PHONY: all modules clean load-hid load-ec unload-ec reload-ec install-deb deb dmesg
+.PHONY: all modules clean load-hid load-ec unload-ec reload-ec install-deb deb aos-probe aos-firmware-verify dmesg
