@@ -1,0 +1,18 @@
+[Unit]
+Description=ASUS Zenbook A14 direct EC fan and platform-profile driver
+Documentation=https://github.com/omerfaruknehir/asus-zenbook-a14-ec
+After=systemd-modules-load.service multi-user.target
+Before=shutdown.target reboot.target halt.target poweroff.target
+Conflicts=shutdown.target
+ConditionPathExists=/sys/bus/i2c/devices
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/modprobe asus_zenbook_a14_ec probe_delay_ms=1500
+ExecStop=-/usr/sbin/modprobe -r asus_zenbook_a14_ec
+TimeoutStartSec=30
+TimeoutStopSec=20
+
+[Install]
+WantedBy=multi-user.target
