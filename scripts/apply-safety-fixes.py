@@ -20,14 +20,12 @@ ec = replace_once(
     '#define PP_MAX_FREQ_KHZ\t\tFREQ_QOS_MAX_DEFAULT_VALUE',
     "dynamic maximum CPU frequency",
 )
-
 ec = replace_once(
     ec,
     '#define PP_QUIET_PWM\t0\t/* fans off — passive cooling at capped freq */',
     '#define PP_QUIET_PWM\t80\t/* low, spinning airflow; avoids unsafe fan-off operation */',
     "safe quiet fan floor",
 )
-
 ec = replace_once(
     ec,
     'static int asus_ec_probe(struct platform_device *pdev)\n{',
@@ -73,6 +71,14 @@ hid = replace_once(
     '\tif (message.event == PM_EVENT_SUSPEND || message.event == PM_EVENT_HIBERNATE) {\n\t\tasus_kbd_set_brightness(&data->kbd_led_cdev, LED_OFF);',
     '\tif (message.event == PM_EVENT_SUSPEND || message.event == PM_EVENT_HIBERNATE) {\n\t\tenum led_brightness saved = data->saved_brightness;\n\t\tasus_kbd_set_brightness(&data->kbd_led_cdev, LED_OFF);\n\t\tdata->saved_brightness = saved;',
     "keyboard backlight suspend preservation",
+)
+hid = hid.replace(
+    "ASUS EC HID driver for Zenbook A14 (UX3407QA)",
+    "ASUS EC HID driver for Zenbook A14 (UX3407RA/UX3407QA)",
+)
+hid = hid.replace(
+    "Tested on ASUS Zenbook A14 (UX3407QA) only.",
+    "Tested on ASUS Zenbook A14 UX3407RA and UX3407QA.",
 )
 hid_path.write_text(hid)
 print("Safety fixes applied")
