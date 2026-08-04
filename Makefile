@@ -9,7 +9,7 @@ all modules: prepare
 # applied by scripts/build-deb.sh before packaging.
 prepare:
 	python3 scripts/apply-hid-fnlock.py
-	python3 -c 'from pathlib import Path; p=Path("hid_asus_ec.c"); s=p.read_text(); old="ret = asus_wmi_get_devstate_dsts(ASUS_WMI_DEVID_FNLOCK, &state);"; new="ret = asus_wmi_evaluate_method(ASUS_WMI_METHODID_DSTS,\\n\\t\\t\\t\\t       ASUS_WMI_DEVID_FNLOCK, 0, &state);"; p.write_text(s.replace(old, new))'
+	python3 -c 'from pathlib import Path; p=Path("hid_asus_ec.c"); s=p.read_text(); old="ret = asus_wmi_get_devstate_dsts(ASUS_WMI_DEVID_FNLOCK, &state);"; new="ret = asus_wmi_evaluate_method(ASUS_WMI_METHODID_DSTS, ASUS_WMI_DEVID_FNLOCK, 0, &state);"; p.write_text(s.replace(old, new))'
 
 clean:
 	$(MAKE) -C $(KDIR) M=$(PWD) clean
