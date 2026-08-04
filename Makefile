@@ -10,6 +10,7 @@ all: prepare
 
 prepare:
 	python3 scripts/prepare-source.py --source $(ROOT) --output $(BUILD_DIR)
+	python3 scripts/finalize-source.py --source $(BUILD_DIR)
 
 clean:
 	@if [ -d "$(KDIR)" ] && [ -d "$(BUILD_DIR)" ]; then \
@@ -18,7 +19,7 @@ clean:
 	rm -rf $(BUILD_DIR)
 
 check: prepare
-	python3 -m py_compile scripts/prepare-source.py
+	python3 -m py_compile scripts/prepare-source.py scripts/finalize-source.py
 	bash -n scripts/build-deb.sh scripts/install.sh tools/a14-ecctl
 
 load: all
@@ -35,7 +36,7 @@ dmesg:
 	dmesg --ctime | grep -E 'asus_zenbook_a14_ec|hid-asus-ec|asus.ec' | tail -n 80
 
 deb:
-	./scripts/build-deb.sh
+	bash scripts/build-deb.sh
 
 install-deb: deb
 	sudo apt install ./dist/asus-zenbook-a14-ec-dkms_*.deb
