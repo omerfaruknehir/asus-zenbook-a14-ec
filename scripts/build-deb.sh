@@ -10,12 +10,13 @@ work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT INT TERM
 root="$work/root"
 src="$root/usr/src/asus-zenbook-a14-ec-$version"
-mkdir -p "$root/DEBIAN" "$src" "$root/usr/sbin" "$root/usr/libexec" \
+mkdir -p "$root/DEBIAN" "$src/scripts" "$root/usr/sbin" "$root/usr/libexec" \
   "$root/usr/lib/systemd/system" "$root/etc/modprobe.d" \
   "$root/usr/share/doc/$package" "$repo/dist"
 
 install -m 0644 "$repo/asus_zenbook_a14_ec.c" "$repo/hid_asus_ec.c" \
   "$repo/Kbuild" "$repo/Makefile" "$src/"
+install -m 0755 "$repo/scripts/apply-hid-fnlock.py" "$src/scripts/apply-hid-fnlock.py"
 sed "s/PACKAGE_VERSION=\"[^\"]*\"/PACKAGE_VERSION=\"$version\"/" \
   "$repo/dkms.conf" >"$src/dkms.conf"
 install -m 0755 "$repo/scripts/asus-a14-control" "$root/usr/sbin/asus-a14-control"
