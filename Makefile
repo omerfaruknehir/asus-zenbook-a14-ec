@@ -7,6 +7,7 @@ all modules: prepare
 
 prepare:
 	python3 scripts/apply-hid-fnlock.py
+	python3 scripts/apply-userspace-fixes.py
 
 clean:
 	$(MAKE) -C $(KDIR) M=$(PWD) clean
