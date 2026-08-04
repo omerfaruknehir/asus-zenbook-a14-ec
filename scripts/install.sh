@@ -17,10 +17,13 @@ done
   exit 1
 }
 
+# Remove older virtual-LED modules/services that conflict with hid_asus_ec.
+bash scripts/cleanup-legacy.sh
+
 rm -rf "$SRC"
 install -d "$SRC"
 cp -a Kbuild Makefile dkms.conf asus_zenbook_a14_ec.c hid_asus_ec.c scripts "$SRC/"
-chmod +x "$SRC/scripts/apply-safety-fixes.py"
+chmod +x "$SRC/scripts/"*.sh "$SRC/scripts/"*.py
 
 dkms remove -m "$NAME" -v "$VERSION" --all >/dev/null 2>&1 || true
 dkms add -m "$NAME" -v "$VERSION"
