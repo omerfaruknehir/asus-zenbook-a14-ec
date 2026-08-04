@@ -25,6 +25,7 @@ cat >"$ROOT/DEBIAN/postinst" <<'EOF'
 set -e
 NAME=asus-zenbook-a14-ec
 VERSION=0.2.0
+bash "/usr/src/${NAME}-${VERSION}/scripts/cleanup-legacy.sh"
 dkms remove -m "$NAME" -v "$VERSION" --all >/dev/null 2>&1 || true
 dkms add -m "$NAME" -v "$VERSION"
 dkms build -m "$NAME" -v "$VERSION"
