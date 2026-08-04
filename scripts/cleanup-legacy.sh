@@ -218,10 +218,12 @@ if lsmod | grep -q '^hid_asus_ec\b'; then
   modprobe hid_asus_ec
 fi
 
-# Fail visibly if the current initramfs still embeds the old module.
+# Fail visibly only if an actual legacy kernel module binary remains embedded.
+# The intentional blacklist file may contain the same name and is expected.
 if command -v lsinitramfs >/dev/null 2>&1 && \
-   lsinitramfs "/boot/initrd.img-$(uname -r)" 2>/dev/null | grep -Eq 'a14_kbd_led(\.ko)?'; then
-  echo "ERROR: current initramfs still contains a14_kbd_led" >&2
+   lsinitramfs "/boot/initrd.img-$(uname -r)" 2>/dev/null | \
+   grep -Eq '(^|/)(a14_kbd_led|a14-kbd-led)\.ko(\.(gz|xz|zst))?$'; then
+  echo "ERROR: current initramfs still contains the a14_kbd_led kernel module" >&2
   echo "Inspect initramfs hooks and package ownership before rebooting." >&2
   exit 1
 fi
