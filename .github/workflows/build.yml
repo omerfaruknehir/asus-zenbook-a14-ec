@@ -1,0 +1,29 @@
+name: Build modules and DEB
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y build-essential bc bison flex libssl-dev libelf-dev dwarves dkms
+      - name: Prepare Linux 7.0 headers
+        run: |
+          git clone --depth=1 --branch v7.0 https://github.com/torvalds/linux.git /tmp/linux
+          make -C /tmp/linux defconfig
+          make -C /tmp/linux -j2 prepare modules_prepare
+      - name: Validate and build modules
+        run: |
+          make check
+          make KDIR=/tmp/linux -j2
+      - name: Build Debian package
+        run: make deb
+      - uses: actions/upload-artifact@v4
+        with:
+          name: asus-zenbook-a14-ec-deb
+          path: dist/*.deb
