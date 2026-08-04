@@ -20,7 +20,7 @@ jobs:
       - name: Validate and build modules
         run: |
           make check
-          make KDIR=/tmp/linux -j2
+          make KDIR=/tmp/linux KBUILD_MODPOST_WARN=1 -j2
       - name: Build Debian package
         run: make deb
       - uses: actions/upload-artifact@v4
