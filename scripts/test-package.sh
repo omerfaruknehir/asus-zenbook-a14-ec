@@ -10,14 +10,29 @@ version=$(cat VERSION)
 grep -q "PACKAGE_VERSION=\"$version\"" dkms.conf
 test -s AOS-KERNEL-BRINGUP.md
 test -s docs/aos/ARCHITECTURE.md
+test -s docs/aos/PROBE-20260804.md
 test -s firmware/aos/manifest.sha256
 test -s kernel-patches/aos/README.md
 test -s desktop/README.md
+test -s kernel/aos/qcom_ssc_hpd.c
+test -s kernel/aos/qcom_ssc_hpd_protocol.c
+test -s kernel/aos/qcom_ssc_hpd_transport.c
+test -s kernel/aos/qcom_ssc_hpd_internal.h
+test -s kernel/aos/PROTOCOL.md
 grep -q 'read_only=true' scripts/a14-aos-kernel-probe.sh
 grep -q 'remoteproc_restart=false' scripts/a14-aos-kernel-probe.sh
+grep -q 'A14_SSC_QMI_SERVICE.*400' kernel/aos/qcom_ssc_hpd_internal.h
+grep -q 'qmi_add_lookup' kernel/aos/qcom_ssc_hpd.c
+grep -q 'IIO_PROXIMITY' kernel/aos/qcom_ssc_hpd.c
 if [ -e "/lib/modules/$(uname -r)/build/Makefile" ]; then
   make clean >/dev/null 2>&1 || true
   make -j2
+  if [ -r "/lib/modules/$(uname -r)/build/include/linux/soc/qcom/qmi.h" ] && \
+     [ -r "/lib/modules/$(uname -r)/build/include/linux/iio/iio.h" ]; then
+    make aos-module
+    test -s kernel/aos/qcom_ssc_hpd.ko
+    make aos-module-clean >/dev/null
+  fi
 fi
 ./scripts/build-deb.sh >/dev/null
 test -s "dist/asus-zenbook-a14-ec-dkms_${version}_all.deb"
@@ -27,4 +42,8 @@ printf '%s\n' "$contents" | grep -q "usr/src/asus-zenbook-a14-ec-${version}/asus
 printf '%s\n' "$contents" | grep -q "usr/lib/systemd/system/asus-zenbook-a14-ec.service"
 printf '%s\n' "$contents" | grep -q "usr/lib/systemd/system/asus-zenbook-a14-ppd-bridge.service"
 printf '%s\n' "$contents" | grep -q "usr/libexec/asus-zenbook-a14-ppd-bridge"
+if printf '%s\n' "$contents" | grep -q 'kernel/aos\|qcom_ssc_hpd'; then
+  echo "AOS development driver must not be included in the EC package" >&2
+  exit 1
+fi
 echo "Validation passed"
