@@ -5,9 +5,10 @@ PWD  := $(shell pwd)
 all modules: prepare
 	$(MAKE) -C $(KDIR) M=$(PWD) modules
 
+# DKMS/module builds only transform kernel source. Userspace/package fixes are
+# applied by scripts/build-deb.sh before packaging.
 prepare:
 	python3 scripts/apply-hid-fnlock.py
-	python3 scripts/apply-userspace-fixes.py
 
 clean:
 	$(MAKE) -C $(KDIR) M=$(PWD) clean
