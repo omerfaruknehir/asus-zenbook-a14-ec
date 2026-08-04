@@ -1,38 +1,39 @@
 # SPDX-License-Identifier: GPL-2.0-only
-#
-# Out-of-tree build for the ASUS Zenbook A14 EC PoC driver.
-#
-# Usage:
-#   make            # build asus_zenbook_a14_ec.ko against running kernel
-#   make clean      # remove build artefacts
-#   make load       # insmod the module (requires sudo)
-#   make unload     # rmmod the module (requires sudo)
-#   make dmesg      # tail kernel log lines from the driver
-#
-# To build against a specific kernel tree:
-#   make KDIR=/path/to/linux
-#
-
 KDIR ?= /lib/modules/$(shell uname -r)/build
 PWD  := $(shell pwd)
 
-all:
+.PHONY: all modules prepare clean load unload reload dmesg install uninstall deb
+
+all: modules
+
+prepare:
+	python3 scripts/apply-safety-fixes.py
+
+modules: prepare
 	$(MAKE) -C $(KDIR) M=$(PWD) modules
 
 clean:
 	$(MAKE) -C $(KDIR) M=$(PWD) clean
 
-load:
+load: modules
+	sudo modprobe platform_profile || true
 	sudo insmod ./asus_zenbook_a14_ec.ko
+	sudo insmod ./hid_asus_ec.ko || true
 
 unload:
-	sudo rmmod asus_zenbook_a14_ec
-
-reload:
 	-sudo rmmod asus_zenbook_a14_ec
-	sudo insmod ./asus_zenbook_a14_ec.ko
+	-sudo rmmod hid_asus_ec
+
+reload: unload load
 
 dmesg:
-	dmesg --ctime | grep -E 'asus_zenbook_a14_ec|asus.ec' | tail -n 40
+	dmesg --ctime | grep -E 'asus_zenbook_a14_ec|hid_asus_ec|asus.ec' | tail -n 80
 
-.PHONY: all clean load unload reload dmesg
+install:
+	./scripts/install.sh
+
+uninstall:
+	./scripts/uninstall.sh
+
+deb:
+	./scripts/build-deb.sh
