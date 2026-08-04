@@ -1,6 +1,10 @@
 #!/bin/sh
 set -eu
 
+EC_SERVICE=asus-zenbook-a14-ec.service
+BRIDGE_SERVICE=asus-zenbook-a14-ppd-bridge.service
+PPD_SERVICE=power-profiles-daemon.service
+
 find_hwmon() {
   for d in /sys/class/hwmon/hwmon*; do
     [ -r "$d/name" ] || continue
@@ -21,9 +25,21 @@ need_driver() {
 
 need_root() {
   [ "$(id -u)" -eq 0 ] || {
-    echo "This command needs root. Run: sudo asus-a14-control $*" >&2
+    echo "This command needs root. Run it through sudo." >&2
     exit 1
   }
+}
+
+unit_state() {
+  systemctl is-active "$1" 2>/dev/null || printf 'inactive\n'
+}
+
+standard_platform_profile_present() {
+  for name in /sys/class/platform-profile/platform-profile-*/name; do
+    [ -r "$name" ] || continue
+    grep -qx 'asus-zenbook-a14-ec' "$name" && return 0
+  done
+  return 1
 }
 
 show_status() {
@@ -38,6 +54,46 @@ show_status() {
       "$(cat /sys/class/leds/asus::kbd_backlight/brightness)" \
       "$(cat /sys/class/leds/asus::kbd_backlight/max_brightness)"
   fi
+  printf 'EC service: %s\n' "$(unit_state "$EC_SERVICE")"
+  printf 'system power-profiles-daemon: %s\n' "$(unit_state "$PPD_SERVICE")"
+  printf 'A14 PPD bridge: %s\n' "$(unit_state "$BRIDGE_SERVICE")"
+  if standard_platform_profile_present; then
+    echo 'standard platform_profile backend: available'
+  else
+    echo 'standard platform_profile backend: unavailable (optional bridge can be enabled)'
+  fi
+}
+
+bridge_status() {
+  printf 'system power-profiles-daemon: %s\n' "$(unit_state "$PPD_SERVICE")"
+  printf 'A14 PPD bridge: %s\n' "$(unit_state "$BRIDGE_SERVICE")"
+  if standard_platform_profile_present; then
+    echo 'standard platform_profile backend: available; bridge is normally unnecessary'
+  else
+    echo 'standard platform_profile backend: unavailable'
+  fi
+}
+
+bridge_enable() {
+  need_root
+  [ -e "/usr/lib/systemd/system/$BRIDGE_SERVICE" ] || {
+    echo "$BRIDGE_SERVICE is not installed" >&2
+    exit 1
+  }
+  need_driver
+  echo "Enabling the fallback replaces power-profiles-daemon while active."
+  systemctl mask --now "$PPD_SERVICE" 2>/dev/null || true
+  systemctl unmask "$BRIDGE_SERVICE" 2>/dev/null || true
+  systemctl enable --now "$BRIDGE_SERVICE"
+  bridge_status
+}
+
+bridge_disable() {
+  need_root
+  systemctl disable --now "$BRIDGE_SERVICE" 2>/dev/null || true
+  systemctl unmask "$PPD_SERVICE" 2>/dev/null || true
+  systemctl enable --now "$PPD_SERVICE" 2>/dev/null || systemctl start "$PPD_SERVICE" 2>/dev/null || true
+  bridge_status
 }
 
 usage() {
@@ -49,9 +105,16 @@ Usage:
   sudo asus-a14-control manual PWM
   sudo asus-a14-control fan left|right PWM
   sudo asus-a14-control backlight 0|1|2|3
+  asus-a14-control ppd-bridge status
+  sudo asus-a14-control ppd-bridge enable
+  sudo asus-a14-control ppd-bridge disable
 
 Manual PWM values are 75-255. A kernel safety monitor restores automatic
 fan control if temperatures become unsafe or temperature readings fail.
+
+The PPD bridge is only a fallback for kernels that cannot expose this driver's
+standard platform_profile device. It conflicts with power-profiles-daemon and
+is never enabled automatically.
 USAGE
 }
 
@@ -61,17 +124,17 @@ case "$cmd" in
     show_status
     ;;
   profile)
-    need_driver; need_root "$@"
+    need_driver; need_root
     case "${2:-}" in quiet|balanced|performance) printf '%s\n' "$2" >"$profile_path";; *) usage; exit 2;; esac
     show_status
     ;;
   auto)
-    need_driver; need_root "$@"
+    need_driver; need_root
     printf '2\n' >"$hwmon/pwm1_enable"
     show_status
     ;;
   manual)
-    need_driver; need_root "$@"
+    need_driver; need_root
     pwm=${2:-}
     case "$pwm" in ''|*[!0-9]*) usage; exit 2;; esac
     if [ "$pwm" -lt 75 ] || [ "$pwm" -gt 255 ]; then
@@ -83,7 +146,7 @@ case "$cmd" in
     show_status
     ;;
   fan)
-    need_driver; need_root "$@"
+    need_driver; need_root
     side=${2:-}; pwm=${3:-}
     case "$pwm" in ''|*[!0-9]*) usage; exit 2;; esac
     if [ "$pwm" -lt 75 ] || [ "$pwm" -gt 255 ]; then
@@ -94,9 +157,17 @@ case "$cmd" in
     show_status
     ;;
   backlight)
-    need_root "$@"
+    need_root
     level=${2:-}
     case "$level" in 0|1|2|3) printf '%s\n' "$level" >/sys/class/leds/asus::kbd_backlight/brightness;; *) usage; exit 2;; esac
+    ;;
+  ppd-bridge)
+    case "${2:-status}" in
+      status) bridge_status;;
+      enable) bridge_enable;;
+      disable) bridge_disable;;
+      *) usage; exit 2;;
+    esac
     ;;
   -h|--help|help)
     usage

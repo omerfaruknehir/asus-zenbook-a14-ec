@@ -18,3 +18,8 @@
 - Gated raw HID commands behind a root-only, opt-in module parameter.
 - Added DKMS, DEB packaging, a one-command installer, systemd integration,
   GitHub Actions package builds, and `asus-a14-control`.
+- Restored the original power-profile bridge as a current, packaged, optional
+  systemd D-Bus fallback instead of a manually launched raw-hwmon daemon.
+- Added `asus-a14-control ppd-bridge` management and automatic restoration of
+  the distribution `power-profiles-daemon` when the fallback is disabled or
+  the package is removed.

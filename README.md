@@ -59,6 +59,44 @@ You can also only build the package:
 sudo apt install ./dist/asus-zenbook-a14-ec-dkms_*_all.deb
 ```
 
+## Systemd services
+
+The package includes two separate units:
+
+- `asus-zenbook-a14-ec.service` — enabled by default; waits for the Qualcomm I²C
+  controller, loads the direct EC module late, and unloads it during orderly
+  shutdown/reboot so the driver quiesce path runs.
+- `asus-zenbook-a14-ppd-bridge.service` — disabled by default; an optional
+  D-Bus fallback for kernels where the standard `platform_profile` class cannot
+  register on a DT-only system.
+
+The fallback bridge maps desktop profiles to the driver-local interface:
+
+| Desktop profile | Driver profile |
+|---|---|
+| `power-saver` | `quiet` |
+| `balanced` | `balanced` |
+| `performance` | `performance` |
+
+Check whether the fallback is needed:
+
+```bash
+asus-a14-control ppd-bridge status
+```
+
+Enable it only when GNOME/KDE does not expose the A14 profiles:
+
+```bash
+sudo asus-a14-control ppd-bridge enable
+```
+
+The bridge conflicts with `power-profiles-daemon`, so enabling it temporarily
+masks the normal daemon. Disabling the bridge restores the distribution daemon:
+
+```bash
+sudo asus-a14-control ppd-bridge disable
+```
+
 ## Control utility
 
 ```bash
@@ -95,7 +133,8 @@ The driver-local interface is always available at:
 
 On kernels where `platform_profile` supports DT-only machines, the standard
 class interface is registered as well. Older or unpatched kernels continue to
-work through the driver-local interface and `asus-a14-control`.
+work through the driver-local interface, `asus-a14-control`, or the optional
+PPD bridge.
 
 ## Direct module build
 
@@ -145,6 +184,9 @@ firmware-level bus wedge.
 sudo apt remove asus-zenbook-a14-ec-dkms
 ```
 
+If the optional bridge was enabled, package removal disables it and restores
+`power-profiles-daemon`.
+
 ## Development/debugging
 
 Raw HID commands are disabled by default. Enable them only temporarily:
@@ -162,24 +204,29 @@ The modules are compile-tested against Linux 6.12 headers. The modern
 `platform_profile` path is conditionally enabled on Linux 6.14 and newer, while
 older kernels retain the local profile interface.
 
+The package validation also checks shell syntax, Python bridge syntax, DEB
+metadata, both systemd units, and packaged file paths.
+
 Hardware tests still required after installation:
 
 - both fan tachometers and PWM channels;
 - quiet/balanced/performance switching;
 - suspend/resume;
 - keyboard backlight restore;
+- normal `power-profiles-daemon` integration or the optional bridge;
 - one shutdown, one warm reboot, and one cold boot.
 
 ## Credits
 
-- Sombre-Osmoze — EC reverse engineering, initial hwmon/profile driver and
-  tachometer calibration
-- Alexandru Marc Serdeliuc — original HID keyboard-backlight driver and protocol
-- icecream95 — early EC protocol documentation
-- Ömer Faruk Nehir — safety hardening, compatibility, DKMS/DEB packaging and
-  maintenance of this fork
+- Sombre-Osmoze — EC reverse engineering, initial hwmon/profile driver,
+  tachometer calibration, and original PPD bridge
+- Alexandru Marc Serdeliuc — Original HID keyboard-backlight driver and protocol
+- icecream95 — Early EC protocol documentation
+- Ömer Faruk Nehir — safety hardening, compatibility, DKMS/DEB packaging,
+  systemd integration, and maintenance of this fork
 
 ## License
 
 - `asus_zenbook_a14_ec.c`: GPL-2.0-only
 - `hid_asus_ec.c`: GPL-2.0-or-later
+- `scripts/asus-zenbook-a14-ppd-bridge.py`: GPL-2.0-or-later
