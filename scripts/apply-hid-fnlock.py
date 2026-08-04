@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Apply ASUS WMI Fn-lock and microphone-mute LED support idempotently."""
+"""Apply ASUS-WMI Fn-lock and microphone-mute LED support idempotently."""
 from pathlib import Path
 
 
@@ -16,15 +16,9 @@ text = path.read_text()
 
 text = replace_once(
     text,
-    "#include <linux/delay.h>\n#include <linux/hid.h>",
-    "#include <linux/acpi.h>\n#include <linux/delay.h>\n#include <linux/hid.h>",
-    "ACPI include",
-)
-text = replace_once(
-    text,
-    "#include <linux/workqueue.h>\n",
-    "#include <linux/workqueue.h>\n#include <linux/wmi.h>\n",
-    "WMI include",
+    "#include <linux/module.h>\n",
+    "#include <linux/module.h>\n#include <linux/platform_data/x86/asus-wmi.h>\n",
+    "ASUS-WMI helper include",
 )
 
 text = replace_once(
@@ -32,15 +26,10 @@ text = replace_once(
     "#define A14_EC_MAX_BACKLIGHT            3\n",
     """#define A14_EC_MAX_BACKLIGHT            3
 
-#define ASUS_WMI_MGMT_GUID              \"97845ED0-4E6D-11DE-8A39-0800200C9A66\"
-#define ASUS_WMI_METHODID_DSTS           0x53545344
-#define ASUS_WMI_METHODID_DEVS           0x53564544
-#define ASUS_WMI_DEVID_FNLOCK            0x00100023
-#define ASUS_WMI_DSTS_PRESENCE_BIT       0x00010000
-#define ASUS_WMI_FNLOCK_BIOS_DISABLED    BIT(0)
-#define ASUS_WMI_UNSUPPORTED_METHOD      0xfffffffe
+/* This is bit 0 of the DSTS value for ASUS_WMI_DEVID_FNLOCK. */
+#define ASUS_WMI_FNLOCK_BIOS_DISABLED    0x00000001
 """,
-    "ASUS WMI constants",
+    "ASUS Fn-lock policy constant",
 )
 
 text = replace_once(
@@ -95,57 +84,22 @@ static int asus_hid_set_micmute_hw(struct asus_hid_data *data, bool enabled)
 	return asus_hid_raw_request(data, buffer, HID_REQ_SET_REPORT);
 }
 
-struct asus_wmi_args {
-	u32 arg0;
-	u32 arg1;
-	u32 arg2;
-} __packed;
-
-static int asus_wmi_evaluate(u32 method_id, u32 arg0, u32 arg1, u32 *retval)
-{
-	struct asus_wmi_args args = {
-		.arg0 = arg0,
-		.arg1 = arg1,
-	};
-	struct acpi_buffer input = { sizeof(args), &args };
-	struct acpi_buffer output = { ACPI_ALLOCATE_BUFFER, NULL };
-	union acpi_object *obj;
-	acpi_status status;
-	u32 value;
-
-	status = wmi_evaluate_method(ASUS_WMI_MGMT_GUID, 0, method_id,
-				     &input, &output);
-	if (ACPI_FAILURE(status))
-		return -EIO;
-
-	obj = output.pointer;
-	if (!obj || obj->type != ACPI_TYPE_INTEGER) {
-		kfree(obj);
-		return -ENODATA;
-	}
-
-	value = (u32)obj->integer.value;
-	kfree(obj);
-	if (value == ASUS_WMI_UNSUPPORTED_METHOD)
-		return -ENODEV;
-	if (retval)
-		*retval = value;
-	return 0;
-}
-
+/*
+ * Linux 7.0 removed the legacy global WMI helpers.  Use the exported ASUS-WMI
+ * helper API instead.  On kernels/configurations where ASUS_WMI is not
+ * reachable (for example a DT-only ARM64 kernel), the header provides safe
+ * inline stubs that return -ENODEV, so this module still builds and reports the
+ * real limitation instead of failing DKMS compilation.
+ */
 static int asus_fnlock_detect_wmi(struct asus_hid_data *data)
 {
-	u32 state;
+	u32 state = 0;
 	int ret;
 
 	data->fnlock_wmi_available = false;
 	data->fnlock_bios_disabled = false;
 
-	if (!wmi_has_guid(ASUS_WMI_MGMT_GUID))
-		return -ENODEV;
-
-	ret = asus_wmi_evaluate(ASUS_WMI_METHODID_DSTS,
-				ASUS_WMI_DEVID_FNLOCK, 0, &state);
+	ret = asus_wmi_get_devstate_dsts(ASUS_WMI_DEVID_FNLOCK, &state);
 	if (ret)
 		return ret;
 	if (!(state & ASUS_WMI_DSTS_PRESENCE_BIT))
@@ -162,7 +116,6 @@ static int asus_fnlock_detect_wmi(struct asus_hid_data *data)
 
 static int asus_fnlock_set_wmi(struct asus_hid_data *data, bool enabled)
 {
-	u32 retval = 0;
 	int ret;
 
 	if (!data->fnlock_wmi_available) {
@@ -171,14 +124,13 @@ static int asus_fnlock_set_wmi(struct asus_hid_data *data, bool enabled)
 			return ret;
 	}
 
-	ret = asus_wmi_evaluate(ASUS_WMI_METHODID_DEVS,
-				ASUS_WMI_DEVID_FNLOCK, enabled, &retval);
+	ret = asus_wmi_set_devstate(ASUS_WMI_DEVID_FNLOCK, enabled, NULL);
 	if (ret)
 		data->fnlock_wmi_available = false;
 	return ret;
 }
 '''
-text = replace_once(text, old_init, new_init, "WMI Fn-lock backend")
+text = replace_once(text, old_init, new_init, "Linux 7.0 ASUS-WMI Fn-lock backend")
 
 feature_support = r'''
 static int asus_micmute_brightness_set(struct led_classdev *led,
@@ -225,7 +177,7 @@ text = replace_once(
     text,
     "static void asus_emit_key(struct input_dev *input, unsigned int key)\n",
     feature_support + "static void asus_emit_key(struct input_dev *input, unsigned int key)\n",
-    "WMI Fn-lock and microphone LED callbacks",
+    "ASUS-WMI Fn-lock and microphone LED callbacks",
 )
 
 text = replace_once(
@@ -236,7 +188,7 @@ text = replace_once(
 \t\t\t   !atomic_read(&data->desired_fn_lock));
 \t\tschedule_work(&data->fnlock_work);
 \t\treturn 1;""",
-    "Fn+Esc WMI toggle",
+    "Fn+Esc ASUS-WMI toggle",
 )
 
 text = replace_once(
@@ -297,7 +249,7 @@ text = replace_once(
 \t\tdev_info(&hdev->dev, \"ASUS WMI Fn Lock unavailable: %d\\n\", ret);
 
 \tret = asus_hid_initialise(data);""",
-    "microphone LED and WMI Fn-lock registration",
+    "microphone LED and ASUS-WMI Fn-lock registration",
 )
 
 text = replace_once(
@@ -323,5 +275,12 @@ text = replace_once(
     "Fn-lock and microphone LED remove cleanup",
 )
 
+text = replace_once(
+    text,
+    "MODULE_LICENSE(\"GPL\");\n",
+    "MODULE_IMPORT_NS(\"ASUS_WMI\");\nMODULE_LICENSE(\"GPL\");\n",
+    "ASUS-WMI symbol namespace import",
+)
+
 path.write_text(text)
-print("ASUS WMI firmware Fn-lock and microphone LED support applied")
+print("Linux 7.0-compatible ASUS-WMI Fn-lock and microphone LED support applied")
