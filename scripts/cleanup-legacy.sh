@@ -23,10 +23,33 @@ backup_file() {
   cp -a "$path" "$target"
 }
 
+clean_text_file() {
+  local file="$1"
+  [[ -f "$file" ]] || return 0
+  grep -Eq "$PATTERN" "$file" 2>/dev/null || return 0
+
+  echo "Cleaning legacy reference: $file"
+  backup_file "$file"
+  sed -i -E "/${PATTERN}/d" "$file"
+  if ! grep -Eq '[^[:space:]#]' "$file"; then
+    rm -f "$file"
+  fi
+}
+
+clean_config_dir() {
+  local directory="$1"
+  [[ -d "$directory" ]] || return 0
+
+  while IFS= read -r -d '' file; do
+    clean_text_file "$file"
+  done < <(find "$directory" -maxdepth 1 -type f -print0)
+}
+
 remove_or_mask_unit_file() {
   local unit_file="$1"
-  local unit="$(basename "$unit_file")"
+  local unit
   local owner
+  unit="$(basename "$unit_file")"
 
   [[ -e "$unit_file" || -L "$unit_file" ]] || return 0
 
@@ -40,35 +63,35 @@ remove_or_mask_unit_file() {
   fi
 }
 
-clean_config_dir() {
-  local directory="$1"
-  [[ -d "$directory" ]] || return 0
+remove_or_mask_rule() {
+  local rule="$1"
+  local base owner
+  base="$(basename "$rule")"
 
-  while IFS= read -r -d '' file; do
-    if grep -Eq "$PATTERN" "$file" 2>/dev/null; then
-      echo "Cleaning legacy reference: $file"
-      backup_file "$file"
-      sed -i -E "/${PATTERN}/d" "$file"
-      if ! grep -Eq '[^[:space:]#]' "$file"; then
-        rm -f "$file"
-      fi
-    fi
-  done < <(find "$directory" -maxdepth 1 -type f -print0)
+  [[ -f "$rule" ]] || return 0
+  grep -Eq "$PATTERN" "$rule" 2>/dev/null || return 0
+
+  if owner="$(dpkg-query -S "$rule" 2>/dev/null | head -n1)"; then
+    echo "Masking package-owned legacy udev rule ($owner): $rule"
+    mkdir -p /etc/udev/rules.d
+    ln -sfn /dev/null "/etc/udev/rules.d/$base"
+  else
+    echo "Removing legacy udev rule: $rule"
+    backup_file "$rule"
+    rm -f "$rule"
+  fi
 }
 
-# Stop the known legacy services before touching their files or the module.
+# Stop known loaders before touching their files or the module.
 for unit in "${LEGACY_UNITS[@]}"; do
   systemctl disable --now "$unit" >/dev/null 2>&1 || true
-
 done
 
-# Stop any remaining old userspace bridge process.
 pkill -TERM -f 'a14-kbd-backlight|a14-kbd-userspace|a14_kbd_backlight' 2>/dev/null || true
 sleep 1
 pkill -KILL -f 'a14-kbd-backlight|a14-kbd-userspace|a14_kbd_backlight' 2>/dev/null || true
 
-# Search all standard system and user unit locations. Distribution-owned files
-# are masked rather than deleted; locally installed files are backed up/removed.
+# Remove or mask system and user units from every normal lookup directory.
 for directory in \
   /etc/systemd/system \
   /run/systemd/system \
@@ -91,8 +114,6 @@ for directory in \
   done < <(find "$directory" -maxdepth 2 \( -type f -o -type l \) -print0)
 done
 
-# Remove wants/requires links for the old units, but preserve intentional
-# /dev/null masks for package-owned legacy units.
 while IFS= read -r -d '' link; do
   target="$(readlink "$link" 2>/dev/null || true)"
   if [[ "$target" != "/dev/null" ]] && \
@@ -106,7 +127,44 @@ done < <(find /etc/systemd/system -type l -print0 2>/dev/null)
 systemctl daemon-reload
 systemctl reset-failed "${LEGACY_UNITS[@]}" >/dev/null 2>&1 || true
 
-# Unload and remove the old out-of-tree module after all loaders are stopped.
+# Remove all common non-systemd autoload paths.
+clean_text_file /etc/modules
+clean_text_file /etc/initramfs-tools/modules
+clean_config_dir /etc/modules-load.d
+clean_config_dir /etc/modprobe.d
+clean_config_dir /usr/local/lib/modules-load.d
+clean_config_dir /usr/local/lib/modprobe.d
+
+for directory in /etc/udev/rules.d /usr/local/lib/udev/rules.d /usr/lib/udev/rules.d /lib/udev/rules.d; do
+  [[ -d "$directory" ]] || continue
+  while IFS= read -r -d '' rule; do
+    remove_or_mask_rule "$rule"
+  done < <(find "$directory" -maxdepth 1 -type f -print0)
+done
+
+# Remove unowned initramfs hooks/scripts that explicitly add or load the bridge.
+for directory in \
+  /etc/initramfs-tools/hooks \
+  /etc/initramfs-tools/scripts \
+  /usr/local/share/initramfs-tools/hooks \
+  /usr/local/share/initramfs-tools/scripts \
+  /usr/share/initramfs-tools/hooks \
+  /usr/share/initramfs-tools/scripts; do
+  [[ -d "$directory" ]] || continue
+
+  while IFS= read -r -d '' file; do
+    grep -Eq "$PATTERN" "$file" 2>/dev/null || continue
+    if owner="$(dpkg-query -S "$file" 2>/dev/null | head -n1)"; then
+      echo "WARNING: package-owned initramfs file still references legacy module ($owner): $file" >&2
+    else
+      echo "Removing legacy initramfs file: $file"
+      backup_file "$file"
+      rm -f "$file"
+    fi
+  done < <(find "$directory" -type f -print0)
+done
+
+# Remove the live module and all persistent copies.
 modprobe -r a14_kbd_led 2>/dev/null || rmmod a14_kbd_led 2>/dev/null || true
 
 while IFS= read -r line; do
@@ -120,9 +178,6 @@ while IFS= read -r line; do
       ;;
   esac
 done < <(dkms status 2>/dev/null || true)
-
-clean_config_dir /etc/modules-load.d
-clean_config_dir /etc/modprobe.d
 
 while IFS= read -r -d '' module_file; do
   if dpkg-query -S "$module_file" >/dev/null 2>&1; then
@@ -143,15 +198,32 @@ done
 
 rm -f /usr/local/bin/a14-kbd-backlight
 
+# Block future modprobe-based resurrection even if a stale copy appears later.
+cat >/etc/modprobe.d/blacklist-a14-kbd-led-legacy.conf <<'EOF'
+# Legacy virtual LED bridge conflicts with hid_asus_ec.
+blacklist a14_kbd_led
+install a14_kbd_led /bin/false
+EOF
+
 depmod -a
+udevadm control --reload 2>/dev/null || true
+
 if command -v update-initramfs >/dev/null 2>&1; then
   update-initramfs -u -k all
 fi
 
 # Re-register the new HID LED after the old virtual LED name is released.
 if lsmod | grep -q '^hid_asus_ec\b'; then
-  modprobe -r hid_asus_ec 2>/dev/null || true
-  modprobe hid_asus_ec 2>/dev/null || true
+  modprobe -r hid_asus_ec
+  modprobe hid_asus_ec
+fi
+
+# Fail visibly if the current initramfs still embeds the old module.
+if command -v lsinitramfs >/dev/null 2>&1 && \
+   lsinitramfs "/boot/initrd.img-$(uname -r)" 2>/dev/null | grep -Eq 'a14_kbd_led(\.ko)?'; then
+  echo "ERROR: current initramfs still contains a14_kbd_led" >&2
+  echo "Inspect initramfs hooks and package ownership before rebooting." >&2
+  exit 1
 fi
 
 echo "Legacy A14 keyboard bridge cleanup complete. Backup: $BACKUP"
