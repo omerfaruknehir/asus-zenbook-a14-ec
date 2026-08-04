@@ -26,10 +26,12 @@ done
 
 echo
 echo 'LED class devices:'
+led_found=false
 for led in /sys/class/leds/*; do
   [ -e "$led" ] || continue
   case "$(basename "$led")" in
     *micmute*|*camera*|*kbd_backlight*)
+      led_found=true
       printf '  %s: %s/%s trigger=%s\n' \
         "$(basename "$led")" \
         "$(cat "$led/brightness" 2>/dev/null || echo '?')" \
@@ -38,6 +40,35 @@ for led in /sys/class/leds/*; do
       ;;
   esac
 done
+[ "$led_found" = true ] || echo '  none'
+
+echo
+echo 'Firmware/BIOS Fn-lock policy:'
+bios_found=false
+if command -v fwupdmgr >/dev/null 2>&1; then
+  settings=$(fwupdmgr get-bios-settings 2>/dev/null || true)
+  matches=$(printf '%s\n' "$settings" | grep -iE -C2 'fn.?lock|function.?key|hotkey.?mode' || true)
+  if [ -n "$matches" ]; then
+    bios_found=true
+    echo '  fwupd-exposed setting:'
+    printf '%s\n' "$matches" | sed 's/^/    /'
+  fi
+fi
+for attr in /sys/class/firmware-attributes/*/attributes/*; do
+  [ -d "$attr" ] || continue
+  text="$(basename "$attr")"
+  for field in display_name current_value possible_values; do
+    [ -r "$attr/$field" ] && text="$text $(cat "$attr/$field" 2>/dev/null || true)"
+  done
+  if printf '%s\n' "$text" | grep -qiE 'fn.?lock|function.?key|hotkey.?mode'; then
+    bios_found=true
+    printf '  %s\n' "$text"
+  fi
+done
+if [ "$bios_found" = false ]; then
+  echo '  no Fn-lock/hotkey policy is exposed by Linux firmware attributes'
+  echo '  ASUS documents this model feature under MyASUS, not BIOS Setup'
+fi
 
 echo
 echo 'Camera-related media and video nodes:'
@@ -63,19 +94,11 @@ else
   echo '  v4l2-ctl unavailable; install package: v4l-utils'
 fi
 
-echo
-echo 'Legacy mic-LED implementation search:'
-echo '  Run this to locate the removed bridge source/backups:'
-echo "  sudo grep -RnsE 'platform::micmute|a14[_-]kbd[_-]led|micmute' \\\"
-echo '    /usr/src /var/lib/dkms /root/a14-hid-cleanup-* \'
-echo '    /home/omerf/a14-kbd-helper-backup-* 2>/dev/null'
-
 hidraw=$(find "$hid_device" -path '*/hidraw/hidraw*' -print -quit 2>/dev/null || true)
+echo
 if [ -n "$hidraw" ]; then
-  echo
   echo "Raw HID node: /dev/$(basename "$hidraw")"
+  echo 'Recognized vendor reports may still be consumed by the kernel driver.'
 else
-  echo
-  echo 'No hidraw node is exposed by this bound driver; hid-tools is not required.'
-  echo 'Fn-lock now uses the known ASUS 0x5A/D0/4E feature report directly.'
+  echo 'No hidraw node is exposed by the currently bound driver.'
 fi
