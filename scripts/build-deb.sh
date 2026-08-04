@@ -59,7 +59,7 @@ Priority: optional
 Architecture: all
 Maintainer: Ömer Faruk Nehir <omerfaruknehir@gmail.com>
 Depends: dkms, kmod, systemd, build-essential, python3, python3-dbus, python3-gi
-Recommends: power-profiles-daemon
+Recommends: power-profiles-daemon, initramfs-tools
 Installed-Size: $installed_size
 Homepage: https://github.com/omerfaruknehir/asus-zenbook-a14-ec
 Description: ASUS Zenbook A14 EC and keyboard drivers (DKMS)
@@ -79,11 +79,32 @@ if [ ! -e "/lib/modules/\$kernel/build/Makefile" ]; then
   echo "Install them, then run: sudo dpkg --configure $package" >&2
   exit 1
 fi
+
+# Remove stale registrations from earlier package iterations. They otherwise
+# remain visible as broken DKMS versions and can leave old module binaries in
+# the initramfs.
+for old_dir in /var/lib/dkms/\$module/*; do
+  [ -d "\$old_dir" ] || continue
+  old_version=\${old_dir##*/}
+  [ "\$old_version" = "\$version" ] && continue
+  dkms remove -m "\$module" -v "\$old_version" --all >/dev/null 2>&1 || true
+  rm -rf "\$old_dir" "/usr/src/\$module-\$old_version"
+done
+
 dkms remove -m "\$module" -v "\$version" --all >/dev/null 2>&1 || true
 dkms add -m "\$module" -v "\$version"
 dkms build -m "\$module" -v "\$version" -k "\$kernel"
 dkms install -m "\$module" -v "\$version" -k "\$kernel" --force
 depmod -a "\$kernel"
+
+# The keyboard module is needed during early boot and may already exist in the
+# initramfs. Refresh it so reboot cannot resurrect an older hid_asus_ec.ko.
+if command -v update-initramfs >/dev/null 2>&1; then
+  update-initramfs -u -k "\$kernel"
+elif command -v dracut >/dev/null 2>&1; then
+  dracut --force "/boot/initramfs-\$kernel.img" "\$kernel"
+fi
+
 systemctl daemon-reload >/dev/null 2>&1 || true
 systemctl enable asus-zenbook-a14-ec.service >/dev/null 2>&1 || true
 if [ "\${1:-}" = configure ]; then
@@ -118,8 +139,14 @@ PRERM
 cat >"$root/DEBIAN/postrm" <<'POSTRM'
 #!/bin/sh
 set -e
+kernel="$(uname -r)"
 systemctl daemon-reload >/dev/null 2>&1 || true
-depmod -a >/dev/null 2>&1 || true
+depmod -a "$kernel" >/dev/null 2>&1 || true
+if command -v update-initramfs >/dev/null 2>&1; then
+  update-initramfs -u -k "$kernel" >/dev/null 2>&1 || true
+elif command -v dracut >/dev/null 2>&1; then
+  dracut --force "/boot/initramfs-$kernel.img" "$kernel" >/dev/null 2>&1 || true
+fi
 exit 0
 POSTRM
 
