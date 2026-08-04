@@ -1,0 +1,140 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+fail() { printf 'a14-ecctl: %s\n' "$*" >&2; exit 1; }
+need_root_write() {
+    local value=$1 path=$2
+    if [[ -w $path ]]; then
+        printf '%s\n' "$value" > "$path"
+    else
+        printf '%s\n' "$value" | sudo tee "$path" >/dev/null
+    fi
+}
+find_hwmon() {
+    local d
+    for d in /sys/class/hwmon/hwmon*; do
+        [[ -r "$d/name" ]] || continue
+        [[ $(<"$d/name") == asus_zenbook_a14_ec ]] && { printf '%s\n' "$d"; return 0; }
+    done
+    return 1
+}
+find_profile() {
+    local d
+    for d in /sys/class/platform-profile/*; do
+        [[ -r "$d/name" && -r "$d/profile" ]] || continue
+        [[ $(<"$d/name") == asus-zenbook-a14-ec ]] && { printf '%s/profile\n' "$d"; return 0; }
+    done
+    [[ -e /sys/firmware/acpi/platform_profile ]] && {
+        printf '%s\n' /sys/firmware/acpi/platform_profile
+        return 0
+    }
+    return 1
+}
+usage() {
+    cat <<'EOF'
+Usage:
+  a14-ecctl status
+  a14-ecctl profile [quiet|balanced|performance]
+  a14-ecctl fan auto
+  a14-ecctl fan manual <left|right|both> <0|75-255>
+  a14-ecctl backlight [0-3]
+  a14-ecctl service <enable|disable|restart|status>
+EOF
+}
+status() {
+    local h p ec_state=not-loaded hid_state=not-loaded
+    lsmod | awk '$1=="asus_zenbook_a14_ec"{found=1} END{exit !found}' && ec_state=loaded || true
+    lsmod | awk '$1=="hid_asus_ec"{found=1} END{exit !found}' && hid_state=loaded || true
+    printf 'EC module:  %s\n' "$ec_state"
+    printf 'HID module: %s\n' "$hid_state"
+    if h=$(find_hwmon); then
+        if [[ -r "$h/temp1_input" ]]; then
+            local temp
+            temp=$(<"$h/temp1_input")
+            printf 'EC temp:     %d.%03d C\n' "$((temp / 1000))" "$((temp % 1000))"
+        fi
+        [[ -r "$h/fan1_input" ]] && printf 'Left fan:    %s RPM (PWM %s)\n' "$(<"$h/fan1_input")" "$(<"$h/pwm1")"
+        [[ -r "$h/fan2_input" ]] && printf 'Right fan:   %s RPM (PWM %s)\n' "$(<"$h/fan2_input")" "$(<"$h/pwm2")"
+        if [[ -r "$h/pwm1_enable" ]]; then
+            [[ $(<"$h/pwm1_enable") == 2 ]] && printf 'Fan mode:    auto\n' || printf 'Fan mode:    manual\n'
+        fi
+    else
+        printf 'hwmon:       unavailable\n'
+    fi
+    if p=$(find_profile); then
+        printf 'Profile:     %s\n' "$(<"$p")"
+    else
+        printf 'Profile:     unavailable\n'
+    fi
+    [[ -r /sys/class/leds/asus::kbd_backlight/brightness ]] && \
+        printf 'Backlight:   %s/3\n' "$(</sys/class/leds/asus::kbd_backlight/brightness)"
+}
+
+cmd=${1:-status}
+shift || true
+case "$cmd" in
+status)
+    status
+    ;;
+profile)
+    p=$(find_profile) || fail 'platform profile interface not found'
+    if (($# == 0)); then
+        cat "$p"
+    else
+        [[ $1 =~ ^(quiet|balanced|performance)$ ]] || fail 'invalid profile'
+        need_root_write "$1" "$p"
+    fi
+    ;;
+fan)
+    h=$(find_hwmon) || fail 'EC hwmon interface not found'
+    case ${1:-} in
+    auto)
+        need_root_write 2 "$h/pwm1_enable"
+        ;;
+    manual)
+        [[ $# == 3 ]] || fail 'fan manual requires side and PWM'
+        side=$2
+        pwm=$3
+        [[ $pwm =~ ^[0-9]+$ ]] || fail 'PWM must be numeric'
+        ((pwm == 0 || (pwm >= 75 && pwm <= 255))) || fail 'PWM must be 0 or 75-255'
+        need_root_write 1 "$h/pwm1_enable"
+        case $side in
+        left) need_root_write "$pwm" "$h/pwm1" ;;
+        right) need_root_write "$pwm" "$h/pwm2" ;;
+        both)
+            need_root_write "$pwm" "$h/pwm1"
+            need_root_write "$pwm" "$h/pwm2"
+            ;;
+        *) fail 'side must be left, right, or both' ;;
+        esac
+        ;;
+    *) fail 'fan mode must be auto or manual' ;;
+    esac
+    ;;
+backlight)
+    path=/sys/class/leds/asus::kbd_backlight/brightness
+    [[ -e $path ]] || fail 'keyboard backlight interface not found'
+    if (($# == 0)); then
+        cat "$path"
+    else
+        [[ $1 =~ ^[0-3]$ ]] || fail 'backlight must be 0-3'
+        need_root_write "$1" "$path"
+    fi
+    ;;
+service)
+    case ${1:-status} in
+    enable) sudo systemctl enable --now asus-zenbook-a14-ec.service ;;
+    disable) sudo systemctl disable --now asus-zenbook-a14-ec.service ;;
+    restart) sudo systemctl restart asus-zenbook-a14-ec.service ;;
+    status) systemctl status --no-pager asus-zenbook-a14-ec.service ;;
+    *) fail 'service action must be enable, disable, restart, or status' ;;
+    esac
+    ;;
+-h|--help|help)
+    usage
+    ;;
+*)
+    usage
+    fail "unknown command: $cmd"
+    ;;
+esac
