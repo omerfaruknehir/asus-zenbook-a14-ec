@@ -25,9 +25,17 @@ printf '%s\n' "$contents" | grep -q "usr/lib/systemd/system/asus-zenbook-a14-ppd
 printf '%s\n' "$contents" | grep -q "usr/libexec/asus-zenbook-a14-ppd-bridge"
 printf '%s\n' "$contents" | grep -q "usr/libexec/asus-a14-hotkey-diagnostics"
 
+# Validate maintainer scripts, including the early-boot module refresh that
+# prevents an older hid_asus_ec.ko from surviving in the initramfs.
+control=$(mktemp -d)
+dpkg-deb -e "$deb" "$control"
+sh -n "$control/postinst" "$control/prerm" "$control/postrm"
+grep -q 'update-initramfs -u -k' "$control/postinst"
+grep -q '/var/lib/dkms/\$module/\*' "$control/postinst"
+
 # Validate the exact source tree shipped to DKMS, not only the repository tree.
 unpack=$(mktemp -d)
-trap 'rm -rf "$unpack"' EXIT INT TERM
+trap 'rm -rf "$unpack" "$control"' EXIT INT TERM
 dpkg-deb -x "$deb" "$unpack"
 packaged_src="$unpack/usr/src/asus-zenbook-a14-ec-${version}"
 python3 "$packaged_src/scripts/apply-hid-fnlock.py"
