@@ -1,0 +1,28 @@
+name: CI
+on:
+  push:
+  pull_request:
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install tools
+        run: sudo apt-get update && sudo apt-get install -y python3 dkms dpkg-dev shellcheck linux-headers-$(uname -r)
+      - name: Validate scripts
+        run: |
+          python3 -m py_compile scripts/apply-safety-fixes.py
+          shellcheck scripts/install.sh scripts/uninstall.sh scripts/build-deb.sh
+      - name: Apply safety fixes twice
+        run: |
+          python3 scripts/apply-safety-fixes.py
+          python3 scripts/apply-safety-fixes.py
+      - name: Build modules
+        run: make KDIR=/lib/modules/$(uname -r)/build modules
+      - name: Build Debian package
+        run: ./scripts/build-deb.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: asus-zenbook-a14-ec-deb
+          path: dist/*.deb
