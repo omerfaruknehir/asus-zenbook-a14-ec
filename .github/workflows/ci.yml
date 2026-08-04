@@ -21,7 +21,7 @@ jobs:
       - name: Build modules
         run: make KDIR=/lib/modules/$(uname -r)/build modules
       - name: Build Debian package
-        run: ./scripts/build-deb.sh
+        run: bash scripts/build-deb.sh
       - uses: actions/upload-artifact@v4
         with:
           name: asus-zenbook-a14-ec-deb
