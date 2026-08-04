@@ -1,0 +1,104 @@
+#!/bin/sh
+set -eu
+
+hid_device=$(find /sys/bus/hid/devices -maxdepth 1 -type l -name '*:0B05:0220.*' -print -quit 2>/dev/null || true)
+[ -n "$hid_device" ] || {
+  echo 'ASUS 0B05:0220 HID device not found.' >&2
+  exit 1
+}
+
+echo "HID device: $hid_device"
+echo "Driver: $(basename "$(readlink -f "$hid_device/driver")")"
+
+echo
+echo 'Input capabilities:'
+for input in "$hid_device"/input/input*; do
+  [ -d "$input" ] || continue
+  name=$(cat "$input/name" 2>/dev/null || echo unknown)
+  printf '\n%s (%s)\n' "$(basename "$input")" "$name"
+  for cap in ev key led sw; do
+    [ -r "$input/capabilities/$cap" ] && printf '  %-4s %s\n' "$cap" "$(cat "$input/capabilities/$cap")"
+  done
+  for event in "$input"/event*; do
+    [ -e "$event" ] && printf '  node /dev/input/%s\n' "$(basename "$event")"
+  done
+done
+
+echo
+echo 'LED class devices:'
+led_found=false
+for led in /sys/class/leds/*; do
+  [ -e "$led" ] || continue
+  case "$(basename "$led")" in
+    *micmute*|*camera*|*kbd_backlight*)
+      led_found=true
+      printf '  %s: %s/%s trigger=%s\n' \
+        "$(basename "$led")" \
+        "$(cat "$led/brightness" 2>/dev/null || echo '?')" \
+        "$(cat "$led/max_brightness" 2>/dev/null || echo '?')" \
+        "$(sed -n 's/.*\[\([^]]*\)\].*/\1/p' "$led/trigger" 2>/dev/null || true)"
+      ;;
+  esac
+done
+[ "$led_found" = true ] || echo '  none'
+
+echo
+echo 'Firmware/BIOS Fn-lock policy:'
+bios_found=false
+if command -v fwupdmgr >/dev/null 2>&1; then
+  settings=$(fwupdmgr get-bios-settings 2>/dev/null || true)
+  matches=$(printf '%s\n' "$settings" | grep -iE -C2 'fn.?lock|function.?key|hotkey.?mode' || true)
+  if [ -n "$matches" ]; then
+    bios_found=true
+    echo '  fwupd-exposed setting:'
+    printf '%s\n' "$matches" | sed 's/^/    /'
+  fi
+fi
+for attr in /sys/class/firmware-attributes/*/attributes/*; do
+  [ -d "$attr" ] || continue
+  text="$(basename "$attr")"
+  for field in display_name current_value possible_values; do
+    [ -r "$attr/$field" ] && text="$text $(cat "$attr/$field" 2>/dev/null || true)"
+  done
+  if printf '%s\n' "$text" | grep -qiE 'fn.?lock|function.?key|hotkey.?mode'; then
+    bios_found=true
+    printf '  %s\n' "$text"
+  fi
+done
+if [ "$bios_found" = false ]; then
+  echo '  no Fn-lock/hotkey policy is exposed by Linux firmware attributes'
+  echo '  ASUS documents this model feature under MyASUS, not BIOS Setup'
+fi
+
+echo
+echo 'Camera-related media and video nodes:'
+for node in /dev/video* /dev/media*; do
+  [ -e "$node" ] && printf '  %s\n' "$node"
+done
+
+echo
+echo 'V4L2 privacy controls:'
+privacy_found=false
+if command -v v4l2-ctl >/dev/null 2>&1; then
+  for node in /dev/video*; do
+    [ -e "$node" ] || continue
+    controls=$(v4l2-ctl -d "$node" --list-ctrls 2>/dev/null || true)
+    if printf '%s\n' "$controls" | grep -qi privacy; then
+      privacy_found=true
+      echo "  $node"
+      printf '%s\n' "$controls" | grep -i privacy | sed 's/^/    /'
+    fi
+  done
+  [ "$privacy_found" = true ] || echo '  none exposed by current V4L2 nodes'
+else
+  echo '  v4l2-ctl unavailable; install package: v4l-utils'
+fi
+
+hidraw=$(find "$hid_device" -path '*/hidraw/hidraw*' -print -quit 2>/dev/null || true)
+echo
+if [ -n "$hidraw" ]; then
+  echo "Raw HID node: /dev/$(basename "$hidraw")"
+  echo 'Recognized vendor reports may still be consumed by the kernel driver.'
+else
+  echo 'No hidraw node is exposed by the currently bound driver.'
+fi
