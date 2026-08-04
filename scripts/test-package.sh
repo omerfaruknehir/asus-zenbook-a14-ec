@@ -13,6 +13,10 @@ if [ -e "/lib/modules/$(uname -r)/build/Makefile" ]; then
   make clean >/dev/null 2>&1 || true
   make -j2
 fi
+
+# The module build intentionally transforms hid_asus_ec.c in-place. Restore the
+# checked-in baseline before testing the independent DEB packaging path.
+git checkout -- hid_asus_ec.c
 ./scripts/build-deb.sh >/dev/null
 deb="dist/asus-zenbook-a14-ec-dkms_${version}_all.deb"
 test -s "$deb"
@@ -43,5 +47,7 @@ if [ -e "/lib/modules/$(uname -r)/build/Makefile" ]; then
   make -C "$packaged_src" KDIR="/lib/modules/$(uname -r)/build" clean >/dev/null 2>&1 || true
   make -C "$packaged_src" KDIR="/lib/modules/$(uname -r)/build" -j2
 fi
+! grep -q 'asus_wmi_get_devstate_dsts' "$packaged_src/hid_asus_ec.c"
+grep -q 'asus_wmi_evaluate_method(ASUS_WMI_METHODID_DSTS' "$packaged_src/hid_asus_ec.c"
 
 echo "Validation passed"
