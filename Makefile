@@ -2,8 +2,11 @@
 KDIR ?= /lib/modules/$(shell uname -r)/build
 PWD  := $(shell pwd)
 
-all modules:
+all modules: prepare
 	$(MAKE) -C $(KDIR) M=$(PWD) modules
+
+prepare:
+	python3 scripts/apply-hid-fnlock.py
 
 clean:
 	$(MAKE) -C $(KDIR) M=$(PWD) clean
@@ -27,6 +30,6 @@ deb:
 	./scripts/build-deb.sh
 
 dmesg:
-	dmesg --ctime | grep -E 'asus_zenbook_a14_ec|hid_asus_zenbook_a14_ec|asus::kbd_backlight' | tail -n 80
+	dmesg --ctime | grep -E 'asus_zenbook_a14_ec|hid_asus_zenbook_a14_ec|asus::kbd_backlight|Fn lock' | tail -n 80
 
-.PHONY: all modules clean load-hid load-ec unload-ec reload-ec install-deb deb dmesg
+.PHONY: all modules prepare clean load-hid load-ec unload-ec reload-ec install-deb deb dmesg
