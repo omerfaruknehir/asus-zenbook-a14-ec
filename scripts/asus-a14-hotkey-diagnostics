@@ -45,13 +45,37 @@ for node in /dev/video* /dev/media*; do
   [ -e "$node" ] && printf '  %s\n' "$node"
 done
 
+echo
+echo 'V4L2 privacy controls:'
+privacy_found=false
+if command -v v4l2-ctl >/dev/null 2>&1; then
+  for node in /dev/video*; do
+    [ -e "$node" ] || continue
+    controls=$(v4l2-ctl -d "$node" --list-ctrls 2>/dev/null || true)
+    if printf '%s\n' "$controls" | grep -qi privacy; then
+      privacy_found=true
+      echo "  $node"
+      printf '%s\n' "$controls" | grep -i privacy | sed 's/^/    /'
+    fi
+  done
+  [ "$privacy_found" = true ] || echo '  none exposed by current V4L2 nodes'
+else
+  echo '  v4l2-ctl unavailable; install package: v4l-utils'
+fi
+
+echo
+echo 'Legacy mic-LED implementation search:'
+echo '  Run this to locate the removed bridge source/backups:'
+echo "  sudo grep -RnsE 'platform::micmute|a14[_-]kbd[_-]led|micmute' \\\"
+echo '    /usr/src /var/lib/dkms /root/a14-hid-cleanup-* \'
+echo '    /home/omerf/a14-kbd-helper-backup-* 2>/dev/null'
+
 hidraw=$(find "$hid_device" -path '*/hidraw/hidraw*' -print -quit 2>/dev/null || true)
 if [ -n "$hidraw" ]; then
   echo
   echo "Raw HID node: /dev/$(basename "$hidraw")"
-  echo 'To capture Fn+Esc, mic-mute and camera reports:'
-  echo "  sudo hid-recorder /dev/$(basename "$hidraw")"
-  echo 'Press each key twice, then press Ctrl+C.'
 else
-  echo 'No hidraw node found.' >&2
+  echo
+  echo 'No hidraw node is exposed by this bound driver; hid-tools is not required.'
+  echo 'Fn-lock now uses the known ASUS 0x5A/D0/4E feature report directly.'
 fi
