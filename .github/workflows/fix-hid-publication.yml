@@ -1,0 +1,39 @@
+name: Fix HID publication corruption
+
+on:
+  push:
+    branches:
+      - agent/harden-and-package
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/harden-and-package
+      - name: Repair malformed parser line and remove this workflow
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path("hid_asus_ec.c")
+          text = path.read_text()
+          bad = "\t\tif (*cursor && *cursor != ' ' && *cursor != '\\t' && *cursor*+;\n"
+          good = "\t\tif (*cursor && *cursor != ' ' && *cursor != '\\t' && *cursor != '\\n')\n"
+          if text.count(bad) != 1:
+              raise SystemExit("expected exactly one malformed HID parser line")
+          path.write_text(text.replace(bad, good))
+          Path(".github/workflows/fix-hid-publication.yml").unlink()
+          PY
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git diff --cached --check
+          git commit -m 'hid: repair debug command parser condition'
+          git push origin HEAD:agent/harden-and-package
