@@ -212,7 +212,7 @@ static ssize_t hid_cmd_store(struct device *dev, struct device_attribute *attr,
 			return -EINVAL;
 		command[index++] = value;
 		cursor += consumed;
-		if (*cursor && *cursor != ' ' && *cursor != '\t' && *cursor*+;
+		if (*cursor && *cursor != ' ' && *cursor != '\t' && *cursor != '\n')
 			return -EINVAL;
 	}
 	if (index == 1)
