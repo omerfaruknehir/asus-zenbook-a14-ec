@@ -16,9 +16,15 @@ find_hwmon() {
 profile_path=/sys/devices/platform/asus_zenbook_a14_ec/profile
 hwmon=$(find_hwmon 2>/dev/null || true)
 
+refresh_driver_paths() {
+  hwmon=$(find_hwmon 2>/dev/null || true)
+}
+
 need_driver() {
+  refresh_driver_paths
   [ -n "$hwmon" ] && [ -e "$profile_path" ] || {
     echo "asus_zenbook_a14_ec is not loaded" >&2
+    echo "Start it with: sudo systemctl start $EC_SERVICE" >&2
     exit 1
   }
 }
@@ -43,18 +49,24 @@ standard_platform_profile_present() {
 }
 
 show_status() {
-  need_driver
-  printf 'profile: %s\n' "$(cat "$profile_path")"
-  [ -r "$hwmon/temp1_input" ] && awk '{printf "EC temperature: %.1f C\n", $1/1000}' "$hwmon/temp1_input"
-  [ -r "$hwmon/fan1_input" ] && printf 'left fan: %s RPM (PWM %s)\n' "$(cat "$hwmon/fan1_input")" "$(cat "$hwmon/pwm1")"
-  [ -r "$hwmon/fan2_input" ] && printf 'right fan: %s RPM (PWM %s)\n' "$(cat "$hwmon/fan2_input")" "$(cat "$hwmon/pwm2")"
-  [ -r "$hwmon/pwm1_enable" ] && printf 'fan mode: %s\n' "$( [ "$(cat "$hwmon/pwm1_enable")" = 1 ] && echo manual || echo automatic )"
+  refresh_driver_paths
+  if [ -z "$hwmon" ] || [ ! -e "$profile_path" ]; then
+    echo 'EC driver: not loaded'
+    printf 'EC service: %s\n' "$(unit_state "$EC_SERVICE")"
+  else
+    echo 'EC driver: loaded'
+    printf 'profile: %s\n' "$(cat "$profile_path")"
+    [ -r "$hwmon/temp1_input" ] && awk '{printf "EC temperature: %.1f C\n", $1/1000}' "$hwmon/temp1_input"
+    [ -r "$hwmon/fan1_input" ] && printf 'left fan: %s RPM (PWM %s)\n' "$(cat "$hwmon/fan1_input")" "$(cat "$hwmon/pwm1")"
+    [ -r "$hwmon/fan2_input" ] && printf 'right fan: %s RPM (PWM %s)\n' "$(cat "$hwmon/fan2_input")" "$(cat "$hwmon/pwm2")"
+    [ -r "$hwmon/pwm1_enable" ] && printf 'fan mode: %s\n' "$( [ "$(cat "$hwmon/pwm1_enable")" = 1 ] && echo manual || echo automatic )"
+    printf 'EC service: %s\n' "$(unit_state "$EC_SERVICE")"
+  fi
   if [ -r /sys/class/leds/asus::kbd_backlight/brightness ]; then
     printf 'keyboard backlight: %s/%s\n' \
       "$(cat /sys/class/leds/asus::kbd_backlight/brightness)" \
       "$(cat /sys/class/leds/asus::kbd_backlight/max_brightness)"
   fi
-  printf 'EC service: %s\n' "$(unit_state "$EC_SERVICE")"
   printf 'system power-profiles-daemon: %s\n' "$(unit_state "$PPD_SERVICE")"
   printf 'A14 PPD bridge: %s\n' "$(unit_state "$BRIDGE_SERVICE")"
   if standard_platform_profile_present; then
@@ -62,6 +74,95 @@ show_status() {
   else
     echo 'standard platform_profile backend: unavailable (optional bridge can be enabled)'
   fi
+}
+
+read_number() {
+  file=$1
+  [ -r "$file" ] || { printf '0\n'; return; }
+  value=$(cat "$file" 2>/dev/null || printf '0')
+  case "$value" in ''|*[!0-9]*) printf '0\n';; *) printf '%s\n' "$value";; esac
+}
+
+fan_test_restore_auto() {
+  if [ -n "${hwmon:-}" ] && [ -w "$hwmon/pwm1_enable" ]; then
+    printf '2\n' >"$hwmon/pwm1_enable" 2>/dev/null || true
+  fi
+}
+
+fan_test() {
+  need_root
+  if ! systemctl is-active --quiet "$EC_SERVICE"; then
+    echo "Starting hardened EC service..."
+    systemctl start "$EC_SERVICE"
+    sleep 2
+  fi
+  need_driver
+
+  for f in fan1_input fan2_input pwm1 pwm2 pwm1_enable temp1_input; do
+    [ -e "$hwmon/$f" ] || {
+      echo "Missing expected hwmon interface: $hwmon/$f" >&2
+      exit 1
+    }
+  done
+
+  trap 'fan_test_restore_auto' EXIT HUP INT TERM
+  fan_test_restore_auto
+  sleep 2
+
+  base_left=$(read_number "$hwmon/fan1_input")
+  base_right=$(read_number "$hwmon/fan2_input")
+  base_temp=$(read_number "$hwmon/temp1_input")
+  printf 'Automatic baseline: left=%s RPM, right=%s RPM, temperature=' "$base_left" "$base_right"
+  awk -v t="$base_temp" 'BEGIN { printf "%.1f C\n", t/1000 }'
+
+  if [ "$base_temp" -ge 80000 ]; then
+    echo 'Refusing manual fan test: EC temperature is already at least 80 C.' >&2
+    exit 1
+  fi
+
+  printf '1\n' >"$hwmon/pwm1_enable"
+  printf '160\n' >"$hwmon/pwm1"
+  printf '160\n' >"$hwmon/pwm2"
+  echo 'Testing both fans at PWM 160...'
+  sleep 5
+  low_left=$(read_number "$hwmon/fan1_input")
+  low_right=$(read_number "$hwmon/fan2_input")
+  printf 'PWM 160: left=%s RPM, right=%s RPM\n' "$low_left" "$low_right"
+
+  printf '220\n' >"$hwmon/pwm1"
+  printf '220\n' >"$hwmon/pwm2"
+  echo 'Testing both fans at PWM 220...'
+  sleep 5
+  high_left=$(read_number "$hwmon/fan1_input")
+  high_right=$(read_number "$hwmon/fan2_input")
+  high_temp=$(read_number "$hwmon/temp1_input")
+  printf 'PWM 220: left=%s RPM, right=%s RPM, temperature=' "$high_left" "$high_right"
+  awk -v t="$high_temp" 'BEGIN { printf "%.1f C\n", t/1000 }'
+
+  fan_test_restore_auto
+  trap - EXIT HUP INT TERM
+  sleep 2
+
+  result=0
+  if [ "$low_left" -le 0 ] || [ "$low_right" -le 0 ] || [ "$high_left" -le 0 ] || [ "$high_right" -le 0 ]; then
+    echo 'FAIL: one or both tachometer channels returned zero.' >&2
+    result=1
+  fi
+  if [ "$high_left" -le "$low_left" ]; then
+    echo 'FAIL: left fan did not speed up between PWM 160 and 220.' >&2
+    result=1
+  fi
+  if [ "$high_right" -le "$low_right" ]; then
+    echo 'FAIL: right fan did not speed up between PWM 160 and 220.' >&2
+    result=1
+  fi
+
+  echo 'Fan control restored to EC automatic mode.'
+  if [ "$result" -eq 0 ]; then
+    echo 'PASS: both fan tachometers responded and both fans accelerated.'
+  fi
+  show_status
+  return "$result"
 }
 
 bridge_status() {
@@ -100,6 +201,7 @@ usage() {
   cat <<'USAGE'
 Usage:
   asus-a14-control status
+  sudo asus-a14-control fan-test
   sudo asus-a14-control profile quiet|balanced|performance
   sudo asus-a14-control auto
   sudo asus-a14-control manual PWM
@@ -108,6 +210,9 @@ Usage:
   asus-a14-control ppd-bridge status
   sudo asus-a14-control ppd-bridge enable
   sudo asus-a14-control ppd-bridge disable
+
+fan-test briefly exercises both fans at safe PWM values, checks both tachometer
+channels, and always restores firmware automatic fan control.
 
 Manual PWM values are 75-255. A kernel safety monitor restores automatic
 fan control if temperatures become unsafe or temperature readings fail.
@@ -122,6 +227,9 @@ cmd=${1:-status}
 case "$cmd" in
   status)
     show_status
+    ;;
+  fan-test)
+    fan_test
     ;;
   profile)
     need_driver; need_root
