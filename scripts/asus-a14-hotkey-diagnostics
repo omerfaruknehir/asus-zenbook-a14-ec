@@ -1,0 +1,57 @@
+#!/bin/sh
+set -eu
+
+hid_device=$(find /sys/bus/hid/devices -maxdepth 1 -type l -name '*:0B05:0220.*' -print -quit 2>/dev/null || true)
+[ -n "$hid_device" ] || {
+  echo 'ASUS 0B05:0220 HID device not found.' >&2
+  exit 1
+}
+
+echo "HID device: $hid_device"
+echo "Driver: $(basename "$(readlink -f "$hid_device/driver")")"
+
+echo
+echo 'Input capabilities:'
+for input in "$hid_device"/input/input*; do
+  [ -d "$input" ] || continue
+  name=$(cat "$input/name" 2>/dev/null || echo unknown)
+  printf '\n%s (%s)\n' "$(basename "$input")" "$name"
+  for cap in ev key led sw; do
+    [ -r "$input/capabilities/$cap" ] && printf '  %-4s %s\n' "$cap" "$(cat "$input/capabilities/$cap")"
+  done
+  for event in "$input"/event*; do
+    [ -e "$event" ] && printf '  node /dev/input/%s\n' "$(basename "$event")"
+  done
+done
+
+echo
+echo 'LED class devices:'
+for led in /sys/class/leds/*; do
+  [ -e "$led" ] || continue
+  case "$(basename "$led")" in
+    *micmute*|*camera*|*kbd_backlight*)
+      printf '  %s: %s/%s trigger=%s\n' \
+        "$(basename "$led")" \
+        "$(cat "$led/brightness" 2>/dev/null || echo '?')" \
+        "$(cat "$led/max_brightness" 2>/dev/null || echo '?')" \
+        "$(sed -n 's/.*\[\([^]]*\)\].*/\1/p' "$led/trigger" 2>/dev/null || true)"
+      ;;
+  esac
+done
+
+echo
+echo 'Camera-related media and video nodes:'
+for node in /dev/video* /dev/media*; do
+  [ -e "$node" ] && printf '  %s\n' "$node"
+done
+
+hidraw=$(find "$hid_device" -path '*/hidraw/hidraw*' -print -quit 2>/dev/null || true)
+if [ -n "$hidraw" ]; then
+  echo
+  echo "Raw HID node: /dev/$(basename "$hidraw")"
+  echo 'To capture Fn+Esc, mic-mute and camera reports:'
+  echo "  sudo hid-recorder /dev/$(basename "$hidraw")"
+  echo 'Press each key twice, then press Ctrl+C.'
+else
+  echo 'No hidraw node found.' >&2
+fi
