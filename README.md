@@ -1,118 +1,80 @@
-# asus-zenbook-a14-ec
+# ASUS Zenbook A14 EC drivers
 
-Out-of-tree Linux kernel drivers for the **ASUS Zenbook A14 (UX3407RA)**,
-a Qualcomm X1E80100-based laptop. Provides fan control, power profiles,
-keyboard backlight, and Fn hotkeys.
+Out-of-tree Linux drivers for ASUS Zenbook A14 Snapdragon systems, originally
+reverse-engineered for the **UX3407RA / X1E80100**. The repository provides:
 
-## Modules
+- dual-fan RPM, PWM and EC-temperature reporting through `hwmon`;
+- automatic/manual fan control;
+- `quiet`, `balanced` and `performance` platform profiles;
+- keyboard-backlight control and ASUS Fn hotkeys through HID;
+- DKMS installation and an easy Debian/Ubuntu `.deb` package;
+- `a14-ecctl`, a small status and control utility.
 
-| Module                  | Function                                         |
-|-------------------------|--------------------------------------------------|
-| `asus_zenbook_a14_ec`   | EC hwmon (fan/PWM/temp) + platform_profile       |
-| `hid_asus_ec`           | Keyboard backlight LED class + Fn hotkeys        |
+## Install on Debian or Ubuntu
 
-## Status
-
-### EC driver (`asus_zenbook_a14_ec`)
-
-- **hwmon**: `fan1_input`, `pwm1`, `pwm1_enable`, `temp1_input`
-- **Manual PWM**: works (no watchdog on A14 — safe indefinitely)
-- **platform_profile**: `quiet` / `balanced` / `performance`
-  - quiet/balanced → EC auto mode
-  - performance → manual PWM 180 (~2400 RPM sustained)
-  - Requires patched `platform_profile.ko` (see `patches/`)
-- **Suspend/resume**: clean, no errors
-- **Profile write disabled**: EC register `(0x01, 0x0b)` is read-only
-
-### HID driver (`hid_asus_ec`)
-
-- **Keyboard backlight**: LED class `asus::kbd_backlight`, 4 levels (0-3)
-- **Fn hotkeys**: Fn+F4 (backlight cycle), Fn+F5/F6 (brightness), Fn+F8
-  (emoji), Fn+F9 (micmute), Fn+F10 (camera), Fn+F11 (touchpad),
-  Fn+F12 (PROG1), Fn+F (performance)
-- **Suspend/resume**: saves/restores backlight level
-- Target device: `0B05:0220` (I2C-HID keyboard)
-
-### PPD bridge (`scripts/ppd-bridge.py`)
-
-Temporary userspace replacement for `power-profiles-daemon`. Exposes all
-3 profiles on D-Bus so KDE Plasma's Energy Saving dropdown works. Will be
-obsoleted once the kernel `platform_profile` patch is applied and the real
-PPD detects the class device.
-
-## Kernel patch
-
-`patches/0001-platform_profile-allow-non-ACPI-systems.patch`
-
-Removes the `acpi_disabled` guard from `drivers/acpi/platform_profile.c`
-so the class device registration works on DT-only ARM64 systems. The
-legacy `/sys/firmware/acpi/platform_profile` node is skipped when
-`acpi_kobj` is NULL; the class interface
-(`/sys/class/platform-profile/platform-profile-0/`) works regardless.
-
-Apply to your kernel tree before building:
-```sh
-cd /path/to/linux
-git apply /path/to/patches/0001-platform_profile-allow-non-ACPI-systems.patch
+```bash
+sudo apt install build-essential dkms linux-headers-$(uname -r) python3
+bash scripts/install.sh
+sudo a14-ecctl status
 ```
 
-## Build
+Or build without installing:
 
-```sh
-make                # builds both .ko against running kernel
-make KDIR=/path/to/linux   # build against specific tree
+```bash
+make
+make deb
 ```
 
-## Load / unload
+The finished package is written to `dist/`.
 
-```sh
-# EC driver (load platform_profile first if not built-in)
-sudo modprobe platform_profile
-sudo insmod ./asus_zenbook_a14_ec.ko
+## Why the build uses `build-src/`
 
-# HID driver
-sudo insmod ./hid_asus_ec.ko
+The original reverse-engineering baseline is preserved. `make` runs
+`scripts/prepare-source.py`, which creates a hardened build copy and refuses to
+continue if the expected baseline no longer matches. DKMS uses the same path,
+so manual and packaged builds are identical.
 
-# Shortcuts
-make load     # insmod EC driver
-make unload   # rmmod EC driver
-make reload   # rmmod + insmod
-make dmesg    # tail driver log
+## Controls
+
+```bash
+a14-ecctl status
+a14-ecctl profile quiet
+a14-ecctl profile balanced
+a14-ecctl profile performance
+a14-ecctl fan auto
+a14-ecctl fan manual both 120
+a14-ecctl backlight 2
 ```
 
-## Exposed interfaces
+Manual PWM accepts `0` or `75-255`; unstable values below the measured spin
+floor are rejected.
 
-| sysfs                                    | semantics                              |
-|------------------------------------------|----------------------------------------|
-| `hwmon/hwmonN/fan1_input`                | RPM (tach × 88, calibrated 1400-2200)  |
-| `hwmon/hwmonN/pwm1`                      | 0-255 (RW; takes effect in manual)     |
-| `hwmon/hwmonN/pwm1_enable`               | 1 = manual, 2 = auto (RW)             |
-| `hwmon/hwmonN/temp1_input`               | EC thermistor, m°C                     |
-| `leds/asus::kbd_backlight/brightness`    | 0-3 (keyboard backlight)               |
-| `class/platform-profile/platform-profile-0/profile` | quiet/balanced/performance |
+## Safety changes in this fork
 
-## Safety
+- restores automatic fan mode through a platform shutdown callback;
+- loads the direct EC module late through systemd instead of early boot;
+- delays the first direct EC transaction by 1.5 seconds;
+- uses a stable near-silent fan floor in quiet mode instead of forcing both fans
+  off;
+- removes the hard-coded 3.4176 GHz “uncapped” limit;
+- initializes probe telemetry instead of logging uninitialized values;
+- preserves keyboard-backlight brightness across suspend/resume;
+- makes the HID debug response and lock per device.
 
-- **A14 has no watchdog timeout** (verified: 3+ min manual mode = no
-  reboot). Manual PWM control is safe without temperature babysitting.
-- **Vivobook warning**: If porting to Vivobook S15, re-enable watchdog
-  kthread (hard-resets after ~2 min without temp feed).
-- Companion `tool.py` user-space access on `/dev/i2c-4` is **mutually
-  exclusive** with this driver.
-- If anything misbehaves: hard power-cycle and pick working kernel from
-  bootloader.
+Read [`docs/SAFETY.md`](docs/SAFETY.md) before enabling manual fan control.
 
-## Credits
+## Build against another kernel tree
 
-- **Sombre-Osmoze** <sombre@osmoze.xyz> — EC reverse-engineering, hwmon
-  driver, platform_profile integration, PPD bridge, kernel patch
-- **Alexandru Marc Serdeliuc** <serdeliuk@yahoo.com> — HID keyboard
-  backlight driver (`hid-asus-ec`), original QA work that confirmed the
-  backlight protocol on Zenbook A14
-- **icecream95** — udev-hid-bpf work on Vivobook S15/Zenbook A14,
-  early EC protocol documentation
+```bash
+make KDIR=/path/to/linux
+```
+
+The target kernel must provide the modern multi-handler `platform_profile` API.
+Device-tree-only kernels may still need
+`patches/0001-platform_profile-allow-non-ACPI-systems.patch` applied to the
+kernel itself.
 
 ## License
 
-GPL-2.0-only (EC driver, kernel patch).
-GPL-2.0-or-later (HID driver, per serdeliuk's original).
+- EC driver and kernel patch: GPL-2.0-only
+- HID driver: GPL-2.0-or-later
