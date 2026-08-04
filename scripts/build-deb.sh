@@ -17,6 +17,8 @@ mkdir -p "$SRCROOT/scripts" "$PKGROOT/DEBIAN" "$PKGROOT/usr/sbin" \
 install -m 0644 "$ROOT/asus_zenbook_a14_ec.c" "$ROOT/hid_asus_ec.c" \
     "$ROOT/Kbuild" "$ROOT/Makefile" "$ROOT/dkms.conf" "$SRCROOT/"
 install -m 0755 "$ROOT/scripts/prepare-source.py" "$SRCROOT/scripts/prepare-source.py"
+install -m 0755 "$ROOT/scripts/finalize-source.py" "$SRCROOT/scripts/finalize-source.py"
+sed -i "s/^PACKAGE_VERSION=.*/PACKAGE_VERSION=\"$VERSION\"/" "$SRCROOT/dkms.conf"
 install -m 0755 "$ROOT/tools/a14-ecctl" "$PKGROOT/usr/sbin/a14-ecctl"
 install -m 0644 "$ROOT/systemd/asus-zenbook-a14-ec.service" \
     "$PKGROOT/usr/lib/systemd/system/asus-zenbook-a14-ec.service"
