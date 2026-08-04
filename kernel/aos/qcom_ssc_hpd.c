@@ -12,9 +12,16 @@
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/platform_device.h>
+#include <linux/version.h>
 #include <linux/workqueue.h>
 
 #include "qcom_ssc_hpd_internal.h"
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 13, 0)
+typedef bool a14_iio_event_state_t;
+#else
+typedef int a14_iio_event_state_t;
+#endif
 
 static void disconnect_client(struct a14_ssc_hpd *hpd);
 
@@ -55,7 +62,7 @@ static int hpd_write_event_config(struct iio_dev *indio_dev,
 				  const struct iio_chan_spec *chan,
 				  enum iio_event_type type,
 				  enum iio_event_direction dir,
-				  int state)
+				  a14_iio_event_state_t state)
 {
 	struct a14_ssc_hpd *hpd = iio_priv(indio_dev);
 	bool reconnect;
