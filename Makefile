@@ -1,38 +1,43 @@
 # SPDX-License-Identifier: GPL-2.0-only
-#
-# Out-of-tree build for the ASUS Zenbook A14 EC PoC driver.
-#
-# Usage:
-#   make            # build asus_zenbook_a14_ec.ko against running kernel
-#   make clean      # remove build artefacts
-#   make load       # insmod the module (requires sudo)
-#   make unload     # rmmod the module (requires sudo)
-#   make dmesg      # tail kernel log lines from the driver
-#
-# To build against a specific kernel tree:
-#   make KDIR=/path/to/linux
-#
 
 KDIR ?= /lib/modules/$(shell uname -r)/build
-PWD  := $(shell pwd)
+ROOT := $(abspath .)
+BUILD_DIR := $(ROOT)/build-src
+DIST_DIR := $(ROOT)/dist
 
-all:
-	$(MAKE) -C $(KDIR) M=$(PWD) modules
+all: prepare
+	$(MAKE) -C $(KDIR) M=$(BUILD_DIR) modules
+
+prepare:
+	python3 scripts/prepare-source.py --source $(ROOT) --output $(BUILD_DIR)
 
 clean:
-	$(MAKE) -C $(KDIR) M=$(PWD) clean
+	@if [ -d "$(KDIR)" ] && [ -d "$(BUILD_DIR)" ]; then \
+		$(MAKE) -C $(KDIR) M=$(BUILD_DIR) clean; \
+	fi
+	rm -rf $(BUILD_DIR)
 
-load:
-	sudo insmod ./asus_zenbook_a14_ec.ko
+check: prepare
+	python3 -m py_compile scripts/prepare-source.py
+	bash -n scripts/build-deb.sh scripts/install.sh tools/a14-ecctl
+
+load: all
+	sudo insmod $(BUILD_DIR)/hid_asus_ec.ko || true
+	sudo insmod $(BUILD_DIR)/asus_zenbook_a14_ec.ko probe_delay_ms=1500
 
 unload:
-	sudo rmmod asus_zenbook_a14_ec
-
-reload:
 	-sudo rmmod asus_zenbook_a14_ec
-	sudo insmod ./asus_zenbook_a14_ec.ko
+	-sudo rmmod hid_asus_ec
+
+reload: unload load
 
 dmesg:
-	dmesg --ctime | grep -E 'asus_zenbook_a14_ec|asus.ec' | tail -n 40
+	dmesg --ctime | grep -E 'asus_zenbook_a14_ec|hid-asus-ec|asus.ec' | tail -n 80
 
-.PHONY: all clean load unload reload dmesg
+deb:
+	./scripts/build-deb.sh
+
+install-deb: deb
+	sudo apt install ./dist/asus-zenbook-a14-ec-dkms_*.deb
+
+.PHONY: all prepare clean check load unload reload dmesg deb install-deb
