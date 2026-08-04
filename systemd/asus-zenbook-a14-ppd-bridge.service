@@ -1,0 +1,24 @@
+[Unit]
+Description=ASUS Zenbook A14 power-profiles D-Bus fallback bridge
+Documentation=https://github.com/omerfaruknehir/asus-zenbook-a14-ec
+Requires=asus-zenbook-a14-ec.service
+After=asus-zenbook-a14-ec.service dbus.service
+Conflicts=power-profiles-daemon.service
+ConditionPathExists=/sys/devices/platform/asus_zenbook_a14_ec/profile
+
+[Service]
+Type=dbus
+BusName=org.freedesktop.UPower.PowerProfiles
+ExecStart=/usr/libexec/asus-zenbook-a14-ppd-bridge
+Restart=on-failure
+RestartSec=2
+TimeoutStopSec=8
+StateDirectory=asus-zenbook-a14-ec
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true
+ReadWritePaths=/sys/devices/platform/asus_zenbook_a14_ec/profile /var/lib/asus-zenbook-a14-ec
+
+[Install]
+WantedBy=multi-user.target

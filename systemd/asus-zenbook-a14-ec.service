@@ -1,0 +1,17 @@
+[Unit]
+Description=ASUS Zenbook A14 EC fan and power-profile driver
+Documentation=https://github.com/omerfaruknehir/asus-zenbook-a14-ec
+After=systemd-udev-trigger.service local-fs.target
+Before=sleep.target shutdown.target
+ConditionPathExists=/proc/device-tree/model
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/asus-zenbook-a14-ec-load
+ExecStop=/usr/libexec/asus-zenbook-a14-ec-unload
+TimeoutStartSec=30
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

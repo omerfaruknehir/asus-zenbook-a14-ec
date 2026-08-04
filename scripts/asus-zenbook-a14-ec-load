@@ -1,0 +1,23 @@
+#!/bin/sh
+set -eu
+model=$(tr -d '\000' </proc/device-tree/model 2>/dev/null || true)
+case "$model" in
+  *"ASUS Zenbook A14"*"UX3407RA"*|*"ASUS Zenbook A14"*"UX3407QA"*) ;;
+  *)
+    echo "Refusing to load on unsupported model: ${model:-unknown}" >&2
+    exit 1
+    ;;
+esac
+
+# HID support is independent of the direct EC path and is safe to load first.
+modprobe hid_asus_ec || true
+
+# The direct EC client must not probe during the earliest boot phase. Wait for
+# the Qualcomm I2C controller to be fully registered before loading it.
+i=0
+while [ ! -e /sys/bus/platform/devices/b94000.i2c ]; do
+  i=$((i + 1))
+  [ "$i" -ge 40 ] && { echo "EC I2C controller did not appear" >&2; exit 1; }
+  sleep 0.25
+done
+modprobe asus_zenbook_a14_ec
