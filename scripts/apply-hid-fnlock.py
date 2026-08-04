@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Apply the ASUS HID feature-report Fn-lock implementation idempotently."""
 from pathlib import Path
-import runpy
 
 
 def replace_once(text: str, old: str, new: str, label: str) -> str:
@@ -81,4 +80,3 @@ text = replace_once(
 
 path.write_text(text)
 print("Fn-lock HID feature-report support applied")
-runpy.run_path("scripts/apply-userspace-fixes.py", run_name="__main__")
