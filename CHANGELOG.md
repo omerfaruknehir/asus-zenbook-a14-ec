@@ -23,3 +23,5 @@
 - Added `asus-a14-control ppd-bridge` management and automatic restoration of
   the distribution `power-profiles-daemon` when the fallback is disabled or
   the package is removed.
+- Documented the separate EC lifecycle and optional power-profile bridge units,
+  including their conflict and restoration behavior.
