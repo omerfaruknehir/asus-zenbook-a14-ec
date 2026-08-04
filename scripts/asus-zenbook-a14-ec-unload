@@ -1,0 +1,5 @@
+#!/bin/sh
+set -u
+# Removing the module calls its quiesce path: automatic fan mode, uncapped CPU,
+# cancelled safety work, and cleared EC compound-operation mailbox.
+modprobe -r asus_zenbook_a14_ec 2>/dev/null || true

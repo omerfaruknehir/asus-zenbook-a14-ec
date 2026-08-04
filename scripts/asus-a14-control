@@ -1,0 +1,108 @@
+#!/bin/sh
+set -eu
+
+find_hwmon() {
+  for d in /sys/class/hwmon/hwmon*; do
+    [ -r "$d/name" ] || continue
+    [ "$(cat "$d/name")" = "asus_zenbook_a14_ec" ] && { printf '%s\n' "$d"; return 0; }
+  done
+  return 1
+}
+
+profile_path=/sys/devices/platform/asus_zenbook_a14_ec/profile
+hwmon=$(find_hwmon 2>/dev/null || true)
+
+need_driver() {
+  [ -n "$hwmon" ] && [ -e "$profile_path" ] || {
+    echo "asus_zenbook_a14_ec is not loaded" >&2
+    exit 1
+  }
+}
+
+need_root() {
+  [ "$(id -u)" -eq 0 ] || {
+    echo "This command needs root. Run: sudo asus-a14-control $*" >&2
+    exit 1
+  }
+}
+
+show_status() {
+  need_driver
+  printf 'profile: %s\n' "$(cat "$profile_path")"
+  [ -r "$hwmon/temp1_input" ] && awk '{printf "EC temperature: %.1f C\n", $1/1000}' "$hwmon/temp1_input"
+  [ -r "$hwmon/fan1_input" ] && printf 'left fan: %s RPM (PWM %s)\n' "$(cat "$hwmon/fan1_input")" "$(cat "$hwmon/pwm1")"
+  [ -r "$hwmon/fan2_input" ] && printf 'right fan: %s RPM (PWM %s)\n' "$(cat "$hwmon/fan2_input")" "$(cat "$hwmon/pwm2")"
+  [ -r "$hwmon/pwm1_enable" ] && printf 'fan mode: %s\n' "$( [ "$(cat "$hwmon/pwm1_enable")" = 1 ] && echo manual || echo automatic )"
+  if [ -r /sys/class/leds/asus::kbd_backlight/brightness ]; then
+    printf 'keyboard backlight: %s/%s\n' \
+      "$(cat /sys/class/leds/asus::kbd_backlight/brightness)" \
+      "$(cat /sys/class/leds/asus::kbd_backlight/max_brightness)"
+  fi
+}
+
+usage() {
+  cat <<'USAGE'
+Usage:
+  asus-a14-control status
+  sudo asus-a14-control profile quiet|balanced|performance
+  sudo asus-a14-control auto
+  sudo asus-a14-control manual PWM
+  sudo asus-a14-control fan left|right PWM
+  sudo asus-a14-control backlight 0|1|2|3
+
+Manual PWM values are 75-255. A kernel safety monitor restores automatic
+fan control if temperatures become unsafe or temperature readings fail.
+USAGE
+}
+
+cmd=${1:-status}
+case "$cmd" in
+  status)
+    show_status
+    ;;
+  profile)
+    need_driver; need_root "$@"
+    case "${2:-}" in quiet|balanced|performance) printf '%s\n' "$2" >"$profile_path";; *) usage; exit 2;; esac
+    show_status
+    ;;
+  auto)
+    need_driver; need_root "$@"
+    printf '2\n' >"$hwmon/pwm1_enable"
+    show_status
+    ;;
+  manual)
+    need_driver; need_root "$@"
+    pwm=${2:-}
+    case "$pwm" in ''|*[!0-9]*) usage; exit 2;; esac
+    if [ "$pwm" -lt 75 ] || [ "$pwm" -gt 255 ]; then
+      echo "PWM must be 75-255" >&2; exit 2
+    fi
+    printf '1\n' >"$hwmon/pwm1_enable"
+    printf '%s\n' "$pwm" >"$hwmon/pwm1"
+    printf '%s\n' "$pwm" >"$hwmon/pwm2"
+    show_status
+    ;;
+  fan)
+    need_driver; need_root "$@"
+    side=${2:-}; pwm=${3:-}
+    case "$pwm" in ''|*[!0-9]*) usage; exit 2;; esac
+    if [ "$pwm" -lt 75 ] || [ "$pwm" -gt 255 ]; then
+      echo "PWM must be 75-255" >&2; exit 2
+    fi
+    printf '1\n' >"$hwmon/pwm1_enable"
+    case "$side" in left) printf '%s\n' "$pwm" >"$hwmon/pwm1";; right) printf '%s\n' "$pwm" >"$hwmon/pwm2";; *) usage; exit 2;; esac
+    show_status
+    ;;
+  backlight)
+    need_root "$@"
+    level=${2:-}
+    case "$level" in 0|1|2|3) printf '%s\n' "$level" >/sys/class/leds/asus::kbd_backlight/brightness;; *) usage; exit 2;; esac
+    ;;
+  -h|--help|help)
+    usage
+    ;;
+  *)
+    usage
+    exit 2
+    ;;
+esac
