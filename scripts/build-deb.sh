@@ -2,6 +2,8 @@
 set -eu
 
 repo=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+cd "$repo"
+python3 scripts/apply-hid-fnlock.py
 version=$(cat "$repo/VERSION")
 package=asus-zenbook-a14-ec-dkms
 work=$(mktemp -d)
@@ -20,6 +22,7 @@ install -m 0755 "$repo/scripts/asus-a14-control" "$root/usr/sbin/asus-a14-contro
 install -m 0755 "$repo/scripts/asus-zenbook-a14-ec-load" "$root/usr/libexec/asus-zenbook-a14-ec-load"
 install -m 0755 "$repo/scripts/asus-zenbook-a14-ec-unload" "$root/usr/libexec/asus-zenbook-a14-ec-unload"
 install -m 0755 "$repo/scripts/asus-zenbook-a14-ppd-bridge.py" "$root/usr/libexec/asus-zenbook-a14-ppd-bridge"
+install -m 0755 "$repo/scripts/asus-a14-hotkey-diagnostics" "$root/usr/libexec/asus-a14-hotkey-diagnostics"
 install -m 0644 "$repo/systemd/asus-zenbook-a14-ec.service" "$root/usr/lib/systemd/system/"
 install -m 0644 "$repo/systemd/asus-zenbook-a14-ppd-bridge.service" "$root/usr/lib/systemd/system/"
 install -m 0644 "$repo/modprobe.d/asus-zenbook-a14-ec.conf" "$root/etc/modprobe.d/"
@@ -55,7 +58,7 @@ Priority: optional
 Architecture: all
 Maintainer: Ömer Faruk Nehir <omerfaruknehir@gmail.com>
 Depends: dkms, kmod, systemd, build-essential, python3, python3-dbus, python3-gi
-Recommends: linux-headers-generic | linux-headers-arm64, power-profiles-daemon
+Recommends: power-profiles-daemon
 Installed-Size: $installed_size
 Homepage: https://github.com/omerfaruknehir/asus-zenbook-a14-ec
 Description: ASUS Zenbook A14 EC and keyboard drivers (DKMS)
