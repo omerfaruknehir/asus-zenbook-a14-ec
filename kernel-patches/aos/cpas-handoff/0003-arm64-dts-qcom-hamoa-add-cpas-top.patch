@@ -1,42 +1,71 @@
 From 0000000000000000000000000000000000000003 Mon Sep 17 00:00:00 2001
 From: Omer Faruk Nehir <omerfaruknehir@gmail.com>
 Date: Wed, 5 Aug 2026 06:02:00 +0300
-Subject: [PATCH 3/4] arm64: dts: qcom: hamoa: add CAMSS CPAS top resource
+Subject: [PATCH 3/4] arm64: dts: qcom: x1e80100-zenbook-a14: add CPAS top
+ resource
 
-The X1E80100 camera-platform resource at 0x0ac19000 is described by the
-firmware CAMP device and is used for the AP/AON camera ownership mux.  Add the
-window to CAMSS so the media driver can perform a powered, clocked handoff.
+Ubuntu's camera-enabled X1E80100 tree already provides the CAMSS node and A14
+camera endpoints.  Override its resource list in a machine include to append
+the camera-platform/CPAS-top window described by the firmware CAMP device.
 
-The resource matches the Windows/ACPI range 0x0ac19000 + 0x0c000.  The mux
-register used by the A14 is at offset 0x1e0 inside this window.
+Keeping the machine addition separate avoids duplicating or modifying unrelated
+camera endpoint data carried by the Ubuntu kernel tree.
 
 Signed-off-by: Omer Faruk Nehir <omerfaruknehir@gmail.com>
 ---
- arch/arm64/boot/dts/qcom/hamoa.dtsi | 6 ++++--
- 1 file changed, 4 insertions(+), 2 deletions(-)
+ .../boot/dts/qcom/x1e80100-asus-zenbook-a14-aos.dtsi | 30 ++++++++++++++++++++
+ .../boot/dts/qcom/x1e80100-asus-zenbook-a14.dts      |  1 +
+ 2 files changed, 31 insertions(+)
+ create mode 100644 arch/arm64/boot/dts/qcom/x1e80100-asus-zenbook-a14-aos.dtsi
 
-diff --git a/arch/arm64/boot/dts/qcom/hamoa.dtsi b/arch/arm64/boot/dts/qcom/hamoa.dtsi
-index 000000000000..000000000001 100644
---- a/arch/arm64/boot/dts/qcom/hamoa.dtsi
-+++ b/arch/arm64/boot/dts/qcom/hamoa.dtsi
-@@ -1,3 +1,4 @@
-+/* This hunk is expected in Ubuntu's X1E camera-enabled hamoa.dtsi. */
-@@ -0000,8 +0001,9 @@ camss: isp@acb7000 {
- 		      <0 0x0ac62000 0 0x4000>,
- 		      <0 0x0ac71000 0 0x4000>,
- 		      <0 0x0acc7000 0 0x2000>,
--		      <0 0x0accb000 0 0x2000>;
-+		      <0 0x0accb000 0 0x2000>,
-+		      <0 0x0ac19000 0 0xc000>;
+diff --git a/arch/arm64/boot/dts/qcom/x1e80100-asus-zenbook-a14.dts b/arch/arm64/boot/dts/qcom/x1e80100-asus-zenbook-a14.dts
+index b42318c75ed2..000000000001 100644
+--- a/arch/arm64/boot/dts/qcom/x1e80100-asus-zenbook-a14.dts
++++ b/arch/arm64/boot/dts/qcom/x1e80100-asus-zenbook-a14.dts
+@@ -8,6 +8,7 @@
  
- 	reg-names = "csid0", "csid1", "csid2",
- 		    "csid_lite0", "csid_lite1", "csid_wrapper",
-@@ -0010,7 +0012,7 @@ camss: isp@acb7000 {
- 		    "csitpg0", "csitpg1", "csitpg2",
- 		    "vfe0", "vfe1",
--		    "vfe_lite0", "vfe_lite1";
+ #include "hamoa.dtsi"
+ #include "x1-asus-zenbook-a14.dtsi"
++#include "x1e80100-asus-zenbook-a14-aos.dtsi"
+ 
+ / {
+ 	model = "ASUS Zenbook A14 (UX3407RA)";
+diff --git a/arch/arm64/boot/dts/qcom/x1e80100-asus-zenbook-a14-aos.dtsi b/arch/arm64/boot/dts/qcom/x1e80100-asus-zenbook-a14-aos.dtsi
+new file mode 100644
+index 000000000000..000000000002
+--- /dev/null
++++ b/arch/arm64/boot/dts/qcom/x1e80100-asus-zenbook-a14-aos.dtsi
+@@ -0,0 +1,30 @@
++// SPDX-License-Identifier: BSD-3-Clause
++
++/*
++ * The final resource is the CAMP/QCOM0C32 camera-platform window recovered
++ * from the UX3407RA firmware.  Ubuntu's camera-enabled Hamoa tree already
++ * defines &camss and the first 17 resources.
++ */
++&camss {
++	reg = <0 0x0acb7000 0 0x2000>,
++	      <0 0x0acb9000 0 0x2000>,
++	      <0 0x0acbb000 0 0x2000>,
++	      <0 0x0acc6000 0 0x1000>,
++	      <0 0x0acca000 0 0x1000>,
++	      <0 0x0acb6000 0 0x1000>,
++	      <0 0x0ace4000 0 0x1000>,
++	      <0 0x0ace6000 0 0x1000>,
++	      <0 0x0ace8000 0 0x1000>,
++	      <0 0x0acec000 0 0x4000>,
++	      <0 0x0acf6000 0 0x1000>,
++	      <0 0x0acf7000 0 0x1000>,
++	      <0 0x0acf8000 0 0x1000>,
++	      <0 0x0ac62000 0 0x4000>,
++	      <0 0x0ac71000 0 0x4000>,
++	      <0 0x0acc7000 0 0x2000>,
++	      <0 0x0accb000 0 0x2000>,
++	      <0 0x0ac19000 0 0xc000>;
++	reg-names = "csid0", "csid1", "csid2", "csid_lite0", "csid_lite1",
++		    "csid_wrapper", "csiphy0", "csiphy1", "csiphy2", "csiphy4",
++		    "csitpg0", "csitpg1", "csitpg2", "vfe0", "vfe1",
 +		    "vfe_lite0", "vfe_lite1", "cpas-top";
- 
- 	clocks = <&camcc CAM_CC_CAMNOC_AXI_NRT_CLK>,
++};
 -- 
 2.51.0
