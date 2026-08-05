@@ -1,26 +1,26 @@
 From 0000000000000000000000000000000000000002 Mon Sep 17 00:00:00 2001
 From: Omer Faruk Nehir <omerfaruknehir@gmail.com>
 Date: Wed, 5 Aug 2026 06:01:00 +0300
-Subject: [PATCH 2/4] media: qcom: camss: add AON camera ownership handoff
+Subject: [PATCH 2/3] media: qcom: camss: add AON camera ownership handoff
 
 X1E80100 has a camera-platform mux in CPAS top which must be switched before
-SSC can acquire the always-on OV02C10 path.  Add a CAMSS-owned provider API so
+SSC can acquire the always-on OV02C10 path. Add a CAMSS-owned provider API so
 sensor consumers do not map or write the register themselves.
 
 Keep the Titan-top runtime-PM vote and the two CPAS AHB clocks active for the
-complete AON ownership interval.  Track prepared AP pipelines and reject either
+complete AON ownership interval. Track prepared AP pipelines and reject either
 side when the other already owns the path.
 
 The resource is optional at probe time so a new kernel remains compatible with
-an older DTB.  Only the AON provider is unavailable in that case.
+an older DTB. Only the AON provider is unavailable in that case.
 
 Signed-off-by: Omer Faruk Nehir <omerfaruknehir@gmail.com>
 ---
- drivers/media/platform/qcom/camss/camss-video.c | 13 ++++
- drivers/media/platform/qcom/camss/camss.c       | 96 +++++++++++++++++++++++++
- drivers/media/platform/qcom/camss/camss.h       | 12 ++++
- include/media/qcom_camss.h                      | 28 ++++++++
- 4 files changed, 149 insertions(+)
+ drivers/media/platform/qcom/camss/camss-video.c |   7 ++
+ drivers/media/platform/qcom/camss/camss.c       | 138 ++++++++++++++++++++++++
+ drivers/media/platform/qcom/camss/camss.h       |  10 ++
+ include/media/qcom_camss.h                      |  25 +++++
+ 4 files changed, 180 insertions(+)
  create mode 100644 include/media/qcom_camss.h
 
 diff --git a/include/media/qcom_camss.h b/include/media/qcom_camss.h
@@ -28,7 +28,7 @@ new file mode 100644
 index 000000000000..000000000001
 --- /dev/null
 +++ b/include/media/qcom_camss.h
-@@ -0,0 +1,28 @@
+@@ -0,0 +1,25 @@
 +/* SPDX-License-Identifier: GPL-2.0 */
 +#ifndef __MEDIA_QCOM_CAMSS_H__
 +#define __MEDIA_QCOM_CAMSS_H__
@@ -68,7 +68,7 @@ index 93d691c8ac63..000000000002 100644
  #include <linux/types.h>
  #include <media/v4l2-async.h>
  #include <media/v4l2-device.h>
-@@ -132,6 +134,13 @@ struct camss {
+@@ -132,4 +134,10 @@ struct camss {
  	struct device_link *genpd_link;
  	struct icc_path *icc_path[ICC_SM8250_COUNT];
  	const struct camss_resources *res;
@@ -79,7 +79,7 @@ index 93d691c8ac63..000000000002 100644
 +	unsigned int ap_streams;
 +	bool aon_owned;
  };
-@@ -180,6 +189,9 @@ int camss_vfe_get(struct camss *camss, int id);
+@@ -180,5 +189,7 @@ int camss_vfe_get(struct camss *camss, int id);
  void camss_vfe_put(struct camss *camss, int id);
  void camss_delete(struct camss *camss);
 +int camss_ap_stream_get(struct camss *camss);
@@ -108,7 +108,7 @@ index 2123f6388e3d..000000000003 100644
  
  #include "camss.h"
  
-@@ -31,6 +33,11 @@
+@@ -31,6 +33,123 @@
  #define CAMSS_CLOCK_MARGIN_NUMERATOR 105
  #define CAMSS_CLOCK_MARGIN_DENOMINATOR 100
  
@@ -232,7 +232,7 @@ index 2123f6388e3d..000000000003 100644
 +EXPORT_SYMBOL_GPL(qcom_camss_aon_release);
  
  static const struct camss_subdev_resources csiphy_res_8x16[] = {
-@@ -5320,6 +5417,7 @@ static int camss_probe(struct platform_device *pdev)
+@@ -5320,5 +5417,22 @@ static int camss_probe(struct platform_device *pdev)
  	atomic_set(&camss->ref_count, 0);
  	camss->dev = dev;
 +	mutex_init(&camss->aon_lock);
@@ -269,7 +269,7 @@ diff --git a/drivers/media/platform/qcom/camss/camss-video.c b/drivers/media/pla
 index 0852eb6f1315..000000000004 100644
 --- a/drivers/media/platform/qcom/camss/camss-video.c
 +++ b/drivers/media/platform/qcom/camss/camss-video.c
-@@ -217,11 +217,20 @@ static int video_prepare_streaming(struct vb2_queue *q)
+@@ -217,10 +217,15 @@ static int video_prepare_streaming(struct vb2_queue *q)
  	struct video_device *vdev = &video->vdev;
  	int ret;
  
