@@ -17,20 +17,23 @@ fail() {
 case "$stage" in
     1) stage_name=runtime-pm ;;
     2) stage_name=cpas-clocks ;;
-    3) stage_name=cpas-read ;;
-    4) stage_name=write-current ;;
-    5)
-        stage_name=aon-switch-restore
+    3)
+        stage_name=ap-write-no-read
+        [ "$confirm" = --confirm-mmio-write ] || \
+            fail "stage 3 requires the explicit second argument --confirm-mmio-write"
+        ;;
+    4)
+        stage_name=aon-switch-restore-no-read
         [ "$confirm" = --confirm-aon-switch ] || \
-            fail "stage 5 requires the explicit second argument --confirm-aon-switch"
+            fail "stage 4 requires the explicit second argument --confirm-aon-switch"
         ;;
     *)
-        echo "Usage: $0 {1|2|3|4|5} [--confirm-aon-switch]" >&2
+        echo "Usage: $0 {1|2|3|4} [--confirm-mmio-write|--confirm-aon-switch]" >&2
         exit 2
         ;;
 esac
 
-for tool in cam cat date find fuser journalctl lsmod readlink sleep sudo sync systemctl timeout; do
+for tool in cam cat date fuser journalctl lsmod readlink sleep sudo sync systemctl timeout; do
     command -v "$tool" >/dev/null 2>&1 || fail "required command is missing: $tool"
 done
 
@@ -88,6 +91,7 @@ boot_id=$boot_id
 started=$started
 status=started
 ssc_contacted=false
+aon_mux_read=false
 EOF
 sync "$marker"
 sync
@@ -102,6 +106,7 @@ printf 'kernel_release=%s\n' "$release"
 printf 'boot_id=%s\n' "$boot_id"
 printf 'sysfs_attribute=%s\n' "$attr"
 printf 'ssc_loaded=false\n'
+printf 'aon_mux_read=false\n'
 printf 'camera_nodes=free\n'
 printf 'marker=%s\n' "$marker"
 
@@ -120,6 +125,7 @@ fi
 printf '\n%s\n' '===== EXECUTE ONE DIAGNOSTIC STAGE ====='
 printf 'stage_started_at=%s\n' "$started"
 printf 'sysfs_write=%s\n' "$stage"
+printf 'aon_mux_read=false\n'
 
 set +e
 sudo sh -c 'printf "%s\n" "$1" > "$2"' sh "$stage" "$attr"
@@ -136,6 +142,7 @@ completed=$completed
 status=returned
 return_status=$stage_status
 ssc_contacted=false
+aon_mux_read=false
 EOF
 sync "$marker"
 
