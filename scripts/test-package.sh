@@ -10,10 +10,16 @@ python3 -m py_compile \
   scripts/asus-zenbook-a14-ppd-bridge.py \
   desktop/resources/apply-a14-cpu-info.py \
   desktop/resources/repair-a14-cpu-info.py \
+  desktop/resources/repair-a14-cpu-topology.py \
+  desktop/resources/repair-a14-gpu-metrics.py \
   desktop/resources/test-patcher.py \
-  desktop/resources/test-repair.py
+  desktop/resources/test-repair.py \
+  desktop/resources/test-topology-repair.py \
+  desktop/resources/test-gpu-metrics-repair.py
 python3 desktop/resources/test-patcher.py
 python3 desktop/resources/test-repair.py
+python3 desktop/resources/test-topology-repair.py
+python3 desktop/resources/test-gpu-metrics-repair.py
 version=$(cat VERSION)
 grep -q "PACKAGE_VERSION=\"$version\"" dkms.conf
 test -s AOS-KERNEL-BRINGUP.md
@@ -25,6 +31,8 @@ test -s desktop/README.md
 test -s desktop/resources/README.md
 test -s desktop/resources/apply-a14-cpu-info.py
 test -s desktop/resources/repair-a14-cpu-info.py
+test -s desktop/resources/repair-a14-cpu-topology.py
+test -s desktop/resources/repair-a14-gpu-metrics.py
 test -s desktop/resources/apply-a14-cpu-info-safe.sh
 test -s kernel/aos/qcom_ssc_hpd.c
 test -s kernel/aos/qcom_ssc_hpd_protocol.c
@@ -38,10 +46,14 @@ grep -q 'qmi_add_lookup' kernel/aos/qcom_ssc_hpd.c
 grep -q 'IIO_PROXIMITY' kernel/aos/qcom_ssc_hpd.c
 grep -q 'qmi_txn_init() returns a non-negative transaction ID' kernel/aos/qcom_ssc_hpd_transport.c
 grep -A3 'ret = qmi_txn_init' kernel/aos/qcom_ssc_hpd_transport.c | grep -q 'if (ret < 0)'
+grep -q 'qmi_txn_wait() returns a negative errno on failure' kernel/aos/qcom_ssc_hpd_transport.c
+grep -A3 'ret = qmi_txn_wait' kernel/aos/qcom_ssc_hpd_transport.c | grep -q 'if (ret < 0)'
 grep -q 'A14_RESOURCES_CPU_INFO_V1' desktop/resources/apply-a14-cpu-info.py
 grep -q '/sys/devices/system/cpu/online' desktop/resources/apply-a14-cpu-info.py
 grep -q 'qcom,x1e80100' desktop/resources/apply-a14-cpu-info.py
 grep -q '#\[template_child\]' desktop/resources/repair-a14-cpu-info.py
+grep -q 'thread_siblings_list' desktop/resources/repair-a14-cpu-topology.py
+grep -q 'Unsupported video-engine usage will now be N/A' desktop/resources/repair-a14-gpu-metrics.py
 if [ -e "/lib/modules/$(uname -r)/build/Makefile" ]; then
   kdir="/lib/modules/$(uname -r)/build"
   make clean >/dev/null 2>&1 || true
