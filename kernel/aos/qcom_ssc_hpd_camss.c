@@ -2,6 +2,7 @@
 #include <linux/device.h>
 #include <linux/errno.h>
 #include <linux/of.h>
+#include <linux/of_platform.h>
 #include <linux/platform_device.h>
 
 #include "qcom_ssc_hpd_internal.h"
@@ -93,19 +94,23 @@ void a14_ssc_camss_release(struct a14_ssc_hpd *hpd)
 #else
 int a14_ssc_camss_init(struct a14_ssc_hpd *hpd)
 {
+	(void)hpd;
 	return 0;
 }
 
 void a14_ssc_camss_cleanup(struct a14_ssc_hpd *hpd)
 {
+	(void)hpd;
 }
 
 int a14_ssc_camss_acquire(struct a14_ssc_hpd *hpd)
 {
+	(void)hpd;
 	return 0;
 }
 
 void a14_ssc_camss_release(struct a14_ssc_hpd *hpd)
 {
+	(void)hpd;
 }
 #endif
