@@ -60,8 +60,12 @@ grep -q 'elem_len = (u32)len' kernel/aos/qcom_ssc_hpd_transport.c
 grep -A5 'elem_len = (u32)len' kernel/aos/qcom_ssc_hpd_transport.c | grep -q 'array_type = STATIC_ARRAY'
 grep -q 'No `QMI_DATA_LEN` element is used for control requests' kernel/aos/PROTOCOL.md
 send_control_body=$(sed -n '/^static int send_control/,/^static void report_cb/p' kernel/aos/qcom_ssc_hpd_transport.c)
-if printf '%s\n' "$send_control_body" | grep -q 'VAR_LEN_ARRAY'; then
+if printf '%s\n' "$send_control_body" | grep -Eq '^[[:space:]]*\.array_type = VAR_LEN_ARRAY'; then
   echo "SSC control request must not use a QMI variable-array length prefix" >&2
+  exit 1
+fi
+if printf '%s\n' "$send_control_body" | grep -Eq '^[[:space:]]*\.data_type = QMI_DATA_LEN'; then
+  echo "SSC control request must not encode another array length" >&2
   exit 1
 fi
 if [ -e "/lib/modules/$(uname -r)/build/Makefile" ]; then
