@@ -30,8 +30,8 @@ done
 [ -s "$stage/qcom-camss.ko" ] || fail "staged CAMSS module is missing"
 [ -s "$stage/qcom_ssc_hpd.ko" ] || fail "staged SSC module is missing"
 [ -s "$stage/SHA256SUMS" ] || fail "staged SHA256SUMS is missing"
-[ -r "/boot/vmlinuz-$release" ] || fail "kernel image is missing"
-[ -r "/boot/initrd.img-$release" ] || fail "stock initramfs is missing"
+[ -e "/boot/vmlinuz-$release" ] || fail "kernel image was not found: /boot/vmlinuz-$release"
+[ -e "/boot/initrd.img-$release" ] || fail "stock initramfs was not found: /boot/initrd.img-$release"
 [ -d /etc/initramfs-tools ] || fail "initramfs-tools configuration is missing"
 [ -r /usr/share/initramfs-tools/hook-functions ] || \
     fail "initramfs-tools hook-functions is missing"
