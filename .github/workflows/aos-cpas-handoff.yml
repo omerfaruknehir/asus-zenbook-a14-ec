@@ -31,13 +31,16 @@ jobs:
         run: |
           set -euo pipefail
           python3 kernel-patches/aos/cpas-handoff/normalize-patch.py --check \
-            kernel-patches/aos/cpas-handoff/0*.patch
+            kernel-patches/aos/cpas-handoff/0*.patch \
+            kernel-patches/aos/diagnostics/0*.patch
 
       - name: Upload validated patch series
         uses: actions/upload-artifact@v4
         with:
           name: validated-aos-cpas-patches
-          path: kernel-patches/aos/cpas-handoff/0*.patch
+          path: |
+            kernel-patches/aos/cpas-handoff/0*.patch
+            kernel-patches/aos/diagnostics/0*.patch
           if-no-files-found: error
 
       - name: Validate patch-series structure
@@ -57,12 +60,20 @@ jobs:
           test -s scripts/a14-aos-stage-diag-install-test.sh
           test -s scripts/a14-aos-stage-diag-run.sh
           test -s kernel-patches/aos/diagnostics/0001-media-qcom-camss-add-aon-stage-probe.patch
+          test -s kernel-patches/aos/diagnostics/0002-media-qcom-camss-replace-fatal-reads-with-write-only-probes.patch
+          test -s kernel-patches/aos/cpas-handoff/0004-media-qcom-camss-treat-aon-mux-as-write-only.patch
           grep -q '0x0ac19000' kernel-patches/aos/cpas-handoff/0003-*.patch
           grep -q 'X1E_CPAS_AON_CAM_SEL_AON.*0x101' kernel-patches/aos/cpas-handoff/0002-*.patch
           grep -q 'camss_ap_stream_get' kernel-patches/aos/cpas-handoff/0002-*.patch
-          grep -q 'AON-DIAG stage=5 AON switch begin' \
-            kernel-patches/aos/diagnostics/0001-*.patch
-          grep -q 'stage 5 requires the explicit second argument' \
+          grep -q 'This register is write-only on the A14' \
+            kernel-patches/aos/cpas-handoff/0004-*.patch
+          grep -q 'AON-DIAG stage=3 AP write issued' \
+            kernel-patches/aos/diagnostics/0002-*.patch
+          grep -q 'AON-DIAG stage=4 AP restore issued' \
+            kernel-patches/aos/diagnostics/0002-*.patch
+          grep -q 'stage 3 requires the explicit second argument --confirm-mmio-write' \
+            scripts/a14-aos-stage-diag-run.sh
+          grep -q 'stage 4 requires the explicit second argument --confirm-aon-switch' \
             scripts/a14-aos-stage-diag-run.sh
           grep -q 'a14_ssc_camss_acquire' kernel/aos/qcom_ssc_hpd_transport.c
           grep -q 'AOS_CAMSS_HANDOFF' kernel/aos/Makefile
@@ -77,12 +88,10 @@ jobs:
             echo 'SSC consumer must not map the physical CPAS address' >&2
             exit 1
           fi
-          for patch in kernel-patches/aos/cpas-handoff/0*.patch; do
+          for patch in kernel-patches/aos/cpas-handoff/0*.patch \
+                       kernel-patches/aos/diagnostics/0*.patch; do
             git apply --numstat "$patch" >/dev/null
           done
-          git apply --numstat \
-            kernel-patches/aos/diagnostics/0001-media-qcom-camss-add-aon-stage-probe.patch \
-            >/dev/null
 
       - name: Check patches against Linux master
         shell: bash
@@ -99,11 +108,21 @@ jobs:
             git -C linux apply --check "$patch"
             git -C linux apply "$patch"
           done
-          diag="$GITHUB_WORKSPACE/kernel-patches/aos/diagnostics/0001-media-qcom-camss-add-aon-stage-probe.patch"
-          git -C linux apply --check "$diag"
-          git -C linux apply "$diag"
-          grep -q 'aon_diag_stage' \
-            linux/drivers/media/platform/qcom/camss/camss.c
+          for patch in "$GITHUB_WORKSPACE"/kernel-patches/aos/diagnostics/0*.patch; do
+            git -C linux apply --check "$patch"
+            git -C linux apply "$patch"
+          done
+          camss=linux/drivers/media/platform/qcom/camss/camss.c
+          grep -q 'aon_diag_stage' "$camss"
+          grep -q 'AON-DIAG stage=3 AP write issued' "$camss"
+          grep -q 'AON-DIAG stage=4 AP restore issued' "$camss"
+          if grep -q 'failed to select AON camera path' "$camss" || \
+             grep -q 'failed to restore AP camera path' "$camss" || \
+             grep -q 'initial read=%#x' "$camss" || \
+             grep -q 'readback=%#x' "$camss"; then
+            echo 'Fatal AON mux readback code remains after patching' >&2
+            exit 1
+          fi
 
       - name: Install kernel headers
         run: |
