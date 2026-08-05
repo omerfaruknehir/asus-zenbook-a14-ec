@@ -7,6 +7,7 @@ all modules:
 
 clean:
 	$(MAKE) -C $(KDIR) M=$(PWD) clean
+	$(MAKE) -C kernel/aos clean KDIR=$(KDIR) >/dev/null 2>&1 || true
 	rm -rf dist
 
 load-hid:
@@ -29,6 +30,12 @@ deb:
 aos-probe:
 	sudo ./scripts/a14-aos-kernel-probe.sh
 
+aos-module:
+	$(MAKE) -C kernel/aos KDIR=$(KDIR) W=1
+
+aos-module-clean:
+	$(MAKE) -C kernel/aos KDIR=$(KDIR) clean
+
 aos-firmware-verify:
 	@test -n "$(DIR)" || { echo "Usage: make aos-firmware-verify DIR=/path/to/extracted/files" >&2; exit 2; }
 	./scripts/verify-a14-aos-firmware.sh "$(DIR)"
@@ -36,4 +43,4 @@ aos-firmware-verify:
 dmesg:
 	dmesg --ctime | grep -E 'asus_zenbook_a14_ec|hid_asus_zenbook_a14_ec|asus::kbd_backlight' | tail -n 80
 
-.PHONY: all modules clean load-hid load-ec unload-ec reload-ec install-deb deb aos-probe aos-firmware-verify dmesg
+.PHONY: all modules clean load-hid load-ec unload-ec reload-ec install-deb deb aos-probe aos-module aos-module-clean aos-firmware-verify dmesg

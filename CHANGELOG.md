@@ -6,6 +6,16 @@
   device-tree, firmware and standard sensor-subsystem support.
 - Added a read-only Linux probe covering OV02C10/CAMSS, ADSP remoteproc,
   QRTR/QMI/RPMSG, device tree, firmware hashes, media topology and IIO state.
+- Corrected numeric device-tree decoding, removed an unsupported QRTR `ss`
+  query, narrowed firmware enumeration, and added kernel-source/DTB provenance.
+- Added a manually built, non-packaged kernel development module that binds to
+  SSC QMI service 400 through the in-kernel QRTR/QMI framework.
+- Added runtime SUID discovery for camera handshake, human-presence detection
+  and camera face detection, plus an IIO proximity/change-event frontend.
+- Added machine-confirmed camera handshake 576/ACK 832 and HPD 512/event 928
+  protocol handling with service-loss cleanup and endpoint rediscovery.
+- Kept the SSC driver entirely outside the EC DKMS/DEB package, systemd units
+  and automatic module-loading paths.
 - Added provenance and known-good hashes for the machine-matched QSH camera,
   OV02C10 and HM1092 firmware/configuration files without redistributing them.
 - Documented the planned upstream patch split and acceptance criteria.
