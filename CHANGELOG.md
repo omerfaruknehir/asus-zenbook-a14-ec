@@ -16,6 +16,9 @@
   protocol handling with service-loss cleanup and endpoint rediscovery.
 - Kept the SSC driver entirely outside the EC DKMS/DEB package, systemd units
   and automatic module-loading paths.
+- Added a separate source patcher for GNOME Resources that corrects Snapdragon
+  CPU identity, online topology, socket/core counts and cpufreq reporting using
+  standard device-tree and sysfs interfaces without a runtime helper.
 - Added provenance and known-good hashes for the machine-matched QSH camera,
   OV02C10 and HM1092 firmware/configuration files without redistributing them.
 - Documented the planned upstream patch split and acceptance criteria.
