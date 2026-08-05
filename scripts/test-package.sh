@@ -68,6 +68,18 @@ if printf '%s\n' "$send_control_body" | grep -Eq '^[[:space:]]*\.data_type = QMI
   echo "SSC control request must not encode another array length" >&2
   exit 1
 fi
+# Failed camera acquisition must not require a later disable write or reboot.
+grep -q 'presence activation failed: %d; recycling SSC client' kernel/aos/qcom_ssc_hpd.c
+grep -A12 'ret = a14_ssc_enable_hpd' kernel/aos/qcom_ssc_hpd.c | grep -q 'disconnect_client(hpd)'
+grep -A14 'ret = a14_ssc_enable_hpd' kernel/aos/qcom_ssc_hpd.c | grep -q 'reconnect_client_if_possible(hpd)'
+# Quiesce before suspend/unload and restart service discovery after resume.
+grep -q 'DEFINE_SIMPLE_DEV_PM_OPS' kernel/aos/qcom_ssc_hpd.c
+grep -q 'suspend: SSC client quiesced' kernel/aos/qcom_ssc_hpd.c
+grep -q 'resume: SSC rediscovery scheduled' kernel/aos/qcom_ssc_hpd.c
+grep -q '\.pm = pm_sleep_ptr' kernel/aos/qcom_ssc_hpd.c
+grep -q 'A14_SSC_MSG_HANDSHAKE_RELEASE.*577' kernel/aos/qcom_ssc_hpd_internal.h
+grep -q 'A14_SSC_MSG_HANDSHAKE_REVOKE.*579' kernel/aos/qcom_ssc_hpd_internal.h
+grep -q 'failed activation tears down that client immediately' kernel/aos/PROTOCOL.md
 if [ -e "/lib/modules/$(uname -r)/build/Makefile" ]; then
   kdir="/lib/modules/$(uname -r)/build"
   make clean >/dev/null 2>&1 || true

@@ -12,6 +12,7 @@
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/platform_device.h>
+#include <linux/pm.h>
 #include <linux/version.h>
 #include <linux/workqueue.h>
 
@@ -24,6 +25,19 @@ typedef int a14_iio_event_state_t;
 #endif
 
 static void disconnect_client(struct a14_ssc_hpd *hpd);
+
+static void reconnect_client_if_possible(struct a14_ssc_hpd *hpd)
+{
+	bool reconnect;
+
+	mutex_lock(&hpd->lock);
+	reconnect = hpd->service_present && !hpd->suspended &&
+		    !hpd->shutting_down;
+	mutex_unlock(&hpd->lock);
+
+	if (reconnect)
+		queue_work(hpd->wq, &hpd->connect_work);
+}
 
 static int hpd_read_raw(struct iio_dev *indio_dev,
 			const struct iio_chan_spec *chan,
@@ -65,19 +79,29 @@ static int hpd_write_event_config(struct iio_dev *indio_dev,
 				  a14_iio_event_state_t state)
 {
 	struct a14_ssc_hpd *hpd = iio_priv(indio_dev);
-	bool reconnect;
+	int ret;
 
-	if (state)
-		return a14_ssc_enable_hpd(hpd);
+	if (state) {
+		ret = a14_ssc_enable_hpd(hpd);
+		if (!ret)
+			return 0;
+
+		/* A failed handshake can leave firmware-side request state tied to
+		 * this SSC client ID. Release the complete client immediately and
+		 * rediscover through a fresh client instead of requiring a later
+		 * disable write, module reload, suspend cycle or reboot. */
+		dev_warn(hpd->dev,
+			 "presence activation failed: %d; recycling SSC client\n",
+			 ret);
+		disconnect_client(hpd);
+		reconnect_client_if_possible(hpd);
+		return ret;
+	}
 
 	/* QMI-client teardown removes every SSC request owned by this client.
 	 * Reconnect afterwards for a clean, idle service-discovery state. */
 	disconnect_client(hpd);
-	mutex_lock(&hpd->lock);
-	reconnect = hpd->service_present;
-	mutex_unlock(&hpd->lock);
-	if (reconnect)
-		queue_work(hpd->wq, &hpd->connect_work);
+	reconnect_client_if_possible(hpd);
 
 	return 0;
 }
@@ -107,20 +131,23 @@ static const struct iio_chan_spec hpd_channels[] = {
 
 static void disconnect_client(struct a14_ssc_hpd *hpd)
 {
+	bool release;
+
 	mutex_lock(&hpd->op_lock);
 	mutex_lock(&hpd->lock);
-	if (!hpd->client_initialized) {
-		hpd->connected = false;
-		mutex_unlock(&hpd->lock);
-		mutex_unlock(&hpd->op_lock);
-		return;
-	}
+	release = hpd->client_initialized;
 	hpd->connected = false;
 	hpd->event_enabled = false;
 	hpd->presence_valid = false;
 	hpd->client_initialized = false;
+	hpd->handshake_error = -ENOTCONN;
+	hpd->handshake_suid = (struct a14_ssc_suid){};
+	hpd->hpd_suid = (struct a14_ssc_suid){};
+	hpd->face_suid = (struct a14_ssc_suid){};
 	mutex_unlock(&hpd->lock);
-	qmi_handle_release(&hpd->client);
+
+	if (release)
+		qmi_handle_release(&hpd->client);
 	mutex_unlock(&hpd->op_lock);
 }
 
@@ -142,7 +169,8 @@ static void connect_work_fn(struct work_struct *work)
 
 	mutex_lock(&hpd->op_lock);
 	mutex_lock(&hpd->lock);
-	if (!hpd->service_present || hpd->client_initialized) {
+	if (!hpd->service_present || hpd->client_initialized ||
+	    hpd->suspended || hpd->shutting_down) {
 		mutex_unlock(&hpd->lock);
 		mutex_unlock(&hpd->op_lock);
 		return;
@@ -199,28 +227,34 @@ static int new_server(struct qmi_handle *qmi, struct qmi_service *service)
 {
 	struct a14_ssc_hpd *hpd = container_of(qmi, struct a14_ssc_hpd,
 						lookup);
+	bool connect;
 
 	mutex_lock(&hpd->lock);
 	hpd->service_addr.sq_family = AF_QIPCRTR;
 	hpd->service_addr.sq_node = service->node;
 	hpd->service_addr.sq_port = service->port;
 	hpd->service_present = true;
+	connect = !hpd->suspended && !hpd->shutting_down;
 	mutex_unlock(&hpd->lock);
 	service->priv = hpd;
-	queue_work(hpd->wq, &hpd->connect_work);
+	if (connect)
+		queue_work(hpd->wq, &hpd->connect_work);
 	return 0;
 }
 
 static void del_server(struct qmi_handle *qmi, struct qmi_service *service)
 {
 	struct a14_ssc_hpd *hpd = service->priv;
+	bool disconnect;
 
 	if (!hpd)
 		return;
 	mutex_lock(&hpd->lock);
 	hpd->service_present = false;
+	disconnect = !hpd->suspended && !hpd->shutting_down;
 	mutex_unlock(&hpd->lock);
-	queue_work(hpd->wq, &hpd->disconnect_work);
+	if (disconnect)
+		queue_work(hpd->wq, &hpd->disconnect_work);
 }
 
 static const struct qmi_ops lookup_ops = {
@@ -285,12 +319,53 @@ err_destroy_wq:
 	return ret;
 }
 
+static int a14_ssc_hpd_suspend(struct device *dev)
+{
+	struct a14_ssc_hpd *hpd = dev_get_drvdata(dev);
+
+	if (!hpd)
+		return 0;
+
+	mutex_lock(&hpd->lock);
+	hpd->suspended = true;
+	mutex_unlock(&hpd->lock);
+	cancel_work_sync(&hpd->connect_work);
+	cancel_work_sync(&hpd->disconnect_work);
+	disconnect_client(hpd);
+	dev_info(dev, "suspend: SSC client quiesced\n");
+	return 0;
+}
+
+static int a14_ssc_hpd_resume(struct device *dev)
+{
+	struct a14_ssc_hpd *hpd = dev_get_drvdata(dev);
+
+	if (!hpd)
+		return 0;
+
+	mutex_lock(&hpd->lock);
+	hpd->suspended = false;
+	mutex_unlock(&hpd->lock);
+	reconnect_client_if_possible(hpd);
+	dev_info(dev, "resume: SSC rediscovery scheduled\n");
+	return 0;
+}
+
+static DEFINE_SIMPLE_DEV_PM_OPS(a14_ssc_hpd_pm_ops,
+					a14_ssc_hpd_suspend,
+					a14_ssc_hpd_resume);
+
 static void a14_ssc_hpd_remove(struct platform_device *pdev)
 {
 	struct a14_ssc_hpd *hpd = platform_get_drvdata(pdev);
 
+	mutex_lock(&hpd->lock);
+	hpd->shutting_down = true;
+	hpd->suspended = true;
+	mutex_unlock(&hpd->lock);
 	qmi_handle_release(&hpd->lookup);
-	flush_workqueue(hpd->wq);
+	cancel_work_sync(&hpd->connect_work);
+	cancel_work_sync(&hpd->disconnect_work);
 	disconnect_client(hpd);
 	destroy_workqueue(hpd->wq);
 }
@@ -300,6 +375,7 @@ static struct platform_driver a14_ssc_hpd_driver = {
 	.remove = a14_ssc_hpd_remove,
 	.driver = {
 		.name = "qcom-ssc-hpd-a14",
+		.pm = pm_sleep_ptr(&a14_ssc_hpd_pm_ops),
 	},
 };
 

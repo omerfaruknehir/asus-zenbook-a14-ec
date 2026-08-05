@@ -22,6 +22,10 @@
 #define A14_SSC_MSG_ERROR_EVENT         130
 #define A14_SSC_MSG_HANDSHAKE_INIT      576
 #define A14_SSC_MSG_HANDSHAKE_ACK       832
+#define A14_SSC_MSG_HANDSHAKE_RELEASE   577
+#define A14_SSC_MSG_HANDSHAKE_RELEASE_ACK 833
+#define A14_SSC_MSG_HANDSHAKE_REVOKE    579
+#define A14_SSC_MSG_HANDSHAKE_REVOKE_ACK 835
 #define A14_SSC_MSG_HPD_CONFIG          512
 #define A14_SSC_MSG_PRESENCE_EVENT      928
 
@@ -61,6 +65,8 @@ struct a14_ssc_hpd {
 	bool client_initialized;
 	bool connected;
 	bool service_present;
+	bool suspended;
+	bool shutting_down;
 	struct sockaddr_qrtr service_addr;
 
 	struct mutex lock;
