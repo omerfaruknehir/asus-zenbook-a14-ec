@@ -1,0 +1,93 @@
+name: Validate AOS CPAS handoff
+
+on:
+  push:
+    paths:
+      - 'kernel/aos/**'
+      - 'kernel-patches/aos/cpas-handoff/**'
+      - '.github/workflows/aos-cpas-handoff.yml'
+  pull_request:
+    paths:
+      - 'kernel/aos/**'
+      - 'kernel-patches/aos/cpas-handoff/**'
+      - '.github/workflows/aos-cpas-handoff.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate patch-series structure
+        shell: bash
+        run: |
+          set -euo pipefail
+          sh -n kernel-patches/aos/cpas-handoff/apply.sh
+          test -s docs/aos/WINDOWS-AOS-PLATFORM-HANDOFF.md
+          test -s kernel/aos/qcom_ssc_hpd_camss.c
+          grep -q '0x0ac19000' kernel-patches/aos/cpas-handoff/0003-*.patch
+          grep -q 'X1E_CPAS_AON_CAM_SEL_AON.*0x101' kernel-patches/aos/cpas-handoff/0002-*.patch
+          grep -q 'camss_ap_stream_get' kernel-patches/aos/cpas-handoff/0002-*.patch
+          grep -q 'a14_ssc_camss_acquire' kernel/aos/qcom_ssc_hpd_transport.c
+          grep -q 'AOS_CAMSS_HANDOFF' kernel/aos/Makefile
+          if grep -R -E '@@ -0{3,}|placeholder hunk' kernel-patches/aos/cpas-handoff/*.patch; then
+            echo 'Invalid placeholder patch hunk found' >&2
+            exit 1
+          fi
+          if grep -R -E '0x0ac191e0|devm_ioremap.*0x0ac19|ioremap.*0x0ac19' kernel/aos; then
+            echo 'SSC consumer must not map the physical CPAS address' >&2
+            exit 1
+          fi
+          for patch in kernel-patches/aos/cpas-handoff/0*.patch; do
+            git apply --numstat "$patch" >/dev/null
+          done
+
+      - name: Check patches against Linux master
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --filter=blob:none --sparse \
+            https://github.com/torvalds/linux.git linux
+          git -C linux sparse-checkout set \
+            Documentation/devicetree/bindings/media/qcom,x1e80100-camss.yaml \
+            drivers/media/platform/qcom/camss \
+            include/media \
+            arch/arm64/boot/dts/qcom/x1e80100-asus-zenbook-a14.dts
+          for patch in "$GITHUB_WORKSPACE"/kernel-patches/aos/cpas-handoff/0*.patch; do
+            git -C linux apply --check "$patch"
+            git -C linux apply "$patch"
+          done
+
+      - name: Install kernel headers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y linux-headers-generic
+
+      - name: Compile discovery-only SSC module
+        shell: bash
+        run: |
+          set -euo pipefail
+          kdir=$(find /usr/src -maxdepth 1 -type d -name 'linux-headers-*-generic' | sort -V | tail -n1)
+          test -n "$kdir"
+          make -C kernel/aos clean KDIR="$kdir"
+          make -C kernel/aos KDIR="$kdir" W=1 KBUILD_MODPOST_WARN=1
+          test -s kernel/aos/qcom_ssc_hpd.ko
+
+      - name: Compile CAMSS-handoff SSC module
+        shell: bash
+        run: |
+          set -euo pipefail
+          kdir=$(find /usr/src -maxdepth 1 -type d -name 'linux-headers-*-generic' | sort -V | tail -n1)
+          test -n "$kdir"
+          make -C kernel/aos clean KDIR="$kdir"
+          make -C kernel/aos \
+            KDIR="$kdir" \
+            W=1 \
+            KBUILD_MODPOST_WARN=1 \
+            AOS_CAMSS_HANDOFF=1 \
+            AOS_CAMSS_INCLUDE="$GITHUB_WORKSPACE/kernel/aos/test-include"
+          test -s kernel/aos/qcom_ssc_hpd.ko
