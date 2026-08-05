@@ -13,8 +13,8 @@ src=$(CDPATH= cd -- "$1" 2>/dev/null && pwd) || {
 }
 series=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 
-[ -d "$src/.git" ] || {
-    echo "Refusing a non-git kernel source tree: $src" >&2
+[ -f "$src/Makefile" ] || {
+    echo "Kernel top-level Makefile is missing from $src" >&2
     exit 2
 }
 [ -f "$src/drivers/media/platform/qcom/camss/camss.c" ] || {
@@ -60,8 +60,8 @@ Applied the A14 CAMSS AOS handoff series to:
 
 Next required validations:
   make ARCH=arm64 dt_binding_check DT_SCHEMA_FILES=qcom,x1e80100-camss.yaml
-  build the Ubuntu kernel and A14 DTB
-  boot the patched kernel
+  build the Ubuntu A14 DTB and qcom-camss module
+  boot the patched DTB with the staged module override
   build qcom_ssc_hpd with AOS_CAMSS_HANDOFF=1
 
 No boot files or installed kernel packages were changed.
