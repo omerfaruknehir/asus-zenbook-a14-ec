@@ -5,34 +5,6 @@
 
 #include "qcom_ssc_hpd_internal.h"
 
-static const struct qmi_elem_info a14_ssc_control_req_ei[] = {
-	{
-		.data_type = QMI_UNSIGNED_1_BYTE,
-		.elem_len = 1,
-		.elem_size = sizeof(u8),
-		.array_type = NO_ARRAY,
-		.tlv_type = 0x10,
-		.offset = offsetof(struct a14_ssc_control_req, report_type),
-	},
-	{
-		.data_type = QMI_DATA_LEN,
-		.elem_len = 1,
-		.elem_size = sizeof(u32),
-		.array_type = NO_ARRAY,
-		.tlv_type = 0x01,
-		.offset = offsetof(struct a14_ssc_control_req, data_len),
-	},
-	{
-		.data_type = QMI_UNSIGNED_1_BYTE,
-		.elem_len = A14_SSC_DATA_MAX,
-		.elem_size = sizeof(u8),
-		.array_type = VAR_LEN_ARRAY,
-		.tlv_type = 0x01,
-		.offset = offsetof(struct a14_ssc_control_req, data),
-	},
-	{}
-};
-
 static const struct qmi_elem_info a14_ssc_control_resp_ei[] = {
 	{
 		.data_type = QMI_STRUCT,
@@ -72,6 +44,9 @@ static const struct qmi_elem_info a14_ssc_report_ind_ei[] = {
 		.offset = offsetof(struct a14_ssc_report_ind, client_id),
 	},
 	{
+		/* SSC's Data TLV starts with its own little-endian u16 frame
+		 * length. QMI_DATA_LEN consumes that protocol field, leaving the
+		 * protobuf body in data[] and its exact size in data_len. */
 		.data_type = QMI_DATA_LEN,
 		.elem_len = 1,
 		.elem_size = sizeof(u32),
@@ -92,6 +67,39 @@ static const struct qmi_elem_info a14_ssc_report_ind_ei[] = {
 
 static int send_control(struct a14_ssc_hpd *hpd, const u8 *data, size_t len)
 {
+	/* The SSC service's Data TLV is an opaque byte string whose first two
+	 * bytes are already the SSC client-frame length. A QMI_DATA_LEN /
+	 * VAR_LEN_ARRAY descriptor would prepend another u16 array length and
+	 * produce:
+	 *
+	 *   <QMI array length> <SSC frame length> <SSC protobuf body>
+	 *
+	 * libssc and the captured machine wire format require exactly:
+	 *
+	 *   <SSC frame length> <SSC protobuf body>
+	 *
+	 * Use a request-local fixed-size array descriptor so the QMI TLV length
+	 * comes only from the TLV header and no bytes are inserted into the
+	 * payload itself. */
+	struct qmi_elem_info req_ei[] = {
+		{
+			.data_type = QMI_UNSIGNED_1_BYTE,
+			.elem_len = 1,
+			.elem_size = sizeof(u8),
+			.array_type = NO_ARRAY,
+			.tlv_type = 0x10,
+			.offset = offsetof(struct a14_ssc_control_req, report_type),
+		},
+		{
+			.data_type = QMI_UNSIGNED_1_BYTE,
+			.elem_len = (u32)len,
+			.elem_size = sizeof(u8),
+			.array_type = STATIC_ARRAY,
+			.tlv_type = 0x01,
+			.offset = offsetof(struct a14_ssc_control_req, data),
+		},
+		{}
+	};
 	struct a14_ssc_control_resp resp = {};
 	struct a14_ssc_control_req *req;
 	struct qmi_txn txn;
@@ -104,7 +112,6 @@ static int send_control(struct a14_ssc_hpd *hpd, const u8 *data, size_t len)
 	if (!req)
 		return -ENOMEM;
 	req->report_type = 1;
-	req->data_len = len;
 	memcpy(req->data, data, len);
 
 	/* qmi_txn_init() returns a non-negative transaction ID on success. */
@@ -115,8 +122,7 @@ static int send_control(struct a14_ssc_hpd *hpd, const u8 *data, size_t len)
 
 	ret = qmi_send_request(&hpd->client, NULL, &txn,
 			       A14_SSC_QMI_CONTROL,
-			       A14_SSC_DATA_MAX + 32,
-			       a14_ssc_control_req_ei, req);
+			       len + 16, req_ei, req);
 	if (ret < 0) {
 		qmi_txn_cancel(&txn);
 		goto out;
@@ -154,7 +160,7 @@ static void report_cb(struct qmi_handle *qmi, struct sockaddr_qrtr *sq,
 						client);
 	const struct a14_ssc_report_ind *ind = decoded;
 
-	if (ind->data_len > A14_SSC_DATA_MAX)
+	if (!ind->data_len || ind->data_len > A14_SSC_DATA_MAX)
 		return;
 	a14_ssc_parse_report(hpd, ind->data, ind->data_len);
 }
