@@ -20,12 +20,24 @@ address in the SSC/IIO driver.
    maps the resource, powers it, controls the AP/AON mux, and arbitrates normal
    V4L2 pipelines against AOS ownership.
 3. `0003-arm64-dts-qcom-hamoa-add-cpas-top.patch`
-   adds the `0x0ac19000 + 0x0c000` resource to the X1E80100 CAMSS node used by
-   the Ubuntu A14 kernel tree.
-4. `0004-iio-qcom-ssc-hpd-use-camss-handoff.patch`
-   is applied to the in-tree form of the SSC HPD driver after the CAMSS provider
-   is present. The repository's standalone development module remains unchanged
-   until the patched kernel is installed.
+   adds the `0x0ac19000 + 0x0c000` resource through an A14-specific DTS include
+   in Ubuntu's camera-enabled X1E kernel tree.
+
+After booting a kernel containing those patches, build the repository's SSC
+development module with `AOS_CAMSS_HANDOFF=1`. The guarded integration in
+`kernel/aos/qcom_ssc_hpd_camss.c` obtains the CAMSS provider, creates a device
+link, switches ownership before INIT 576, and restores it on every exit path.
+Default module builds remain discovery-only and do not reference the provider.
+
+## Applying to a kernel source tree
+
+```bash
+./kernel-patches/aos/cpas-handoff/apply.sh /path/to/linux-source
+```
+
+The source tree must contain Ubuntu's camera-enabled `camss: isp@acb7000` node.
+The script checks every patch before modifying the tree and refuses an already
+patched, incomplete, or incompatible source tree.
 
 ## Safety invariants
 
