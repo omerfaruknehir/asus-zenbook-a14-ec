@@ -19,8 +19,8 @@ Signed-off-by: Omer Faruk Nehir <omerfaruknehir@gmail.com>
  drivers/media/platform/qcom/camss/camss-video.c |   7 ++
  drivers/media/platform/qcom/camss/camss.c       | 138 ++++++++++++++++++++++++
  drivers/media/platform/qcom/camss/camss.h       |  10 ++
- include/media/qcom_camss.h                      |  25 +++++
- 4 files changed, 180 insertions(+)
+ include/media/qcom_camss.h                      |  24 +++++
+ 4 files changed, 179 insertions(+)
  create mode 100644 include/media/qcom_camss.h
 
 diff --git a/include/media/qcom_camss.h b/include/media/qcom_camss.h
@@ -28,7 +28,7 @@ new file mode 100644
 index 000000000000..000000000001
 --- /dev/null
 +++ b/include/media/qcom_camss.h
-@@ -0,0 +1,25 @@
+@@ -0,0 +1,24 @@
 +/* SPDX-License-Identifier: GPL-2.0 */
 +#ifndef __MEDIA_QCOM_CAMSS_H__
 +#define __MEDIA_QCOM_CAMSS_H__
@@ -53,7 +53,7 @@ index 000000000000..000000000001
 +#endif
 +
 +#endif /* __MEDIA_QCOM_CAMSS_H__ */
-+
+
 diff --git a/drivers/media/platform/qcom/camss/camss.h b/drivers/media/platform/qcom/camss/camss.h
 index 93d691c8ac63..000000000002 100644
 --- a/drivers/media/platform/qcom/camss/camss.h
