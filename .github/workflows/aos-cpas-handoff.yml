@@ -22,11 +22,27 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Normalize generated patch metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 kernel-patches/aos/cpas-handoff/normalize-patch.py \
+            kernel-patches/aos/cpas-handoff/0*.patch
+
+      - name: Upload normalized patch series
+        uses: actions/upload-artifact@v4
+        with:
+          name: normalized-aos-cpas-patches
+          path: kernel-patches/aos/cpas-handoff/0*.patch
+          if-no-files-found: error
+
       - name: Validate patch-series structure
         shell: bash
         run: |
           set -euo pipefail
           sh -n kernel-patches/aos/cpas-handoff/apply.sh
+          python3 kernel-patches/aos/cpas-handoff/normalize-patch.py --check \
+            kernel-patches/aos/cpas-handoff/0*.patch
           test -s docs/aos/WINDOWS-AOS-PLATFORM-HANDOFF.md
           test -s kernel/aos/qcom_ssc_hpd_camss.c
           grep -q '0x0ac19000' kernel-patches/aos/cpas-handoff/0003-*.patch
