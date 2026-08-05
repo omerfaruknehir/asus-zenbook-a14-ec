@@ -228,33 +228,39 @@ int a14_ssc_enable_hpd(struct a14_ssc_hpd *hpd)
 	hpd->handshake_error = -EINPROGRESS;
 	mutex_unlock(&hpd->lock);
 
+	ret = a14_ssc_camss_acquire(hpd);
+	if (ret) {
+		dev_err(hpd->dev, "failed to hand camera path to AON: %d\n", ret);
+		goto out_unlock_op;
+	}
+
 	len = a14_ssc_build_handshake_request(data, sizeof(data), &hpd->handshake_suid);
 	if (!len) {
 		ret = -EINVAL;
-		goto out_unlock_op;
+		goto out_release_camss;
 	}
 	ret = send_control(hpd, data, len);
 	if (ret)
-		goto out_unlock_op;
+		goto out_release_camss;
 	if (!wait_for_completion_timeout(&hpd->handshake_ack_done,
 					 A14_SSC_TIMEOUT)) {
 		dev_err(hpd->dev, "camera handshake ACK 832 timed out\n");
 		ret = -ETIMEDOUT;
-		goto out_unlock_op;
+		goto out_release_camss;
 	}
 	if (hpd->handshake_error) {
 		ret = -EREMOTEIO;
-		goto out_unlock_op;
+		goto out_release_camss;
 	}
 
 	len = a14_ssc_build_hpd_request(data, sizeof(data), &hpd->hpd_suid);
 	if (!len) {
 		ret = -EINVAL;
-		goto out_unlock_op;
+		goto out_release_camss;
 	}
 	ret = send_control(hpd, data, len);
 	if (ret)
-		goto out_unlock_op;
+		goto out_release_camss;
 
 	mutex_lock(&hpd->lock);
 	hpd->event_enabled = true;
@@ -264,6 +270,9 @@ int a14_ssc_enable_hpd(struct a14_ssc_hpd *hpd)
 
 out_unlock_state:
 	mutex_unlock(&hpd->lock);
+	goto out_unlock_op;
+out_release_camss:
+	a14_ssc_camss_release(hpd);
 out_unlock_op:
 	mutex_unlock(&hpd->op_lock);
 	return ret;
