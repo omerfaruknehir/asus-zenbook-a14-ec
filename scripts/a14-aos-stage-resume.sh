@@ -91,8 +91,8 @@ esac
 ssc_depends=$(modinfo -F depends "$ssc_ko")
 printf 'ssc_depends=%s\n' "$ssc_depends"
 case ",$ssc_depends," in
-    *,qcom_camss,*) ;;
-    *) fail "SSC module does not declare its qcom_camss dependency" ;;
+    *,qcom-camss,*) ;;
+    *) fail "SSC module does not declare its qcom-camss dependency" ;;
 esac
 printf '%s\n' 'qcom_ssc_hpd_module=validated'
 
