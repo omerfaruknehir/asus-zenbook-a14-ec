@@ -36,7 +36,7 @@ index 000000000003..000000001001 100644
  #include <linux/interconnect.h>
  #include <linux/media-bus-format.h>
  #include <linux/media.h>
-@@ -151,6 +152,135 @@ out_unlock:
+@@ -151,4 +152,133 @@ out_unlock:
  }
  EXPORT_SYMBOL_GPL(qcom_camss_aon_release);
  
