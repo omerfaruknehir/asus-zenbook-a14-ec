@@ -40,6 +40,7 @@ patches="
 $series/0001-dt-bindings-media-qcom-x1e80100-camss-add-cpas-top.patch
 $series/0002-media-qcom-camss-add-aon-ownership-handoff.patch
 $series/0003-arm64-dts-qcom-hamoa-add-cpas-top.patch
+$series/0004-media-qcom-camss-treat-aon-mux-as-write-only.patch
 "
 
 for patch in $patches; do
