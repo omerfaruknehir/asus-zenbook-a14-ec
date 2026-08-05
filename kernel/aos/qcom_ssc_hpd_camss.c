@@ -106,7 +106,7 @@ void a14_ssc_camss_cleanup(struct a14_ssc_hpd *hpd)
 int a14_ssc_camss_acquire(struct a14_ssc_hpd *hpd)
 {
 	(void)hpd;
-	return 0;
+	return -EOPNOTSUPP;
 }
 
 void a14_ssc_camss_release(struct a14_ssc_hpd *hpd)
