@@ -5,11 +5,13 @@ on:
     paths:
       - 'kernel/aos/**'
       - 'kernel-patches/aos/cpas-handoff/**'
+      - 'scripts/a14-aos-stage-*.sh'
       - '.github/workflows/aos-cpas-handoff.yml'
   pull_request:
     paths:
       - 'kernel/aos/**'
       - 'kernel-patches/aos/cpas-handoff/**'
+      - 'scripts/a14-aos-stage-*.sh'
       - '.github/workflows/aos-cpas-handoff.yml'
   workflow_dispatch:
 
@@ -41,13 +43,22 @@ jobs:
         run: |
           set -euo pipefail
           sh -n kernel-patches/aos/cpas-handoff/apply.sh
+          for script in scripts/a14-aos-stage-*.sh; do
+            bash -n "$script"
+          done
           test -s docs/aos/WINDOWS-AOS-PLATFORM-HANDOFF.md
           test -s kernel/aos/qcom_ssc_hpd_camss.c
+          test -s scripts/a14-aos-stage-install-test.sh
+          test -s scripts/a14-aos-stage-postboot-test.sh
+          test -s scripts/a14-aos-stage-remove-test.sh
           grep -q '0x0ac19000' kernel-patches/aos/cpas-handoff/0003-*.patch
           grep -q 'X1E_CPAS_AON_CAM_SEL_AON.*0x101' kernel-patches/aos/cpas-handoff/0002-*.patch
           grep -q 'camss_ap_stream_get' kernel-patches/aos/cpas-handoff/0002-*.patch
           grep -q 'a14_ssc_camss_acquire' kernel/aos/qcom_ssc_hpd_transport.c
           grep -q 'AOS_CAMSS_HANDOFF' kernel/aos/Makefile
+          grep -q 'hm1092-v6-ir-cci' scripts/a14-aos-stage-install-test.sh
+          grep -q 'force_load qcom_camss' scripts/a14-aos-stage-install-test.sh
+          grep -q 'a14_aos_cpas_test=1' scripts/a14-aos-stage-postboot-test.sh
           if grep -R -E '@@ -0{3,}|placeholder hunk' kernel-patches/aos/cpas-handoff/*.patch; then
             echo 'Invalid placeholder patch hunk found' >&2
             exit 1
