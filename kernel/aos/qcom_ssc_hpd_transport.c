@@ -122,8 +122,11 @@ static int send_control(struct a14_ssc_hpd *hpd, const u8 *data, size_t len)
 		goto out;
 	}
 
+	/* qmi_txn_wait() returns a negative errno on failure. On successful
+	 * decoded responses it may return the non-negative decoder result, which
+	 * is not a protocol error. */
 	ret = qmi_txn_wait(&txn, A14_SSC_TIMEOUT);
-	if (ret)
+	if (ret < 0)
 		goto out;
 	if (resp.resp.result != QMI_RESULT_SUCCESS_V01) {
 		dev_err(hpd->dev, "SSC control failed: result=%u error=%u\n",
