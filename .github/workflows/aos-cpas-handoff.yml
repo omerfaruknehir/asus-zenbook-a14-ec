@@ -22,17 +22,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Normalize generated patch metadata
+      - name: Validate committed patch metadata
         shell: bash
         run: |
           set -euo pipefail
-          python3 kernel-patches/aos/cpas-handoff/normalize-patch.py \
+          python3 kernel-patches/aos/cpas-handoff/normalize-patch.py --check \
             kernel-patches/aos/cpas-handoff/0*.patch
 
-      - name: Upload normalized patch series
+      - name: Upload validated patch series
         uses: actions/upload-artifact@v4
         with:
-          name: normalized-aos-cpas-patches
+          name: validated-aos-cpas-patches
           path: kernel-patches/aos/cpas-handoff/0*.patch
           if-no-files-found: error
 
@@ -41,8 +41,6 @@ jobs:
         run: |
           set -euo pipefail
           sh -n kernel-patches/aos/cpas-handoff/apply.sh
-          python3 kernel-patches/aos/cpas-handoff/normalize-patch.py --check \
-            kernel-patches/aos/cpas-handoff/0*.patch
           test -s docs/aos/WINDOWS-AOS-PLATFORM-HANDOFF.md
           test -s kernel/aos/qcom_ssc_hpd_camss.c
           grep -q '0x0ac19000' kernel-patches/aos/cpas-handoff/0003-*.patch
@@ -68,10 +66,10 @@ jobs:
           set -euo pipefail
           git clone --depth 1 --filter=blob:none --sparse \
             https://github.com/torvalds/linux.git linux
-          git -C linux sparse-checkout set \
+          git -C linux sparse-checkout set --no-cone \
             Documentation/devicetree/bindings/media/qcom,x1e80100-camss.yaml \
-            drivers/media/platform/qcom/camss \
-            include/media \
+            drivers/media/platform/qcom/camss/ \
+            include/media/ \
             arch/arm64/boot/dts/qcom/x1e80100-asus-zenbook-a14.dts
           for patch in "$GITHUB_WORKSPACE"/kernel-patches/aos/cpas-handoff/0*.patch; do
             git -C linux apply --check "$patch"
