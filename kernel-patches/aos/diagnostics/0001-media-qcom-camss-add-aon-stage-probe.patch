@@ -1,0 +1,198 @@
+From 0000000000000000000000000000000000001001 Mon Sep 17 00:00:00 2001
+From: Omer Faruk Nehir <omerfaruknehir@gmail.com>
+Date: Thu, 6 Aug 2026 00:40:00 +0300
+Subject: [PATCH diagnostic] media: qcom: camss: add staged AON probe
+
+The first full AON acquisition attempt caused an abrupt platform reset before
+qcom_camss_aon_acquire() returned and without a preserved panic or pstore
+record. Add a diagnostic-only sysfs control which isolates the provider
+operations without loading the SSC consumer or sending camera-handshake INIT.
+
+Stages are cumulative and release every acquired resource before returning:
+
+  1. runtime PM get/put
+  2. runtime PM plus CPAS AHB clock enable/disable
+  3. read MAIN_CAM_AON_CAM_SEL_CTRL
+  4. write the current value back without changing ownership
+  5. write 0x101, read back, immediately restore 0x000 and read back
+
+This patch is intentionally kept outside the production patch series. It is
+only for hardware fault isolation and must be removed before upstreaming.
+
+Signed-off-by: Omer Faruk Nehir <omerfaruknehir@gmail.com>
+---
+ drivers/media/platform/qcom/camss/camss.c | 139 ++++++++++++++++++++++
+ 1 file changed, 139 insertions(+)
+
+diff --git a/drivers/media/platform/qcom/camss/camss.c b/drivers/media/platform/qcom/camss/camss.c
+index 000000000003..000000001001 100644
+--- a/drivers/media/platform/qcom/camss/camss.c
++++ b/drivers/media/platform/qcom/camss/camss.c
+@@ -9,6 +9,7 @@
+  */
+ #include <linux/clk.h>
+ #include <linux/io.h>
++#include <linux/kstrtox.h>
+ #include <linux/interconnect.h>
+ #include <linux/media-bus-format.h>
+ #include <linux/media.h>
+@@ -151,6 +152,135 @@ out_unlock:
+ }
+ EXPORT_SYMBOL_GPL(qcom_camss_aon_release);
+ 
++static int qcom_camss_aon_diag_run(struct camss *camss, unsigned int stage)
++{
++	u32 before = 0;
++	u32 switched = 0;
++	u32 restored = 0;
++	bool clocks_held = false;
++	bool pm_held = false;
++	int ret = 0;
++
++	if (stage < 1 || stage > 5)
++		return -EINVAL;
++
++	mutex_lock(&camss->aon_lock);
++	if (!camss->cpas_top_base) {
++		ret = -ENODEV;
++		goto out_unlock;
++	}
++	if (camss->aon_owned || camss->ap_streams) {
++		ret = -EBUSY;
++		goto out_unlock;
++	}
++
++	dev_emerg(camss->dev, "AON-DIAG stage=%u begin\n", stage);
++
++	ret = pm_runtime_resume_and_get(camss->dev);
++	if (ret < 0) {
++		dev_emerg(camss->dev,
++			  "AON-DIAG stage=%u runtime-pm failed: %d\n",
++			  stage, ret);
++		goto out_unlock;
++	}
++	pm_held = true;
++	dev_emerg(camss->dev, "AON-DIAG stage=%u runtime-pm ok\n", stage);
++	if (stage == 1)
++		goto out_release;
++
++	ret = clk_bulk_prepare_enable(X1E_CPAS_AON_CLK_COUNT,
++				      camss->aon_clks);
++	if (ret) {
++		dev_emerg(camss->dev,
++			  "AON-DIAG stage=%u CPAS clocks failed: %d\n",
++			  stage, ret);
++		goto out_release;
++	}
++	clocks_held = true;
++	dev_emerg(camss->dev, "AON-DIAG stage=%u CPAS clocks ok\n", stage);
++	if (stage == 2)
++		goto out_release;
++
++	before = readl(camss->cpas_top_base + X1E_CPAS_AON_CAM_SEL_CTRL);
++	dev_emerg(camss->dev,
++		  "AON-DIAG stage=%u initial read=%#x\n", stage, before);
++	if (stage == 3)
++		goto out_release;
++
++	if (stage == 4) {
++		dev_emerg(camss->dev,
++			  "AON-DIAG stage=4 write-current begin value=%#x\n",
++			  before);
++		writel(before,
++		       camss->cpas_top_base + X1E_CPAS_AON_CAM_SEL_CTRL);
++		switched = readl(camss->cpas_top_base +
++				 X1E_CPAS_AON_CAM_SEL_CTRL);
++		dev_emerg(camss->dev,
++			  "AON-DIAG stage=4 write-current readback=%#x\n",
++			  switched);
++		if (switched != before)
++			ret = -EIO;
++		goto out_release;
++	}
++
++	dev_emerg(camss->dev,
++		  "AON-DIAG stage=5 AON switch begin value=%#x\n",
++		  X1E_CPAS_AON_CAM_SEL_AON);
++	writel(X1E_CPAS_AON_CAM_SEL_AON,
++	       camss->cpas_top_base + X1E_CPAS_AON_CAM_SEL_CTRL);
++	switched = readl(camss->cpas_top_base +
++			 X1E_CPAS_AON_CAM_SEL_CTRL);
++	dev_emerg(camss->dev,
++		  "AON-DIAG stage=5 AON switch readback=%#x\n", switched);
++
++	dev_emerg(camss->dev,
++		  "AON-DIAG stage=5 AP restore begin value=%#x\n",
++		  X1E_CPAS_AON_CAM_SEL_AP);
++	writel(X1E_CPAS_AON_CAM_SEL_AP,
++	       camss->cpas_top_base + X1E_CPAS_AON_CAM_SEL_CTRL);
++	restored = readl(camss->cpas_top_base +
++			 X1E_CPAS_AON_CAM_SEL_CTRL);
++	dev_emerg(camss->dev,
++		  "AON-DIAG stage=5 AP restore readback=%#x\n", restored);
++
++	if (switched != X1E_CPAS_AON_CAM_SEL_AON ||
++	    restored != X1E_CPAS_AON_CAM_SEL_AP)
++		ret = -EIO;
++
++out_release:
++	if (clocks_held)
++		clk_bulk_disable_unprepare(X1E_CPAS_AON_CLK_COUNT,
++					   camss->aon_clks);
++	if (pm_held)
++		pm_runtime_put(camss->dev);
++	dev_emerg(camss->dev,
++		  "AON-DIAG stage=%u complete ret=%d\n", stage, ret);
++out_unlock:
++	mutex_unlock(&camss->aon_lock);
++	return ret;
++}
++
++static ssize_t aon_diag_stage_store(struct device *dev,
++				    struct device_attribute *attr,
++				    const char *buf, size_t count)
++{
++	struct camss *camss = dev_get_drvdata(dev);
++	unsigned int stage;
++	int ret;
++
++	if (!camss)
++		return -ENODEV;
++	ret = kstrtouint(buf, 0, &stage);
++	if (ret)
++		return ret;
++	ret = qcom_camss_aon_diag_run(camss, stage);
++	if (ret)
++		return ret;
++	return count;
++}
++static DEVICE_ATTR_WO(aon_diag_stage);
++
++static struct attribute *camss_aon_diag_attrs[] = {
++	&dev_attr_aon_diag_stage.attr,
++	NULL,
++};
++
++static const struct attribute_group camss_aon_diag_group = {
++	.name = "aon_diag",
++	.attrs = camss_aon_diag_attrs,
++};
++
+ static const struct camss_subdev_resources csiphy_res_8x16[] = {
+@@ -5432,6 +5562,15 @@ static int camss_probe(struct platform_device *pdev)
+ 		if (ret)
+ 			return dev_err_probe(dev, ret,
+ 					     "failed to get CPAS AON clocks\n");
++
++		ret = devm_device_add_group(dev, &camss_aon_diag_group);
++		if (ret)
++			return dev_err_probe(dev, ret,
++					     "failed to add AON diagnostic sysfs group\n");
++
++		dev_warn(dev,
++			 "diagnostic-only staged AON probe is available in sysfs\n");
+ 	}
+ 
+ 	camss->csiphy = devm_kcalloc(dev, camss->res->csiphy_num,
+-- 
+2.51.0
