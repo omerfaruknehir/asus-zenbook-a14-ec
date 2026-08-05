@@ -13,7 +13,9 @@ work=${A14_AOS_DIAG_WORK:-"$HOME/Downloads/a14-aos-diag-$release"}
 modsrc="$work/qcom-camss-module"
 stage="$work/artifacts"
 log="$work/build.log"
-patch="$repo/kernel-patches/aos/diagnostics/0001-media-qcom-camss-add-aon-stage-probe.patch"
+write_only_patch="$repo/kernel-patches/aos/cpas-handoff/0004-media-qcom-camss-treat-aon-mux-as-write-only.patch"
+diag_patch_1="$repo/kernel-patches/aos/diagnostics/0001-media-qcom-camss-add-aon-stage-probe.patch"
+diag_patch_2="$repo/kernel-patches/aos/diagnostics/0002-media-qcom-camss-replace-fatal-reads-with-write-only-probes.patch"
 jobs=${JOBS:-$(nproc 2>/dev/null || printf '4')}
 
 mkdir -p "$work"
@@ -39,7 +41,9 @@ done
 [ "${EUID:-$(id -u)}" -ne 0 ] || fail "run this builder as your normal user, not with sudo"
 [ -f "$headers/Makefile" ] || fail "kernel headers are missing: $headers"
 [ -r "$headers/Module.symvers" ] || fail "installed Module.symvers is missing"
-[ -s "$patch" ] || fail "diagnostic patch is missing: $patch"
+for patch in "$write_only_patch" "$diag_patch_1" "$diag_patch_2"; do
+    [ -s "$patch" ] || fail "required patch is missing: $patch"
+done
 [ -s "$base_stage/qcom_ssc_hpd.ko" ] || fail "validated SSC artifact is missing"
 [ -s "$base_stage/x1e80100-asus-zenbook-a14-aos-cpas.dtb" ] || \
     fail "validated CPAS DTB artifact is missing"
@@ -48,6 +52,14 @@ camss_source=$(find "$source_root" -type f \
     -path '*/drivers/media/platform/qcom/camss/camss.c' -print -quit)
 [ -n "$camss_source" ] || fail "the exact Ubuntu source tree is missing under $source_root"
 src=${camss_source%/drivers/media/platform/qcom/camss/camss.c}
+
+apply_one() {
+    patch=$1
+    label=$2
+    git -C "$src" apply --check "$patch" || \
+        fail "$label does not apply cleanly to the exact Ubuntu source"
+    git -C "$src" apply "$patch"
+}
 
 printf '%s\n' 'A14 CAMSS staged diagnostic build'
 printf '%s\n' '================================='
@@ -63,18 +75,44 @@ grep -Fq 'qcom_camss_aon_acquire' "$camss_source" || \
     fail "the production CAMSS provider API is missing"
 printf '%s\n' 'production_handoff_patch=present'
 
-printf '\n%s\n' '===== APPLY DIAGNOSTIC-ONLY PATCH ====='
-if grep -Fq 'AON-DIAG stage=' "$camss_source"; then
-    printf '%s\n' 'diagnostic_patch=already-applied'
+printf '\n%s\n' '===== APPLY WRITE-ONLY PRODUCTION FIX ====='
+if grep -Fq 'failed to select AON camera path' "$camss_source" ||
+   grep -Fq 'failed to restore AP camera path' "$camss_source"; then
+    apply_one "$write_only_patch" "write-only production patch"
+    printf '%s\n' 'production_write_only_patch=applied'
 else
-    git -C "$src" apply --check "$patch" || \
-        fail "diagnostic patch does not apply cleanly to the exact Ubuntu source"
-    git -C "$src" apply "$patch"
-    printf '%s\n' 'diagnostic_patch=applied'
+    printf '%s\n' 'production_write_only_patch=already-applied'
+fi
+
+printf '\n%s\n' '===== APPLY DIAGNOSTIC-ONLY PATCHES ====='
+if grep -Fq 'AON-DIAG stage=' "$camss_source"; then
+    printf '%s\n' 'diagnostic_patch_1=already-applied'
+else
+    apply_one "$diag_patch_1" "diagnostic patch 1"
+    printf '%s\n' 'diagnostic_patch_1=applied'
+fi
+
+if grep -Fq 'AON-DIAG stage=%u initial read=%#x' "$camss_source" ||
+   grep -Fq 'AON-DIAG stage=5 AON switch begin' "$camss_source"; then
+    apply_one "$diag_patch_2" "diagnostic patch 2"
+    printf '%s\n' 'diagnostic_patch_2=applied'
+else
+    printf '%s\n' 'diagnostic_patch_2=already-applied'
 fi
 
 grep -Fq 'aon_diag_stage' "$camss_source" || \
     fail "diagnostic sysfs control is missing after patching"
+grep -Fq 'AON-DIAG stage=3 AP write issued' "$camss_source" || \
+    fail "write-only AP diagnostic stage is missing"
+grep -Fq 'AON-DIAG stage=4 AP restore issued' "$camss_source" || \
+    fail "write-only AON diagnostic stage is missing"
+if grep -Fq 'initial read=%#x' "$camss_source" ||
+   grep -Fq 'readback=%#x' "$camss_source" ||
+   grep -Fq 'failed to select AON camera path' "$camss_source" ||
+   grep -Fq 'failed to restore AP camera path' "$camss_source"; then
+    fail "fatal AON mux readback code remains in the source tree"
+fi
+printf '%s\n' 'aon_mux_access=write-only'
 
 printf '\n%s\n' '===== BUILD DIAGNOSTIC QCOM-CAMSS MODULE ====='
 rm -rf "$modsrc"
@@ -103,8 +141,16 @@ grep -Fq 'qcom_camss_aon_release' "$symbols" || \
 strings "$camss_ko" > "$work/qcom-camss.strings.txt"
 grep -Fq 'AON-DIAG stage=%u begin' "$work/qcom-camss.strings.txt" || \
     fail "diagnostic stage implementation is missing from the module"
+grep -Fq 'AON-DIAG stage=3 AP write issued' "$work/qcom-camss.strings.txt" || \
+    fail "diagnostic AP write stage is missing from the module"
+grep -Fq 'AON-DIAG stage=4 AP restore issued' "$work/qcom-camss.strings.txt" || \
+    fail "diagnostic AON switch/restore stage is missing from the module"
 grep -Fq 'aon_diag_stage' "$work/qcom-camss.strings.txt" || \
     fail "diagnostic sysfs attribute is missing from the module"
+if grep -Fq 'initial read=%#x' "$work/qcom-camss.strings.txt" ||
+   grep -Fq 'readback=%#x' "$work/qcom-camss.strings.txt"; then
+    fail "diagnostic module still contains fatal readback paths"
+fi
 printf '%s\n' 'diagnostic_qcom_camss_module=validated'
 
 printf '\n%s\n' '===== STAGE DIAGNOSTIC ARTIFACTS ====='
@@ -122,8 +168,10 @@ kernel_release=$release
 source_tree=$src
 camss_module_vermagic=$vermagic
 diagnostic_only=true
-diagnostic_stages=1:runtime-pm,2:cpas-clocks,3:cpas-read,4:write-current,5:aon-switch-restore
+diagnostic_generation=write-only-v2
+diagnostic_stages=1:runtime-pm,2:cpas-clocks,3:ap-write-no-read,4:aon-switch-restore-no-read
 ssc_activation_allowed=false
+aon_mux_read_allowed=false
 system_changes=false
 EOF
 
@@ -135,6 +183,8 @@ EOF
 )
 
 printf 'artifact_directory=%s\n' "$stage"
+printf '%s\n' 'diagnostic_generation=write-only-v2'
+printf '%s\n' 'aon_mux_read_allowed=false'
 printf '%s\n' 'ssc_activation_allowed=false'
 printf '%s\n' 'system_changes=false'
 printf '%s\n' 'build_result=success'
