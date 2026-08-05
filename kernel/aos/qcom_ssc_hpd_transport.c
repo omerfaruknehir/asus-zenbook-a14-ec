@@ -107,9 +107,10 @@ static int send_control(struct a14_ssc_hpd *hpd, const u8 *data, size_t len)
 	req->data_len = len;
 	memcpy(req->data, data, len);
 
+	/* qmi_txn_init() returns a non-negative transaction ID on success. */
 	ret = qmi_txn_init(&hpd->client, &txn, a14_ssc_control_resp_ei,
 			   &resp);
-	if (ret)
+	if (ret < 0)
 		goto out;
 
 	ret = qmi_send_request(&hpd->client, NULL, &txn,
