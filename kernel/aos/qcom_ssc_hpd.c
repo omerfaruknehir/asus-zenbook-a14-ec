@@ -380,7 +380,11 @@ static void a14_ssc_hpd_remove(struct platform_device *pdev)
 
 static struct platform_driver a14_ssc_hpd_driver = {
 	.probe = a14_ssc_hpd_probe,
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 11, 0)
+	.remove_new = a14_ssc_hpd_remove,
+#else
 	.remove = a14_ssc_hpd_remove,
+#endif
 	.driver = {
 		.name = "qcom-ssc-hpd-a14",
 		.pm = pm_sleep_ptr(&a14_ssc_hpd_pm_ops),
