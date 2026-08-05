@@ -1,11 +1,11 @@
 From 0000000000000000000000000000000000000003 Mon Sep 17 00:00:00 2001
 From: Omer Faruk Nehir <omerfaruknehir@gmail.com>
 Date: Wed, 5 Aug 2026 06:02:00 +0300
-Subject: [PATCH 3/4] arm64: dts: qcom: x1e80100-zenbook-a14: add CPAS top
+Subject: [PATCH 3/3] arm64: dts: qcom: x1e80100-zenbook-a14: add CPAS top
  resource
 
 Ubuntu's camera-enabled X1E80100 tree already provides the CAMSS node and A14
-camera endpoints.  Override its resource list in a machine include to append
+camera endpoints. Override its resource list in a machine include to append
 the camera-platform/CPAS-top window described by the firmware CAMP device.
 
 Keeping the machine addition separate avoids duplicating or modifying unrelated
@@ -13,9 +13,9 @@ camera endpoint data carried by the Ubuntu kernel tree.
 
 Signed-off-by: Omer Faruk Nehir <omerfaruknehir@gmail.com>
 ---
- .../boot/dts/qcom/x1e80100-asus-zenbook-a14-aos.dtsi | 30 ++++++++++++++++++++
- .../boot/dts/qcom/x1e80100-asus-zenbook-a14.dts      |  1 +
- 2 files changed, 31 insertions(+)
+ .../dts/qcom/x1e80100-asus-zenbook-a14-aos.dtsi | 31 ++++++++++++++++++++++++
+ .../boot/dts/qcom/x1e80100-asus-zenbook-a14.dts |  1 +
+ 2 files changed, 32 insertions(+)
  create mode 100644 arch/arm64/boot/dts/qcom/x1e80100-asus-zenbook-a14-aos.dtsi
 
 diff --git a/arch/arm64/boot/dts/qcom/x1e80100-asus-zenbook-a14.dts b/arch/arm64/boot/dts/qcom/x1e80100-asus-zenbook-a14.dts
@@ -35,12 +35,12 @@ new file mode 100644
 index 000000000000..000000000002
 --- /dev/null
 +++ b/arch/arm64/boot/dts/qcom/x1e80100-asus-zenbook-a14-aos.dtsi
-@@ -0,0 +1,30 @@
+@@ -0,0 +1,31 @@
 +// SPDX-License-Identifier: BSD-3-Clause
 +
 +/*
 + * The final resource is the CAMP/QCOM0C32 camera-platform window recovered
-+ * from the UX3407RA firmware.  Ubuntu's camera-enabled Hamoa tree already
++ * from the UX3407RA firmware. Ubuntu's camera-enabled Hamoa tree already
 + * defines &camss and the first 17 resources.
 + */
 +&camss {
@@ -62,6 +62,7 @@ index 000000000000..000000000002
 +	      <0 0x0acc7000 0 0x2000>,
 +	      <0 0x0accb000 0 0x2000>,
 +	      <0 0x0ac19000 0 0xc000>;
++
 +	reg-names = "csid0", "csid1", "csid2", "csid_lite0", "csid_lite1",
 +		    "csid_wrapper", "csiphy0", "csiphy1", "csiphy2", "csiphy4",
 +		    "csitpg0", "csitpg1", "csitpg2", "vfe0", "vfe1",
