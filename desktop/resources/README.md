@@ -34,23 +34,36 @@ On X1E80100 it labels the microarchitecture as
 `Snapdragon X1E-80-100`, and uses the online topology rather than the possible
 CPU count.
 
-## Apply to an existing Resources source checkout
+## Apply safely
+
+Use the safe wrapper rather than invoking the legacy patcher directly:
 
 ```bash
-python3 desktop/resources/apply-a14-cpu-info.py ~/Projects/resources-a14
+sh desktop/resources/apply-a14-cpu-info-safe.sh ~/Projects/resources-a14
 ```
 
-The patcher:
+The wrapper applies the source patch and then validates/repairs GTK
+`CompositeTemplate` metadata. It is safe to run again on an already-patched
+checkout.
 
-1. verifies that the target has the expected Resources source files;
-2. creates a timestamped source backup inside the target checkout;
-3. writes a timestamped unified patch for review;
-4. applies only the CPU information and UI changes;
-5. exits cleanly without duplicating changes when run again.
+For a checkout that was patched before the template fix and currently fails
+with `possibly missing #[template_child] attribute`, run only the repair pass:
 
-Build Resources using that checkout's normal Meson/Flatpak workflow after the
-source change. The patcher intentionally does not guess how the local checkout
-was packaged or installed.
+```bash
+python3 desktop/resources/repair-a14-cpu-info.py ~/Projects/resources-a14
+```
+
+The scripts:
+
+1. verify that the target has the expected Resources source files;
+2. create timestamped source backups;
+3. write timestamped unified patches for review;
+4. modify only CPU information and UI metadata;
+5. exit cleanly without duplicating changes when run again.
+
+Build Resources using that checkout's normal Meson workflow after the source
+change. Do not run `meson install` after a failed `ninja` build; doing so may
+install data files while leaving the previous executable in place.
 
 ## Expected result
 
