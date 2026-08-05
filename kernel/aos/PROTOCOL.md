@@ -12,12 +12,44 @@
 Control request TLVs:
 
 - `0x10`: one-byte report type, value 1
-- `0x01`: variable-length SSC client request bytes
+- `0x01`: opaque SSC client request bytes
 
 Report indication TLVs:
 
 - `0x01`: 64-bit client ID
-- `0x02`: variable-length SSC event bytes
+- `0x02`: opaque SSC event bytes
+
+### Important Data-TLV framing rule
+
+The SSC Data TLV is not a QMI IDL variable array with an additional encoded
+array count. Its first two payload bytes are already the SSC client's own
+little-endian frame length.
+
+Correct wire layout:
+
+```text
+QMI TLV type=0x01 length=N
+  SSC frame length=N-2
+  SSC protobuf body
+```
+
+Incorrect layout previously emitted by the development driver:
+
+```text
+QMI TLV type=0x01 length=N+2
+  QMI array length=N
+  SSC frame length=N-2
+  SSC protobuf body
+```
+
+That malformed request was accepted at the QMI transport layer but produced no
+SUID indication. Outgoing Data TLVs therefore use a request-local
+`STATIC_ARRAY` descriptor whose element count is exactly the already-framed SSC
+buffer length. No `QMI_DATA_LEN` element is used for control requests.
+
+Incoming report Data TLVs begin with the same SSC frame length. The receive
+descriptor consumes that u16 into `data_len` and passes the remaining protobuf
+body to the protocol parser.
 
 ## SSC client envelope
 
