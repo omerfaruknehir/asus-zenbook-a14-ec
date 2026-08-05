@@ -21,8 +21,8 @@ only for hardware fault isolation and must be removed before upstreaming.
 
 Signed-off-by: Omer Faruk Nehir <omerfaruknehir@gmail.com>
 ---
- drivers/media/platform/qcom/camss/camss.c | 148 ++++++++++++++++++++++
- 1 file changed, 148 insertions(+)
+ drivers/media/platform/qcom/camss/camss.c | 147 ++++++++++++++++++++++
+ 1 file changed, 147 insertions(+)
 
 diff --git a/drivers/media/platform/qcom/camss/camss.c b/drivers/media/platform/qcom/camss/camss.c
 index 000000000003..000000001001 100644
@@ -179,7 +179,7 @@ index 000000000003..000000001001 100644
 +};
 +
  static const struct camss_subdev_resources csiphy_res_8x16[] = {
-@@ -5432,6 +5571,15 @@ static int camss_probe(struct platform_device *pdev)
+@@ -5432,6 +5571,14 @@ static int camss_probe(struct platform_device *pdev)
  		if (ret)
  			return dev_err_probe(dev, ret,
  					     "failed to get CPAS AON clocks\n");
