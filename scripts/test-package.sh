@@ -25,11 +25,29 @@ grep -q 'A14_SSC_QMI_SERVICE.*400' kernel/aos/qcom_ssc_hpd_internal.h
 grep -q 'qmi_add_lookup' kernel/aos/qcom_ssc_hpd.c
 grep -q 'IIO_PROXIMITY' kernel/aos/qcom_ssc_hpd.c
 if [ -e "/lib/modules/$(uname -r)/build/Makefile" ]; then
+  kdir="/lib/modules/$(uname -r)/build"
   make clean >/dev/null 2>&1 || true
   make -j2
-  if [ -r "/lib/modules/$(uname -r)/build/include/linux/soc/qcom/qmi.h" ] && \
-     [ -r "/lib/modules/$(uname -r)/build/include/linux/iio/iio.h" ]; then
-    make aos-module
+
+  if [ -r "$kdir/include/linux/soc/qcom/qmi.h" ] && \
+     [ -r "$kdir/include/linux/iio/iio.h" ]; then
+    config=
+    if [ -r "$kdir/.config" ]; then
+      config="$kdir/.config"
+    elif [ -r "/boot/config-$(uname -r)" ]; then
+      config="/boot/config-$(uname -r)"
+    fi
+
+    if [ -n "$config" ] && \
+       grep -Eq '^CONFIG_QCOM_QMI_HELPERS=[ym]$' "$config" && \
+       grep -Eq '^CONFIG_IIO=[ym]$' "$config"; then
+      make aos-module
+    else
+      # Generic CI kernels may ship the public headers without exporting the
+      # Qualcomm QMI/IIO symbols. Still compile every translation unit with
+      # W=1; relax only modpost's target-kernel symbol availability check.
+      make -C kernel/aos KDIR="$kdir" W=1 KBUILD_MODPOST_WARN=1
+    fi
     test -s kernel/aos/qcom_ssc_hpd.ko
     make aos-module-clean >/dev/null
   fi
