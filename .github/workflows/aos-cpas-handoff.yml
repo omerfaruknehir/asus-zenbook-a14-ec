@@ -5,12 +5,14 @@ on:
     paths:
       - 'kernel/aos/**'
       - 'kernel-patches/aos/cpas-handoff/**'
+      - 'kernel-patches/aos/diagnostics/**'
       - 'scripts/a14-aos-stage-*.sh'
       - '.github/workflows/aos-cpas-handoff.yml'
   pull_request:
     paths:
       - 'kernel/aos/**'
       - 'kernel-patches/aos/cpas-handoff/**'
+      - 'kernel-patches/aos/diagnostics/**'
       - 'scripts/a14-aos-stage-*.sh'
       - '.github/workflows/aos-cpas-handoff.yml'
   workflow_dispatch:
@@ -51,9 +53,17 @@ jobs:
           test -s scripts/a14-aos-stage-install-test.sh
           test -s scripts/a14-aos-stage-postboot-test.sh
           test -s scripts/a14-aos-stage-remove-test.sh
+          test -s scripts/a14-aos-stage-diag-build.sh
+          test -s scripts/a14-aos-stage-diag-install-test.sh
+          test -s scripts/a14-aos-stage-diag-run.sh
+          test -s kernel-patches/aos/diagnostics/0001-media-qcom-camss-add-aon-stage-probe.patch
           grep -q '0x0ac19000' kernel-patches/aos/cpas-handoff/0003-*.patch
           grep -q 'X1E_CPAS_AON_CAM_SEL_AON.*0x101' kernel-patches/aos/cpas-handoff/0002-*.patch
           grep -q 'camss_ap_stream_get' kernel-patches/aos/cpas-handoff/0002-*.patch
+          grep -q 'AON-DIAG stage=5 AON switch begin' \
+            kernel-patches/aos/diagnostics/0001-*.patch
+          grep -q 'stage 5 requires the explicit second argument' \
+            scripts/a14-aos-stage-diag-run.sh
           grep -q 'a14_ssc_camss_acquire' kernel/aos/qcom_ssc_hpd_transport.c
           grep -q 'AOS_CAMSS_HANDOFF' kernel/aos/Makefile
           grep -q 'hm1092-v6-ir-cci' scripts/a14-aos-stage-install-test.sh
@@ -70,6 +80,9 @@ jobs:
           for patch in kernel-patches/aos/cpas-handoff/0*.patch; do
             git apply --numstat "$patch" >/dev/null
           done
+          git apply --numstat \
+            kernel-patches/aos/diagnostics/0001-media-qcom-camss-add-aon-stage-probe.patch \
+            >/dev/null
 
       - name: Check patches against Linux master
         shell: bash
@@ -86,6 +99,11 @@ jobs:
             git -C linux apply --check "$patch"
             git -C linux apply "$patch"
           done
+          diag="$GITHUB_WORKSPACE/kernel-patches/aos/diagnostics/0001-media-qcom-camss-add-aon-stage-probe.patch"
+          git -C linux apply --check "$diag"
+          git -C linux apply "$diag"
+          grep -q 'aon_diag_stage' \
+            linux/drivers/media/platform/qcom/camss/camss.c
 
       - name: Install kernel headers
         run: |
