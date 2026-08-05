@@ -55,6 +55,57 @@ if [ -n "$config" ]; then
         "$config" || true
 fi
 
+printf '\n%s\n' '===== LIVE CAMSS RESOURCES ====='
+if command -v python3 >/dev/null 2>&1; then
+    python3 <<'PY'
+from pathlib import Path
+import struct
+
+node = None
+for root in (Path('/sys/firmware/devicetree/base'), Path('/proc/device-tree')):
+    candidate = root / 'soc@0' / 'isp@acb7000'
+    if candidate.is_dir():
+        node = candidate
+        break
+
+if node is None:
+    print('camss_node=missing')
+    raise SystemExit
+
+print(f'camss_node={node}')
+try:
+    names = [part.decode('ascii', 'replace') for part in
+             (node / 'reg-names').read_bytes().rstrip(b'\0').split(b'\0')]
+except OSError as exc:
+    print(f'camss_reg_names=unreadable:{exc}')
+    names = []
+
+try:
+    raw = (node / 'reg').read_bytes()
+except OSError as exc:
+    print(f'camss_reg=unreadable:{exc}')
+    raise SystemExit
+
+if len(raw) % 16:
+    print(f'camss_reg_bytes={len(raw)} unsupported-cell-layout')
+    raise SystemExit
+
+cells = struct.unpack('>' + 'I' * (len(raw) // 4), raw)
+entries = []
+for offset in range(0, len(cells), 4):
+    address = (cells[offset] << 32) | cells[offset + 1]
+    size = (cells[offset + 2] << 32) | cells[offset + 3]
+    entries.append((address, size))
+
+print(f'camss_resource_count={len(entries)}')
+for index, (address, size) in enumerate(entries):
+    name = names[index] if index < len(names) else f'unnamed-{index}'
+    print(f'camss_resource_{index:02d}={name},0x{address:08x},0x{size:x}')
+PY
+else
+    printf '%s\n' 'camss_resources=python3-missing'
+fi
+
 printf '\n%s\n' '===== CAMSS MODULE ====='
 camss_module=
 for name in qcom_camss qcom-camss; do
@@ -103,7 +154,7 @@ fi
 
 printf '\n%s\n' '===== BUILD CAPACITY ====='
 df -h "$HOME" /boot 2>/dev/null || true
-for tool in gcc make bc bison flex pahole dtc fakeroot dpkg-buildpackage; do
+for tool in python3 gcc make bc bison flex pahole dtc fakeroot dpkg-buildpackage; do
     if command -v "$tool" >/dev/null 2>&1; then
         printf 'tool_%s=%s\n' "$tool" "$(command -v "$tool")"
     else
