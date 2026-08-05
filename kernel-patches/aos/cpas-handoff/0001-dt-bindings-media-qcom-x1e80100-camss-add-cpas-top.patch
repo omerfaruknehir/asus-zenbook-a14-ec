@@ -1,0 +1,63 @@
+From 0000000000000000000000000000000000000001 Mon Sep 17 00:00:00 2001
+From: Omer Faruk Nehir <omerfaruknehir@gmail.com>
+Date: Wed, 5 Aug 2026 06:00:00 +0300
+Subject: [PATCH 1/4] dt-bindings: media: qcom,x1e80100-camss: add CPAS top
+ resource
+
+The X1E80100 camera platform exposes a CPAS-top register window used to
+arbitrate the normal AP camera path and the always-on camera path.  The
+Windows-matched firmware stack switches MAIN_CAM_AON_CAM_SEL_CTRL before
+starting the SSC camera handshake.
+
+Describe the missing window as the final named CAMSS resource.  Keeping it
+inside CAMSS makes the media driver responsible for power, clocks and AP/AON
+ownership rather than allowing the SSC consumer to map a physical address.
+
+Signed-off-by: Omer Faruk Nehir <omerfaruknehir@gmail.com>
+---
+ .../bindings/media/qcom,x1e80100-camss.yaml    | 8 +++++---
+ 1 file changed, 5 insertions(+), 3 deletions(-)
+
+diff --git a/Documentation/devicetree/bindings/media/qcom,x1e80100-camss.yaml b/Documentation/devicetree/bindings/media/qcom,x1e80100-camss.yaml
+index 000000000000..000000000001 100644
+--- a/Documentation/devicetree/bindings/media/qcom,x1e80100-camss.yaml
++++ b/Documentation/devicetree/bindings/media/qcom,x1e80100-camss.yaml
+@@ -18,7 +18,7 @@ properties:
+     const: qcom,x1e80100-camss
+ 
+   reg:
+-    maxItems: 17
++    maxItems: 18
+ 
+   reg-names:
+     items:
+@@ -39,6 +39,7 @@ properties:
+       - const: vfe1
+       - const: vfe_lite0
+       - const: vfe_lite1
++      - const: cpas-top
+ 
+   clocks:
+     maxItems: 29
+@@ -164,7 +165,8 @@ examples:
+                   <0 0x0ac62000 0 0x4000>,
+                   <0 0x0ac71000 0 0x4000>,
+                   <0 0x0acc7000 0 0x2000>,
+-                  <0 0x0accb000 0 0x2000>;
++                  <0 0x0accb000 0 0x2000>,
++                  <0 0x0ac19000 0 0xc000>;
+ 
+             reg-names = "csid0",
+                         "csid1",
+@@ -183,7 +185,8 @@ examples:
+                         "vfe0",
+                         "vfe1",
+                         "vfe_lite0",
+-                        "vfe_lite1";
++                        "vfe_lite1",
++                        "cpas-top";
+ 
+             clocks = <&camcc CAM_CC_CAMNOC_AXI_NRT_CLK>,
+                      <&camcc CAM_CC_CAMNOC_AXI_RT_CLK>,
+-- 
+2.51.0
