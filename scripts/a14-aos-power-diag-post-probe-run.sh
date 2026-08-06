@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-2.0-only
 # Execute the rebuilt A14 CAMSS platform-power diagnostic only after its
-# post-probe-success clock status has been validated. No CPAS MMIO and no SSC.
+# post-probe-success clock and runtime-idle state have been validated.
+# No CPAS MMIO and no SSC.
 set -Eeuo pipefail
 
 release=${A14_KERNEL_RELEASE:-$(uname -r)}
@@ -9,6 +10,7 @@ report=${A14_AOS_POWER_DIAG_REPORT:-"$HOME/Downloads/a14-aos-power-diag-report.t
 marker=${A14_AOS_POWER_DIAG_MARKER:-"$HOME/Downloads/a14-aos-power-diag-last-run.txt"}
 probe_attr=
 status_attr=
+diag_status=
 media_stopped=false
 cam_tmp=
 
@@ -56,12 +58,51 @@ for link in /sys/bus/platform/drivers/qcom-camss/*; do
 done
 [ -n "$probe_attr" ] || fail "the rebuilt post-probe CAMSS diagnostic was not found"
 
-diag_status=$(cat "$status_attr")
+validate_static_status() {
+    status=$1
+    case " $status " in
+        *' ready=1 '*) ;;
+        *) fail "diagnostic module is not ready" ;;
+    esac
+    case " $status " in
+        *' clock_get_status=0 '*) ;;
+        *) fail "diagnostic clock lookup is not valid" ;;
+    esac
+    case " $status " in
+        *' failed_clock=none '*) ;;
+        *) fail "one or more diagnostic clocks are unavailable" ;;
+    esac
+    case " $status " in
+        *' initialization=post-probe-success '*) ;;
+        *) fail "diagnostic was not initialized after successful CAMSS probe" ;;
+    esac
+}
+
+read_diag_status() {
+    diag_status=$(cat "$status_attr")
+    validate_static_status "$diag_status"
+}
+
+wait_camss_runtime_idle() {
+    attempt=0
+    while [ "$attempt" -lt 15 ]; do
+        read_diag_status
+        case " $diag_status " in
+            *' runtime_suspended=1 '*)
+                printf 'runtime_idle_status=%s\n' "$diag_status"
+                return 0
+                ;;
+        esac
+        attempt=$((attempt + 1))
+        sleep 1
+    done
+
+    printf 'runtime_idle_status=%s\n' "$diag_status"
+    fail "CAMSS did not return to runtime-suspended state; the diagnostic was not attempted"
+}
+
+read_diag_status
 printf 'diagnostic_status=%s\n' "$diag_status"
-case "$diag_status" in
-    'ready=1 clock_get_status=0 failed_clock=none initialization=post-probe-success') ;;
-    *) fail "diagnostic clock state is not safe to execute" ;;
-esac
 
 sudo -v
 systemctl --user stop pipewire-pulse.socket pipewire.socket 2>/dev/null || true
@@ -102,22 +143,25 @@ printf '%s\n' 'ssc_loaded=false'
 printf '%s\n' 'direct_cpas_mmio=false'
 printf '%s\n' 'dtb_changes=false'
 printf '%s\n' 'platform_clock_count=7'
+printf '%s\n' 'idle_guard=runtime-suspended'
 
 printf '\n%s\n' '===== PRE-PROBE CAMERA BASELINE ====='
 camera_list pre-probe
 printf '%s\n' 'camera_baseline=validated-accessible-camera'
 
-sleep 1
 users=$(sudo fuser /dev/video* /dev/media* /dev/v4l-subdev* 2>/dev/null || true)
 if [ -n "$users" ]; then
     sudo fuser -v /dev/video* /dev/media* /dev/v4l-subdev* 2>&1 || true
     fail "camera/media nodes reopened after baseline; the power diagnostic was not attempted"
 fi
 
+printf '\n%s\n' '===== WAIT FOR CAMSS RUNTIME IDLE ====='
+wait_camss_runtime_idle
+
 boot_id=$(cat /proc/sys/kernel/random/boot_id)
 started=$(date --iso-8601=seconds)
 cat > "$marker" <<EOF_MARKER
-operation=platform-power-stock-no-mmio-post-probe-init
+operation=platform-power-stock-no-mmio-runtime-idle
 boot_id=$boot_id
 started=$started
 status=started
@@ -126,6 +170,7 @@ ssc_contacted=false
 direct_cpas_mmio=false
 dtb_changes=false
 platform_clock_count=7
+idle_guard=runtime-suspended
 EOF_MARKER
 sync "$marker"
 sync
@@ -147,7 +192,7 @@ set -e
 
 completed=$(date --iso-8601=seconds)
 cat > "$marker" <<EOF_MARKER
-operation=platform-power-stock-no-mmio-post-probe-init
+operation=platform-power-stock-no-mmio-runtime-idle
 boot_id=$boot_id
 started=$started
 completed=$completed
@@ -158,6 +203,7 @@ ssc_contacted=false
 direct_cpas_mmio=false
 dtb_changes=false
 platform_clock_count=7
+idle_guard=runtime-suspended
 EOF_MARKER
 sync "$marker"
 
