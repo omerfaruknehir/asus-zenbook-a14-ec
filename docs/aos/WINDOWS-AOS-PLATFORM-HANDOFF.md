@@ -28,17 +28,11 @@ The installed front-camera configuration identifies the AOS sensor as
 
 ## Camera-platform operation observed in Windows binaries
 
-`qcAlwaysOnSensing.dll` performs the following order:
+`qcAlwaysOnSensing.dll` opens the Qualcomm camera-platform device and uses
+`IOCTL_KMD_CAMERA_PLATFORM_SET_AOS_CONFIG` (`0x002326bb`) around the SSC
+camera-handshake/HPD lifecycle.
 
-1. Read and validate the front-sensor AOS capability block.
-2. Open the Qualcomm camera-platform device.
-3. Send `IOCTL_KMD_CAMERA_PLATFORM_SET_AOS_CONFIG` (`0x002326bb`) with an
-   eight-byte input `{ version = 1, state = 0 }`.
-4. Start the SSC camera-handshake and HPD sequence.
-5. During teardown, send `{ version = 1, state = 1 }` to return ownership to the
-   normal camera path.
-
-`qccamplatform8380.sys` maps the states as follows:
+The matching `qccamplatform8380.sys` maps the two input states as follows:
 
 | State | Register value | Meaning |
 |---:|---:|---|
@@ -59,8 +53,8 @@ The machine ACPI `CAMP` device (`QCOM0C32`, UID `0x1b`) describes:
 - `0x0ac19000 + 0x0c000`: camera-platform/CPAS-top window
 
 The apparent register address is therefore `0x0ac191e0`. This establishes
-resource provenance; it does **not** establish that an arbitrary Linux EL1 MMIO
-access is permitted.
+resource provenance; it does **not** establish that the window is safe to access
+before all platform prerequisites are active.
 
 ## Linux hardware results
 
@@ -77,28 +71,80 @@ sufficient. Hardware disproved that assumption.
    again reset before the sysfs write returned.
 
 The Stage 3 marker remained `status=started`, `ssc_contacted=false`, and
-`aon_mux_read=false`. This places the failure at the direct write itself or at a
-missing platform prerequisite.
+`aon_mux_read=false`. This places the failure at the direct write while the
+camera platform was in the prerequisite state produced by that experiment.
 
-## Windows platform-power evidence
+## Matching focused-audit payload
 
-A read-only audit of the installed Windows 11 ARM64 camera stack found stronger
-evidence for incomplete resource activation than for a secure-world-only mux.
+The read-only focused audit preserved the exact installed ARM64 files used for
+static analysis:
 
-The installed camera-platform package is `qccamplatform8380`, version
-`4934.911.0.0`. Its binary contains all of the following:
+- `qccamplatform8380.sys`, version `4934.911.0.0`, SHA-256
+  `041E989C967E1E5425E963F9B8B1826806603DB175F24072865A49AAE6991739`;
+- `qcAlwaysOnSensing.dll`, version `4934.953.0.0`, SHA-256
+  `5237DEF4E14E6B73A6B1F788878DFB5CF61D4B239515301375BF304EB81408EE`;
+- the matching QRD and MTP CAMP resource, performance, platform-config and
+  preload binaries;
+- the matching base and extension INFs and catalogs.
 
-- `IOCTL_KMD_CAMERA_PLATFORM_SET_AOS_CONFIG failed: PlatformPowerState is OFF`
-- `Successfully config Mclk Mux for AOS`
-- `CameraCPAS_Init` and `CameraCPAS_DeInit`
-- CAMNOC bandwidth and AXI-clock selection paths
-- PoFx device, component, performance-state and power-control registration
-- runtime-resource enumeration/configuration through ACPI
-- direct `MmMapIoSpaceEx` and `MmUnmapIoSpace` imports
+The selected binaries and CAMP data are Microsoft hardware-compatibility
+signed according to Windows Authenticode validation on the machine.
+
+## Confirmed Windows power-before-store sequence
+
+The ARM64 disassembly resolves the previously unknown ordering.
+
+The AOS IOCTL handler first calls a camera-platform reference helper. The first
+reference performs this sequence:
+
+1. increment the platform reference count;
+2. when the new count is one, call the helper at image VA `0x140007aa0`;
+3. that helper calls `PoFxActivateComponent(PoHandle, 0, 1)`;
+4. after the PoFx activation call returns, store `1` in the driver's
+   `PlatformPowerState` field;
+5. return to the AOS IOCTL handler.
+
+The AOS handler then verifies that `PlatformPowerState == 1`, validates the
+input state, chooses `0x101` or `0x000`, and executes the direct ARM64 store:
+
+```text
+str w22, [x8, #0x1e0]
+```
+
+The matching instruction is at image VA `0x140003bf4`. There is no register
+readback around this store.
+
+The final platform-reference release clears `PlatformPowerState` and calls the
+helper at image VA `0x140007b68`, which resolves to
+`PoFxIdleComponent(PoHandle, 0, 1)`.
+
+The effective ordering is therefore:
+
+```text
+SET_AOS_CONFIG
+  -> acquire camera-platform reference
+  -> PoFxActivateComponent(component 0, flags 1)
+  -> PlatformPowerState = ON
+  -> store AOS/AP value to CPAS + 0x1e0
+  -> release camera-platform reference
+  -> PlatformPowerState = OFF on the last reference
+  -> PoFxIdleComponent(component 0, flags 1)
+```
+
+This confirms that Windows does not treat the mux write as a standalone
+operation.
+
+## PoFx and PEP resource evidence
+
+The installed platform driver imports and uses the PoFx device/component APIs,
+including component activation, idle, power-control and performance-state
+operations. It also imports `MmMapIoSpaceEx` and performs an ordinary ARM64 MMIO
+store after PoFx activation.
 
 No static import indicating a direct SCM/QSEE/secure-monitor call was found in
-this platform driver. That does not completely rule out secure mediation through
-another device, but it weakens the secure-register-only explanation.
+this driver. That does not eliminate firmware participation inside the Windows
+PEP or another dependency, but a driver-local secure-call wrapper is not visible
+on the confirmed store path.
 
 Windows reports `CAMP` as dependent on:
 
@@ -106,8 +152,14 @@ Windows reports `CAMP` as dependent on:
 - the Qualcomm PMIC power-management device (`QCOM0C2B`);
 - the Qualcomm System Manager GPIO device (`QCOM0C0C`).
 
-The installed `CAMP_RES_QRD.bin` PEP resource graph names a substantially larger
-set of resources than the Linux Stage 3 experiment enabled:
+The matching QRD extension INF associates this ASUS machine with:
+
+- `CAMP_RES_QRD.bin`: PEP resource graph;
+- `CAMP_PERF_QRD.bin`: performance-state and bandwidth mapping;
+- `CAMP_PCFG_QRD.bin`: platform configuration;
+- `CAMP_PRLD_QRD.bin`: preload data.
+
+The base camera-platform activation graph names:
 
 - `cam_cc_titan_top_gdsc`
 - `cam_cc_gdsc_clk`
@@ -122,41 +174,81 @@ set of resources than the Linux Stage 3 experiment enabled:
 - `gcc_camera_xo_clk`
 - CAMNOC HF/SF interconnect masters and performance states
 
-`CAMP_PERF_QRD.bin` additionally maps RT/NRT bandwidth demand to CAMNOC AXI
-clock and P-state selection.
+`CAMP_PERF_QRD.bin` maps RT/NRT bandwidth requests to CAMNOC AXI clock and
+P-state selection.
 
-## Current interpretation
+## Linux prerequisite comparison
 
-The leading hypothesis is now that Windows reaches a complete
-`PlatformPowerState=ON` through PEP/PoFx before accessing the mux. Linux Stage 3
-activated the CAMSS runtime-PM path and only the two CPAS AHB clocks, but did not
-explicitly reproduce the complete camera-platform resource graph. An access to
-a partially powered or locally clock-gated CPAS/CAMNOC register window can
-explain the abrupt platform reset.
+The X1E80100 CAMSS Linux model already provides more than the original Stage 3
+notes implied:
 
-This remains a hypothesis until the exact Windows function path and resource
-ordering are reconstructed from the matching driver binary and resource files.
-The direct MMIO quarantine therefore remains mandatory.
+- CAMSS runtime PM is linked to the named `top` power domain, which represents
+  the Titan-top GDSC;
+- runtime resume raises the four CAMSS interconnect paths (`ahb`, `hf_mnoc`,
+  `sf_mnoc`, and `sf_icp_mnoc`);
+- the device-tree binding exposes the seven direct clock equivalents needed for
+  the Windows base camera-platform graph:
+  `camnoc_rt_axi`, `camnoc_nrt_axi`, `cpas_ahb`, `core_ahb`,
+  `cpas_fast_ahb`, `gcc_axi_hf`, and `gcc_axi_sf`.
 
-## Revised implementation requirements
+The failed Stage 3 test held runtime PM but explicitly enabled only
+`cpas_ahb` and `cpas_fast_ahb`. The concrete untested difference is therefore
+the broader local clock state, not merely the top GDSC or ICC votes.
 
-The CAMSS provider fails acquisition with `-EOPNOTSUPP` before touching the
-register. No further mux access is allowed yet.
+`gcc_camera_ahb_clk`, `gcc_camera_xo_clk`, and the Windows-specific
+`cam_cc_gdsc_clk` do not have one-to-one consumer clock names in the CAMSS
+binding. They may be parent/framework-managed effects of the Linux clock and
+genpd operations, or they may remain a separate prerequisite gap.
 
-The next investigation must:
+## Revised interpretation
 
-1. preserve the exact matching `qccamplatform8380.sys` and CAMP resource/config
-   binaries;
-2. locate code references to the AOS power-state rejection, mux-success and
-   register-log strings;
-3. reconstruct which PoFx components/resources are activated before the store;
-4. compare that sequence against the X1E80100 Linux CAMSS clock, genpd and ICC
-   model;
-5. add a non-MMIO Linux prerequisite probe that only enables and reports the
-   candidate resources, then releases them cleanly;
-6. consider another MMIO test only after the prerequisite state is proven and
-   the test has a separately reviewed reset-safe design.
+The leading explanation for the Stage 3 reset is an MMIO access while the CPAS
+window was only partially clocked relative to Windows' PoFx component-0 state.
+This explanation is now supported by the exact Windows call order and resource
+graph, but it remains a hardware hypothesis until Linux proves the expanded
+power state without touching the mux.
 
-The SSC/IIO driver remains a consumer of the CAMSS provider. It may send
-camera-handshake INIT 576 only after a future provider backend has safely
-acquired AOS ownership.
+A firewall or firmware response is still possible. Therefore direct AON mux
+MMIO remains quarantined regardless of the power-probe result.
+
+## Safe Linux prerequisite probe
+
+The diagnostic patch under
+`kernel-patches/aos/power-diagnostics/` is intentionally separate from the
+production series. Its sysfs trigger performs only:
+
+1. CAMSS runtime-PM resume, retaining the top GDSC and existing ICC votes;
+2. enable the seven Linux-visible platform clocks listed above;
+3. report every resulting clock rate;
+4. hold the state for 250 ms;
+5. disable the clocks and release runtime PM in reverse.
+
+It contains no `readl`, `writel`, `ioread`, `iowrite`, CPAS register
+dereference, SSC request, or camera-handshake INIT.
+
+Build, install, and run it only through the isolated scripts:
+
+```bash
+bash ./scripts/a14-aos-power-diag-build.sh
+bash ./scripts/a14-aos-power-diag-install-test.sh
+```
+
+After manually selecting the generated GRUB test entry:
+
+```bash
+bash ./scripts/a14-aos-power-diag-run.sh
+```
+
+The result determines only whether the expanded prerequisite state can be
+entered and exited safely. It does **not** authorize another mux access.
+
+## Current implementation requirements
+
+- The production CAMSS provider fails acquisition with `-EOPNOTSUPP` before
+  touching the register.
+- The old write-capable Stage 3/4 diagnostics remain removed and blocked.
+- The safe power probe must complete and preserve normal camera enumeration.
+- Any future mux-access experiment requires a separate reviewed design and must
+  not be folded into the prerequisite probe.
+- The SSC/IIO driver may send camera-handshake INIT 576 only after a future
+  provider backend has safely acquired AOS ownership.
