@@ -41,6 +41,7 @@ $series/0001-dt-bindings-media-qcom-x1e80100-camss-add-cpas-top.patch
 $series/0002-media-qcom-camss-add-aon-ownership-handoff.patch
 $series/0003-arm64-dts-qcom-hamoa-add-cpas-top.patch
 $series/0004-media-qcom-camss-treat-aon-mux-as-write-only.patch
+$series/0005-media-qcom-camss-quarantine-direct-aon-mmio.patch
 "
 
 for patch in $patches; do
@@ -59,11 +60,15 @@ cat <<EOF
 Applied the A14 CAMSS AOS handoff series to:
   $src
 
+The direct CPAS MMIO handoff is quarantined because both reads and writes reset
+this platform. The provider currently returns -EOPNOTSUPP until the correct
+firmware-mediated or platform-specific access mechanism is implemented.
+
 Next required validations:
   make ARCH=arm64 dt_binding_check DT_SCHEMA_FILES=qcom,x1e80100-camss.yaml
   build the Ubuntu A14 DTB and qcom-camss module
-  boot the patched DTB with the staged module override
-  build qcom_ssc_hpd with AOS_CAMSS_HANDOFF=1
+  identify the Windows camera-platform access prerequisite or mediated path
+  replace the quarantine only after a non-resetting hardware access is proven
 
 No boot files or installed kernel packages were changed.
 EOF
