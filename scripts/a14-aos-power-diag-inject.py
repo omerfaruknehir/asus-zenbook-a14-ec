@@ -53,6 +53,7 @@ def main() -> int:
     text = add_include(text, "linux/err.h", "#include <linux/delay.h>\n")
     text = add_include(text, "linux/kstrtox.h", "#include <linux/interconnect.h>\n")
     text = add_include(text, "linux/mutex.h", "#include <linux/media.h>\n")
+    text = add_include(text, "linux/pm_runtime.h", "#include <linux/mutex.h>\n")
 
     definitions = r"""
 #define A14_AON_POWER_CLK_COUNT 7
@@ -99,13 +100,6 @@ static int a14_camss_aon_power_probe(struct device *dev)
 		return -ENODEV;
 
 	mutex_lock(&diag->lock);
-	if (atomic_read(&camss->ref_count) != 0) {
-		ret = -EBUSY;
-		dev_emerg(dev,
-			  "AON-POWER-DIAG unavailable reason=camss-busy ret=%d\n",
-			  ret);
-		goto out_unlock;
-	}
 	if (diag->clock_get_status) {
 		ret = diag->clock_get_status;
 		dev_emerg(dev,
@@ -113,9 +107,17 @@ static int a14_camss_aon_power_probe(struct device *dev)
 			  diag->failed_clock ?: "unknown", ret);
 		goto out_unlock;
 	}
+	if (!pm_runtime_suspended(dev)) {
+		ret = -EBUSY;
+		dev_emerg(dev,
+			  "AON-POWER-DIAG unavailable reason=runtime-not-suspended registered-video-refs=%d ret=%d\n",
+			  atomic_read(&camss->ref_count), ret);
+		goto out_unlock;
+	}
 
 	dev_emerg(dev,
-		  "AON-POWER-DIAG begin direct-mmio=false ssc=false\n");
+		  "AON-POWER-DIAG begin direct-mmio=false ssc=false registered-video-refs=%d\n",
+		  atomic_read(&camss->ref_count));
 
 	ret = pm_runtime_resume_and_get(dev);
 	if (ret < 0) {
@@ -152,8 +154,8 @@ out_release:
 	if (pm_held)
 		pm_runtime_put(dev);
 	dev_emerg(dev,
-		  "AON-POWER-DIAG complete ret=%d direct-mmio=false ssc=false\n",
-		  ret);
+		  "AON-POWER-DIAG complete ret=%d direct-mmio=false ssc=false runtime-suspended=%u\n",
+		  ret, pm_runtime_suspended(dev));
 out_unlock:
 	mutex_unlock(&diag->lock);
 	return ret;
@@ -164,11 +166,14 @@ static ssize_t a14_aon_power_status_show(struct device *dev,
 					 char *buf)
 {
 	struct a14_aon_power_diag *diag = &a14_power_diag;
+	struct camss *camss = dev_get_drvdata(dev);
+	int registered_video_refs = camss ? atomic_read(&camss->ref_count) : -1;
 
 	return sysfs_emit(buf,
-			  "ready=%u clock_get_status=%d failed_clock=%s initialization=post-probe-success\n",
+			  "ready=%u clock_get_status=%d failed_clock=%s initialization=post-probe-success runtime_suspended=%u registered_video_refs=%d\n",
 			  diag->ready, diag->clock_get_status,
-			  diag->failed_clock ?: "none");
+			  diag->failed_clock ?: "none",
+			  pm_runtime_suspended(dev), registered_video_refs);
 }
 static DEVICE_ATTR_RO(a14_aon_power_status);
 
@@ -249,7 +254,7 @@ static const struct attribute_group a14_aon_power_diag_group = {
 				 diag->failed_clock, diag->clock_get_status);
 		} else {
 			dev_warn(dev,
-				 "A14 non-MMIO platform-power diagnostic available clocks=7 initialization=post-probe-success\n");
+				 "A14 non-MMIO platform-power diagnostic available clocks=7 initialization=post-probe-success idle-guard=runtime-suspended\n");
 		}
 	}
 """
@@ -265,6 +270,8 @@ static const struct attribute_group a14_aon_power_diag_group = {
     path.write_text(text, encoding="utf-8")
     print("power_diagnostic_injection=applied")
     print("diagnostic_initialization=post-probe-success")
+    print("diagnostic_idle_guard=runtime-suspended")
+    print("registered_video_refs=informational-only")
     print("direct_cpas_mmio=false")
     print("ssc_contact=false")
     return 0
