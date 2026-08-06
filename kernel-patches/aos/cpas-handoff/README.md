@@ -9,8 +9,8 @@ Linux can discover the SSC `camera_handshake`, `human_presence_detect`, and
 `camera_face_detect` SUIDs, but camera-handshake INIT 576 does not receive ACK
 832 in the normal AP-owned camera state.
 
-Windows configures `CPAS_TOP_CPAS_0_MAIN_CAM_AON_CAM_SEL_CTRL` before sending
-INIT 576. Reverse engineering identified these values:
+Windows configures `CPAS_TOP_CPAS_0_MAIN_CAM_AON_CAM_SEL_CTRL` before the SSC
+camera-handshake lifecycle. Reverse engineering identified these values:
 
 - `0x00000101`: route the path to AOS
 - `0x00000000`: route the path to the AP
@@ -20,32 +20,61 @@ The register was identified at offset `0x1e0` in the firmware-described
 
 ## Hardware validation boundary
 
-Direct Linux access to that register is not safe on this machine.
+Direct Linux access to that register is not safe in the prerequisite state used
+by the original experiment.
 
 - Runtime PM alone returned successfully.
-- The staged CPAS-clock-only path returned successfully.
+- Runtime PM plus `cpas_ahb` and `cpas_fast_ahb` returned successfully.
 - A register read caused an abrupt platform reset.
-- Stage 3 then performed only `writel(0x000)`—the already expected AP value,
-  with no readback and no SSC traffic—and the platform reset before the sysfs
-  write returned.
+- Stage 3 then performed only `writel(0x000)`—the expected AP value, with no
+  readback and no SSC traffic—and the platform reset before the sysfs write
+  returned.
 
 Therefore this is not a read-only-versus-write-only problem. Direct host MMIO
 access to the AON mux is quarantined. **Do not run the former Stage 4 AON
 switch/restore test.**
 
-## Windows power-resource evidence
+## Confirmed Windows prerequisite
 
-The installed Windows camera-platform driver refuses the AOS configuration IOCTL
-when its internal `PlatformPowerState` is off. It uses PoFx and ACPI runtime
-resource enumeration, and the matching PEP resource binary names Titan-top
-GDSC, camera core AHB, CPAS AHB, CAMNOC RT/NRT AXI, GCC camera clocks,
-interconnect masters, and performance states.
+Static analysis of the exact installed ARM64 driver resolves the store path:
 
-That resource graph is broader than the Linux Stage 3 setup, which explicitly
-enabled only `cpas_ahb` and `cpas_fast_ahb` after CAMSS runtime PM. Incomplete
-camera-platform power/clock activation is therefore the leading reset
-hypothesis, although exact ordering still requires static analysis of the
-matching driver and configuration binaries.
+```text
+SET_AOS_CONFIG
+  -> acquire camera-platform reference
+  -> PoFxActivateComponent(component 0, flags 1)
+  -> PlatformPowerState = ON
+  -> str value, [CPAS base + 0x1e0]
+  -> release reference
+  -> PoFxIdleComponent(component 0, flags 1) on the last reference
+```
+
+The direct register store occurs only after PoFx component 0 has been
+activated. The driver performs no readback around the store.
+
+The matching Windows PEP resource graph names Titan-top GDSC, camera core and
+CPAS AHB clocks, CAMNOC RT/NRT AXI clocks, GCC camera clocks, interconnect
+masters, and performance states.
+
+## Linux prerequisite comparison
+
+CAMSS runtime PM already retains the named `top` power domain and raises the
+four configured ICC paths. The original Stage 3 explicitly enabled only two
+local clocks.
+
+The X1E80100 CAMSS binding exposes seven direct Linux-visible equivalents for
+the Windows base camera-platform clock state:
+
+- `camnoc_rt_axi`
+- `camnoc_nrt_axi`
+- `cpas_ahb`
+- `core_ahb`
+- `cpas_fast_ahb`
+- `gcc_axi_hf`
+- `gcc_axi_sf`
+
+The leading explanation is therefore that Stage 3 accessed the CPAS window
+while it was only partially clocked relative to Windows' PoFx state. This is
+still a hardware hypothesis; it does not weaken the MMIO quarantine.
 
 ## Patch order
 
@@ -61,7 +90,7 @@ matching driver and configuration binaries.
    records the write-reset result and makes acquisition fail with
    `-EOPNOTSUPP` before any register access.
 
-Always apply the complete series with:
+Always apply the complete production series with:
 
 ```bash
 ./kernel-patches/aos/cpas-handoff/apply.sh /path/to/linux-source
@@ -78,21 +107,36 @@ Do not apply only the earlier experimental patches.
 - No boot-time register script, `/dev/mem` access, or userspace MMIO workaround
   is permitted.
 - The former write-capable diagnostic builder and installer are retired.
+- The safe power probe contains no register access and never contacts SSC.
 
-## Next investigation
+## Safe prerequisite test
 
-Run the read-only focused Windows collector:
+The separate diagnostic patch under `../power-diagnostics/` reproduces the
+Linux-visible part of the Windows component-0 power state without accessing the
+CPAS window. It:
 
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass `
-  -File .\scripts\a14-windows-camera-platform-focused-audit.ps1
+1. obtains CAMSS runtime PM;
+2. retains the existing top-GDSC and ICC state;
+3. enables the seven platform clocks listed above;
+4. logs their rates and holds them for 250 ms;
+5. unwinds all resources in reverse.
+
+Build and install it from a normal boot:
+
+```bash
+bash ./scripts/a14-aos-power-diag-build.sh
+bash ./scripts/a14-aos-power-diag-install-test.sh
 ```
 
-It preserves the matching camera-platform driver and only the relevant CAMP
-resource/configuration binaries, records hashes/signatures and dependencies, and
-produces disassembly automatically when `llvm-objdump.exe` is available.
+Manually select the generated isolated GRUB entry. In that boot, run:
 
-Use those files to locate references to the AOS power-state rejection,
-mux-success and register-log strings, then reconstruct which PoFx resources are
-active before the store. The next Linux test must be a non-MMIO resource
-prerequisite probe; the quarantine must remain until that state is proven.
+```bash
+bash ./scripts/a14-aos-power-diag-run.sh
+```
+
+The runner rejects a loaded `qcom_ssc_hpd`, verifies camera nodes are idle,
+records a persistent marker before the operation, captures the kernel log, and
+checks normal camera enumeration after the resources are released.
+
+A successful result proves only that the expanded power prerequisite is safe.
+It does **not** authorize another mux read or write.
