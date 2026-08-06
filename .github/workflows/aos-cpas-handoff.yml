@@ -6,16 +6,20 @@ on:
       - 'kernel/aos/**'
       - 'kernel-patches/aos/cpas-handoff/**'
       - 'kernel-patches/aos/diagnostics/**'
+      - 'kernel-patches/aos/power-diagnostics/**'
       - 'docs/aos/**'
       - 'scripts/a14-aos-stage-*.sh'
+      - 'scripts/a14-aos-power-*.sh'
       - '.github/workflows/aos-cpas-handoff.yml'
   pull_request:
     paths:
       - 'kernel/aos/**'
       - 'kernel-patches/aos/cpas-handoff/**'
       - 'kernel-patches/aos/diagnostics/**'
+      - 'kernel-patches/aos/power-diagnostics/**'
       - 'docs/aos/**'
       - 'scripts/a14-aos-stage-*.sh'
+      - 'scripts/a14-aos-power-*.sh'
       - '.github/workflows/aos-cpas-handoff.yml'
   workflow_dispatch:
 
@@ -35,17 +39,23 @@ jobs:
           python3 kernel-patches/aos/cpas-handoff/normalize-patch.py --check \
             kernel-patches/aos/cpas-handoff/0*.patch
 
-      - name: Validate quarantine structure
+      - name: Validate quarantine and safe diagnostics
         shell: bash
         run: |
           set -euo pipefail
           sh -n kernel-patches/aos/cpas-handoff/apply.sh
-          for script in scripts/a14-aos-stage-*.sh; do
+          for script in scripts/a14-aos-stage-*.sh scripts/a14-aos-power-*.sh; do
             bash -n "$script"
           done
 
+          power_patch=kernel-patches/aos/power-diagnostics/0001-media-qcom-camss-add-platform-power-probe.patch
           test -s docs/aos/WINDOWS-AOS-PLATFORM-HANDOFF.md
           test -s kernel-patches/aos/cpas-handoff/0005-media-qcom-camss-quarantine-direct-aon-mmio.patch
+          test -s "$power_patch"
+          test -s scripts/a14-aos-power-diag-build.sh
+          test -s scripts/a14-aos-power-diag-install-test.sh
+          test -s scripts/a14-aos-power-diag-run.sh
+
           grep -q '0005-media-qcom-camss-quarantine-direct-aon-mmio.patch' \
             kernel-patches/aos/cpas-handoff/apply.sh
           grep -q 'returns -EOPNOTSUPP before' \
@@ -58,6 +68,12 @@ jobs:
             scripts/a14-aos-stage-diag-build.sh
           grep -q 'installation of the write-capable A14 AON diagnostic is blocked' \
             scripts/a14-aos-stage-diag-install-test.sh
+
+          grep -q 'platform-power-no-mmio-v1' scripts/a14-aos-power-diag-build.sh
+          grep -q 'direct_cpas_mmio_allowed=false' scripts/a14-aos-power-diag-build.sh
+          grep -q 'ssc_activation_allowed=false' scripts/a14-aos-power-diag-build.sh
+          grep -q 'AON-POWER-DIAG begin direct-mmio=false' "$power_patch"
+          grep -q 'aon_power_diag/aon_power_probe' scripts/a14-aos-power-diag-run.sh
 
           if find kernel-patches/aos/diagnostics -type f -name '*.patch' \
               -print -quit 2>/dev/null | grep -q .; then
@@ -76,11 +92,21 @@ jobs:
             exit 1
           fi
 
-          for patch in kernel-patches/aos/cpas-handoff/0*.patch; do
+          if grep -E '^\+.*\<(readl|writel|ioread|iowrite)\>' "$power_patch"; then
+            echo 'The platform-power diagnostic patch must not add direct MMIO' >&2
+            exit 1
+          fi
+
+          if grep -E '^\+.*(qcom_ssc_hpd|camera-handshake|INIT 576)' "$power_patch"; then
+            echo 'The platform-power diagnostic patch must not contact SSC' >&2
+            exit 1
+          fi
+
+          for patch in kernel-patches/aos/cpas-handoff/0*.patch "$power_patch"; do
             git apply --numstat "$patch" >/dev/null
           done
 
-      - name: Check complete quarantine series against Linux master
+      - name: Check quarantine and power probe against Linux master
         shell: bash
         run: |
           set -euo pipefail
@@ -107,6 +133,29 @@ jobs:
             "$camss")
           if printf '%s\n' "$provider" | grep -Eq '\<(readl|writel)\>'; then
             echo 'Direct AON MMIO remains in the final provider implementation' >&2
+            exit 1
+          fi
+
+          power_patch="$GITHUB_WORKSPACE/kernel-patches/aos/power-diagnostics/0001-media-qcom-camss-add-platform-power-probe.patch"
+          git -C linux apply --check "$power_patch"
+          git -C linux apply "$power_patch"
+
+          grep -q 'aon_power_probe' "$camss"
+          grep -q 'X1E_AON_POWER_CLK_COUNT' "$camss"
+          for clock in camnoc_rt_axi camnoc_nrt_axi cpas_ahb core_ahb \
+                       cpas_fast_ahb gcc_axi_hf gcc_axi_sf; do
+            grep -q "\"$clock\"" "$camss"
+          done
+
+          helper=$(sed -n \
+            '/static int qcom_camss_aon_power_probe/,/static DEVICE_ATTR_WO(aon_power_probe)/p' \
+            "$camss")
+          if printf '%s\n' "$helper" | grep -Eq '\<(readl|writel|ioread|iowrite)\>'; then
+            echo 'The platform-power diagnostic helper contains direct MMIO' >&2
+            exit 1
+          fi
+          if printf '%s\n' "$helper" | grep -Eq 'qcom_ssc_hpd|camera.handshake|INIT 576'; then
+            echo 'The platform-power diagnostic helper contains an SSC path' >&2
             exit 1
           fi
 
