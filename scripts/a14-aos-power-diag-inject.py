@@ -50,10 +50,11 @@ def main() -> int:
             fail(f"refusing to modify source containing retired diagnostic marker: {retired}")
 
     text = add_include(text, "linux/delay.h", "#include <linux/clk.h>\n")
+    text = add_include(text, "linux/err.h", "#include <linux/delay.h>\n")
     text = add_include(text, "linux/kstrtox.h", "#include <linux/interconnect.h>\n")
     text = add_include(text, "linux/mutex.h", "#include <linux/media.h>\n")
 
-    definitions = r'''
+    definitions = r"""
 #define A14_AON_POWER_CLK_COUNT 7
 
 static const char * const a14_aon_power_clk_ids[A14_AON_POWER_CLK_COUNT] = {
@@ -69,13 +70,14 @@ static const char * const a14_aon_power_clk_ids[A14_AON_POWER_CLK_COUNT] = {
 struct a14_aon_power_diag {
 	struct clk_bulk_data clks[A14_AON_POWER_CLK_COUNT];
 	struct mutex lock;
+	const char *failed_clock;
 	int clock_get_status;
 	bool ready;
 };
 
 static struct a14_aon_power_diag a14_power_diag;
 
-'''
+"""
     text = replace_once(
         text,
         "static const struct parent_dev_ops vfe_parent_dev_ops;\n",
@@ -83,7 +85,7 @@ static struct a14_aon_power_diag a14_power_diag;
         "CAMSS definitions",
     )
 
-    implementation = r'''
+    implementation = r"""
 static int a14_camss_aon_power_probe(struct device *dev)
 {
 	struct a14_aon_power_diag *diag = &a14_power_diag;
@@ -99,10 +101,16 @@ static int a14_camss_aon_power_probe(struct device *dev)
 	mutex_lock(&diag->lock);
 	if (atomic_read(&camss->ref_count) != 0) {
 		ret = -EBUSY;
+		dev_emerg(dev,
+			  "AON-POWER-DIAG unavailable reason=camss-busy ret=%d\n",
+			  ret);
 		goto out_unlock;
 	}
 	if (diag->clock_get_status) {
 		ret = diag->clock_get_status;
+		dev_emerg(dev,
+			  "AON-POWER-DIAG unavailable reason=clock-lookup clock=%s ret=%d\n",
+			  diag->failed_clock ?: "unknown", ret);
 		goto out_unlock;
 	}
 
@@ -151,6 +159,19 @@ out_unlock:
 	return ret;
 }
 
+static ssize_t a14_aon_power_status_show(struct device *dev,
+					 struct device_attribute *attr,
+					 char *buf)
+{
+	struct a14_aon_power_diag *diag = &a14_power_diag;
+
+	return sysfs_emit(buf,
+			  "ready=%u clock_get_status=%d failed_clock=%s initialization=post-probe-success\n",
+			  diag->ready, diag->clock_get_status,
+			  diag->failed_clock ?: "none");
+}
+static DEVICE_ATTR_RO(a14_aon_power_status);
+
 static ssize_t a14_aon_power_probe_store(struct device *dev,
 					 struct device_attribute *attr,
 					 const char *buf, size_t count)
@@ -170,6 +191,7 @@ static ssize_t a14_aon_power_probe_store(struct device *dev,
 static DEVICE_ATTR_WO(a14_aon_power_probe);
 
 static struct attribute *a14_aon_power_diag_attrs[] = {
+	&dev_attr_a14_aon_power_status.attr,
 	&dev_attr_a14_aon_power_probe.attr,
 	NULL,
 };
@@ -179,7 +201,7 @@ static const struct attribute_group a14_aon_power_diag_group = {
 	.attrs = a14_aon_power_diag_attrs,
 };
 
-'''
+"""
     text = replace_once(
         text,
         "static const struct camss_subdev_resources csiphy_res_8x16[] = {\n",
@@ -187,46 +209,62 @@ static const struct attribute_group a14_aon_power_diag_group = {
         "CAMSS resource-table",
     )
 
-    probe_block = r'''
-
+    probe_block = r"""
 	if (camss->res->version == CAMSS_X1E80100) {
 		struct a14_aon_power_diag *diag = &a14_power_diag;
 		unsigned int i;
+		int diag_ret;
 
 		mutex_init(&diag->lock);
-		for (i = 0; i < A14_AON_POWER_CLK_COUNT; i++)
-			diag->clks[i].id = a14_aon_power_clk_ids[i];
+		diag->ready = false;
+		diag->clock_get_status = 0;
+		diag->failed_clock = NULL;
 
-		diag->clock_get_status = devm_clk_bulk_get(
-			dev, A14_AON_POWER_CLK_COUNT, diag->clks);
-		if (diag->clock_get_status)
-			dev_warn(dev,
-				 "A14 power diagnostic clock lookup failed: %d\n",
-				 diag->clock_get_status);
+		for (i = 0; i < A14_AON_POWER_CLK_COUNT; i++) {
+			diag->clks[i].id = a14_aon_power_clk_ids[i];
+			diag->clks[i].clk = devm_clk_get(dev, diag->clks[i].id);
+			if (IS_ERR(diag->clks[i].clk)) {
+				diag_ret = PTR_ERR(diag->clks[i].clk);
+				diag->clks[i].clk = NULL;
+				if (!diag->clock_get_status) {
+					diag->clock_get_status = diag_ret;
+					diag->failed_clock = diag->clks[i].id;
+				}
+				dev_warn(dev,
+					 "A14 power diagnostic clock lookup failed clock=%s ret=%d\n",
+					 diag->clks[i].id, diag_ret);
+			}
+		}
 
 		diag->ready = true;
-		ret = devm_device_add_group(dev, &a14_aon_power_diag_group);
-		if (ret) {
+		diag_ret = devm_device_add_group(dev, &a14_aon_power_diag_group);
+		if (diag_ret) {
 			diag->ready = false;
 			dev_warn(dev,
-				 "failed to add A14 power diagnostic: %d\n", ret);
+				 "failed to add A14 power diagnostic: %d\n",
+				 diag_ret);
+		} else if (diag->clock_get_status) {
+			dev_warn(dev,
+				 "A14 non-MMIO platform-power diagnostic available clock=%s ret=%d initialization=post-probe-success\n",
+				 diag->failed_clock, diag->clock_get_status);
 		} else {
 			dev_warn(dev,
-				 "A14 non-MMIO platform-power diagnostic available\n");
+				 "A14 non-MMIO platform-power diagnostic available clocks=7 initialization=post-probe-success\n");
 		}
 	}
-'''
+"""
     text = replace_once(
         text,
-        "\tplatform_set_drvdata(pdev, camss);\n",
-        "\tplatform_set_drvdata(pdev, camss);\n" + probe_block,
-        "camss_probe initialization",
+        "\treturn 0;\n\nerr_media_device_unregister:\n",
+        probe_block + "\n\treturn 0;\n\nerr_media_device_unregister:\n",
+        "successful camss_probe completion",
     )
 
     if MARKER not in text:
         fail("injection marker is missing after transformation")
     path.write_text(text, encoding="utf-8")
     print("power_diagnostic_injection=applied")
+    print("diagnostic_initialization=post-probe-success")
     print("direct_cpas_mmio=false")
     print("ssc_contact=false")
     return 0
