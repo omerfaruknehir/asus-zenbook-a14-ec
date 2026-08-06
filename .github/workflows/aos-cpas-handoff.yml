@@ -91,7 +91,7 @@ jobs:
             echo 'Power diagnostic must not depend on the master-oriented CPAS build' >&2
             exit 1
           fi
-          if grep -Eq 'qcom_ssc_hpd|x1e80100-asus-zenbook-a14-aos-cpas' "$builder"; then
+          if grep -Eq '^[[:space:]]*cp .*qcom_ssc_hpd|^[[:space:]]*cp .*x1e80100-asus-zenbook-a14-aos-cpas' "$builder"; then
             echo 'Power diagnostic builder must not stage SSC or a CPAS DTB' >&2
             exit 1
           fi
