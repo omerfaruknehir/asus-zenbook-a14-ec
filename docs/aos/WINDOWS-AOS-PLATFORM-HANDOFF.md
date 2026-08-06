@@ -1,6 +1,6 @@
 # Windows AOS camera-platform handoff evidence
 
-This document records the machine-specific evidence used to implement the
+This document records the machine-specific evidence used to investigate the
 Zenbook A14 always-on-camera ownership handoff in Linux. It is not a proposal to
 replay Windows IOCTLs from userspace.
 
@@ -26,7 +26,7 @@ structure:
 The installed front-camera configuration identifies the AOS sensor as
 `ov02c10`, camera ID `2`, with HPD enabled.
 
-## Camera-platform operation
+## Camera-platform operation observed in Windows binaries
 
 `qcAlwaysOnSensing.dll` performs the following order:
 
@@ -45,9 +45,9 @@ The installed front-camera configuration identifies the AOS sensor as
 | 0 | `0x00000101` | route the camera clock/ownership path to AOS |
 | 1 | `0x00000000` | restore the normal AP camera path |
 
-The driver writes the value to
-`CPAS_TOP_CPAS_0_MAIN_CAM_AON_CAM_SEL_CTRL`, offset `0x1e0` from its mapped
-camera-platform/CPAS-top base.
+The binary references
+`CPAS_TOP_CPAS_0_MAIN_CAM_AON_CAM_SEL_CTRL`, offset `0x1e0` from its
+camera-platform/CPAS-top mapping.
 
 ## Physical resource
 
@@ -58,26 +58,45 @@ The machine ACPI `CAMP` device (`QCOM0C32`, UID `0x1b`) describes:
 - `0x0ac16000 + 0x1000`: CCI1
 - `0x0ac19000 + 0x0c000`: camera-platform/CPAS-top window
 
-Therefore the handoff register is physically located at `0x0ac191e0`.
+The apparent register address is therefore `0x0ac191e0`. This establishes
+resource provenance; it does **not** establish that an arbitrary Linux EL1 MMIO
+access is permitted.
 
-Linux already owns the CCI and CAMSS resources, but the current X1E80100 CAMSS
-binding does not describe the `0x0ac19000` window. The correct implementation is
-therefore a CAMSS-owned resource and API, not a hard-coded `ioremap()` in the HPD
-driver and not a `/dev/mem` write.
+## Linux hardware results
 
-## Linux implementation requirements
+The original implementation assumed that mapping the firmware-described window,
+holding CAMSS runtime PM, and enabling `cpas_ahb` plus `cpas_fast_ahb` would be
+sufficient. Hardware disproved that assumption.
 
-The CAMSS provider must:
+1. Runtime PM get/put returned normally.
+2. Runtime PM plus the two CPAS AHB clocks returned normally.
+3. A read from the mux caused an abrupt platform reset with no preserved Linux
+   panic or pstore record.
+4. The read was removed. A later isolated test wrote only `0x000`, the expected
+   already-active AP value, with no readback and no SSC request. The machine
+   again reset before the sysfs write returned.
 
-- map a named `cpas-top` resource;
-- power the Titan-top domain and enable `cpas_ahb`/`cpas_fast_ahb` before access;
-- serialize AP and AOS ownership;
-- reject AOS acquisition while an AP V4L2 pipeline is prepared or streaming;
-- write `0x101`, read it back, and keep the power/clock vote while AOS owns it;
-- restore `0x000` on handshake failure, disable, suspend, service loss, and
-  module removal;
-- never expose the register as a userspace ABI.
+The Stage 3 marker remained `status=started`, `ssc_contacted=false`, and
+`aon_mux_read=false`. This places the failure at the direct write itself or at a
+platform firewall/firmware response to it.
 
-The SSC/IIO driver is a consumer of that provider. Only after the provider has
-successfully switched ownership may it send camera-handshake INIT `576` and
-wait for ACK `832`.
+## Revised implementation requirements
+
+The CAMSS provider now fails acquisition with `-EOPNOTSUPP` before touching the
+register. Direct MMIO remains quarantined.
+
+Before implementing another backend, determine which prerequisite the Windows
+path supplies but the Linux experiment did not. Candidate classes include:
+
+- secure or XPU authorization;
+- a firmware-mediated camera-platform request;
+- a CPAS/CAMNOC power or interconnect sequence beyond the two AHB clocks;
+- another ownership or lifecycle call performed by the Windows camera stack.
+
+The investigation must inspect the call path around the Windows register helper,
+not merely the final store instruction. No further register access should occur
+until a non-resetting access mechanism is supported by evidence.
+
+The SSC/IIO driver remains a consumer of the CAMSS provider. It may send
+camera-handshake INIT 576 only after a future provider backend has successfully
+and safely acquired AOS ownership.
