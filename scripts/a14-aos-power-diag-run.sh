@@ -8,6 +8,8 @@ stage=${A14_AOS_POWER_DIAG_STAGE:-"$HOME/Downloads/a14-aos-power-diag-$release/a
 report=${A14_AOS_POWER_DIAG_REPORT:-"$HOME/Downloads/a14-aos-power-diag-report.txt"}
 marker=${A14_AOS_POWER_DIAG_MARKER:-"$HOME/Downloads/a14-aos-power-diag-last-run.txt"}
 module_load_mode=initramfs
+attr=
+media_stopped=false
 
 fail() {
     printf 'ERROR: %s\n' "$*" >&2
@@ -29,13 +31,29 @@ if lsmod | grep -Eq '^qcom_ssc_hpd[[:space:]]'; then
     fail "qcom_ssc_hpd is loaded; unload it before the power diagnostic"
 fi
 
-sudo -v
+restore_media() {
+    set +e
+    if [ "$media_stopped" = true ]; then
+        systemctl --user start pipewire.socket pipewire-pulse.socket 2>/dev/null
+        systemctl --user start pipewire.service pipewire-pulse.service wireplumber.service 2>/dev/null
+    fi
+}
+trap restore_media EXIT INT TERM
 
-# Some initramfs-tools configurations include the replacement module but do not
-# process /conf/modules before switching to the real root. In that case, load
-# the already validated staged module directly. This remains diagnostic-only:
-# it does not install into /lib/modules, contact SSC, or access CPAS MMIO.
-if ! lsmod | grep -Eq '^qcom_camss[[:space:]]'; then
+find_diagnostic_attr() {
+    attr=
+    for link in /sys/bus/platform/drivers/qcom-camss/*; do
+        [ -L "$link" ] || continue
+        dev=$(readlink -f "$link")
+        candidate="$dev/a14_aon_power_diag/a14_aon_power_probe"
+        if [ -e "$candidate" ]; then
+            attr=$candidate
+            break
+        fi
+    done
+}
+
+validate_staged_module() {
     [ -s "$stage/qcom-camss.ko" ] || \
         fail "staged power-diagnostic CAMSS module is missing"
     [ -s "$stage/BUILD-INFO.txt" ] || \
@@ -69,8 +87,64 @@ if ! lsmod | grep -Eq '^qcom_camss[[:space:]]'; then
             "$stage/qcom-camss.ko"; then
         fail "staged CAMSS contains a retired direct-MMIO diagnostic"
     fi
+}
 
-    printf '%s\n' 'qcom_camss_initramfs_autoload=false'
+stop_media_and_require_idle() {
+    systemctl --user stop pipewire-pulse.socket pipewire.socket 2>/dev/null || true
+    systemctl --user stop wireplumber.service pipewire-pulse.service pipewire.service 2>/dev/null || true
+    media_stopped=true
+    sleep 2
+
+    users=$(sudo fuser /dev/video* /dev/media* 2>/dev/null || true)
+    if [ -n "$users" ]; then
+        sudo fuser -v /dev/video* /dev/media* 2>&1 || true
+        fail "camera/media nodes remain busy; CAMSS was not replaced or probed"
+    fi
+}
+
+remove_unmarked_camss() {
+    find_diagnostic_attr
+    if [ -n "$attr" ]; then
+        return 0
+    fi
+
+    printf '%s\n' 'loaded_qcom_camss_diagnostic_attribute=false'
+    printf '%s\n' 'removing_unmarked_qcom_camss=true'
+    set +e
+    sudo modprobe -r qcom_camss
+    remove_status=$?
+    set -e
+    if [ "$remove_status" -ne 0 ]; then
+        sudo journalctl -k -b --no-pager -n 120 -o short-monotonic |
+            grep -E 'qcom-camss|qcom_camss|module|busy|in use|remove' || true
+        fail "unmarked qcom_camss could not be removed with status $remove_status"
+    fi
+    sleep 1
+    if lsmod | grep -Eq '^qcom_camss[[:space:]]'; then
+        fail "unmarked qcom_camss remained loaded after removal"
+    fi
+}
+
+sudo -v
+validate_staged_module
+stop_media_and_require_idle
+
+# The initramfs may load the diagnostic late, or udev may race the runner by
+# loading the normal rootfs module while dependencies are prepared. The
+# diagnostic-only sysfs attribute is authoritative; module name and taint are
+# not sufficient to distinguish the two builds.
+if lsmod | grep -Eq '^qcom_camss[[:space:]]'; then
+    find_diagnostic_attr
+    if [ -n "$attr" ]; then
+        module_load_mode=existing-diagnostic
+        printf '%s\n' 'loaded_qcom_camss_diagnostic_attribute=true'
+    else
+        remove_unmarked_camss
+    fi
+fi
+
+if ! lsmod | grep -Eq '^qcom_camss[[:space:]]'; then
+    printf '%s\n' 'qcom_camss_diagnostic_loaded=false'
     printf '%s\n' 'loading_staged_diagnostic_module=true'
 
     while IFS= read -r dependency; do
@@ -79,53 +153,52 @@ if ! lsmod | grep -Eq '^qcom_camss[[:space:]]'; then
             fail "could not load CAMSS dependency: $dependency"
     done < <(modinfo -F depends "$stage/qcom-camss.ko" | tr ',' '\n')
 
-    set +e
-    sudo insmod "$stage/qcom-camss.ko"
-    module_status=$?
-    set -e
-    if [ "$module_status" -ne 0 ]; then
-        sudo journalctl -k -b --no-pager -n 120 -o short-monotonic |
-            grep -E 'qcom-camss|qcom_camss|module|Unknown symbol|verification|signature' || true
-        fail "staged qcom_camss insertion failed with status $module_status"
+    # A modalias/udev event can load stock qcom_camss while the dependency loop
+    # runs. Accept it only if it exposes the diagnostic-only attribute.
+    if lsmod | grep -Eq '^qcom_camss[[:space:]]'; then
+        find_diagnostic_attr
+        if [ -n "$attr" ]; then
+            module_load_mode=concurrent-diagnostic-autoload
+            printf '%s\n' 'concurrent_qcom_camss_is_diagnostic=true'
+        else
+            printf '%s\n' 'concurrent_qcom_camss_is_diagnostic=false'
+            remove_unmarked_camss
+        fi
     fi
-    sleep 2
-    module_load_mode=runner-validated-insmod
+
+    if ! lsmod | grep -Eq '^qcom_camss[[:space:]]'; then
+        set +e
+        sudo insmod "$stage/qcom-camss.ko"
+        module_status=$?
+        set -e
+
+        if [ "$module_status" -ne 0 ]; then
+            # EEXIST can still be a harmless final race. Accept only a module
+            # that exposes the diagnostic-only sysfs attribute.
+            sleep 1
+            find_diagnostic_attr
+            if lsmod | grep -Eq '^qcom_camss[[:space:]]' && [ -n "$attr" ]; then
+                module_load_mode=concurrent-diagnostic-insmod-race
+                printf '%s\n' 'insmod_race_loaded_diagnostic=true'
+            else
+                sudo journalctl -k -b --no-pager -n 160 -o short-monotonic |
+                    grep -E 'qcom-camss|qcom_camss|module|Unknown symbol|verification|signature|File exists' || true
+                fail "staged qcom_camss insertion failed with status $module_status"
+            fi
+        else
+            module_load_mode=runner-validated-insmod
+        fi
+    fi
 fi
 
-lsmod | grep -Eq '^qcom_camss[[:space:]]' || fail "qcom_camss is not loaded"
-
-attr=
-for link in /sys/bus/platform/drivers/qcom-camss/*; do
-    [ -L "$link" ] || continue
-    dev=$(readlink -f "$link")
-    candidate="$dev/a14_aon_power_diag/a14_aon_power_probe"
-    if [ -e "$candidate" ]; then
-        attr=$candidate
-        break
-    fi
-done
-[ -n "$attr" ] || {
-    sudo journalctl -k -b --no-pager -n 160 -o short-monotonic |
-        grep -E 'qcom-camss|qcom_camss|A14 power diagnostic|probe|defer|error|failed' || true
-    fail "the stock-source CAMSS power-diagnostic attribute was not found"
-}
-
-restore_media() {
-    set +e
-    systemctl --user start pipewire.socket pipewire-pulse.socket 2>/dev/null
-    systemctl --user start pipewire.service pipewire-pulse.service wireplumber.service 2>/dev/null
-}
-trap restore_media EXIT INT TERM
-
-systemctl --user stop pipewire-pulse.socket pipewire.socket 2>/dev/null || true
-systemctl --user stop wireplumber.service pipewire-pulse.service pipewire.service 2>/dev/null || true
 sleep 2
-
-users=$(sudo fuser /dev/video* /dev/media* 2>/dev/null || true)
-if [ -n "$users" ]; then
-    sudo fuser -v /dev/video* /dev/media* 2>&1 || true
-    fail "camera/media nodes remain busy; the power diagnostic was not attempted"
-fi
+lsmod | grep -Eq '^qcom_camss[[:space:]]' || fail "qcom_camss is not loaded"
+find_diagnostic_attr
+[ -n "$attr" ] || {
+    sudo journalctl -k -b --no-pager -n 180 -o short-monotonic |
+        grep -E 'qcom-camss|qcom_camss|A14 power diagnostic|probe|defer|error|failed' || true
+    fail "loaded qcom_camss is not the stock-source power-diagnostic build"
+}
 
 boot_id=$(cat /proc/sys/kernel/random/boot_id)
 started=$(date --iso-8601=seconds)
