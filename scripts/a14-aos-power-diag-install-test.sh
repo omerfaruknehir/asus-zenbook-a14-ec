@@ -19,7 +19,7 @@ fail() {
 }
 
 for tool in cp depmod findmnt gzip install lsinitramfs mkinitramfs modinfo \
-            readlink sha256sum strings sudo update-grub xz zstd; do
+            readlink sha256sum sudo update-grub xz zstd; do
     command -v "$tool" >/dev/null 2>&1 || fail "required command is missing: $tool"
 done
 
@@ -59,11 +59,13 @@ case "$(modinfo -F vermagic "$stage/qcom-camss.ko")" in
     "$release "*) ;;
     *) fail "power-diagnostic CAMSS vermagic does not match $release" ;;
 esac
-strings "$stage/qcom-camss.ko" | grep -Fq \
-    'AON-POWER-DIAG begin direct-mmio=false ssc=false' || \
+# Search the module directly. A `strings | grep -q` pipeline is unsafe under
+# pipefail because grep exits early on a match and strings can report SIGPIPE.
+grep -aFq 'AON-POWER-DIAG begin direct-mmio=false ssc=false' \
+    "$stage/qcom-camss.ko" || \
     fail "the selected CAMSS module lacks the non-MMIO power probe"
-if strings "$stage/qcom-camss.ko" | grep -Eq \
-    'AON-DIAG stage=3|ap-write-no-read|aon-switch-restore-no-read'; then
+if grep -aEq 'AON-DIAG stage=3|ap-write-no-read|aon-switch-restore-no-read' \
+        "$stage/qcom-camss.ko"; then
     fail "the selected CAMSS module contains a retired direct-MMIO diagnostic"
 fi
 
