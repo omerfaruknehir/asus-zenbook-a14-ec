@@ -61,13 +61,13 @@ Applied the A14 CAMSS AOS handoff series to:
   $src
 
 The direct CPAS MMIO handoff is quarantined because both reads and writes reset
-this platform. The provider currently returns -EOPNOTSUPP until the correct
-firmware-mediated or platform-specific access mechanism is implemented.
+this platform. The provider returns -EOPNOTSUPP before direct MMIO until the
+correct firmware-mediated or platform-specific access mechanism is implemented.
 
 Next required validations:
   make ARCH=arm64 dt_binding_check DT_SCHEMA_FILES=qcom,x1e80100-camss.yaml
   build the Ubuntu A14 DTB and qcom-camss module
-  identify the Windows camera-platform access prerequisite or mediated path
+  validate the non-MMIO platform-power prerequisite probe
   replace the quarantine only after a non-resetting hardware access is proven
 
 No boot files or installed kernel packages were changed.
