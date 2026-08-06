@@ -72,11 +72,6 @@ Write-Host ''
 Save-Text -Path (Join-Path $output 'wpr-status-before.txt') -Command {
     & $wpr.Source -status
 }
-$statusText = Get-Content -LiteralPath (Join-Path $output 'wpr-status-before.txt') -Raw
-if ($statusText -notmatch '(?i)no\s+recording|not\s+recording|no\s+trace') {
-    throw 'Another WPR recording may already be active. Stop it before running this collector.'
-}
-
 Save-Text -Path (Join-Path $output 'wpr-profiles.txt') -Command {
     & $wpr.Source -profiles
 }
@@ -166,15 +161,25 @@ Save-Text -Path (Join-Path $output 'system-events-trace-window.txt') -Command {
     } | Format-List TimeCreated, ProviderName, Id, LevelDisplayName, Message
 }
 
+$etlExists = Test-Path -LiteralPath $etl -PathType Leaf
+$etlSize = 0
+if ($etlExists) {
+    $etlSize = (Get-Item -LiteralPath $etl).Length
+}
+
 @(
     "trace_started=$($traceStart.ToString('o'))"
     "trace_stopped=$($traceEnd.ToString('o'))"
     "trace_duration_seconds=$([math]::Round(($traceEnd - $traceStart).TotalSeconds, 3))"
     "etl=$etl"
-    "etl_exists=$(Test-Path -LiteralPath $etl -PathType Leaf)"
-    "etl_size=$((Get-Item -LiteralPath $etl -ErrorAction SilentlyContinue).Length)"
+    "etl_exists=$etlExists"
+    "etl_size=$etlSize"
     'collector_hardware_control=false'
 ) | Out-File -LiteralPath (Join-Path $output 'TRACE-RESULT.txt') -Encoding utf8 -Width 8192
+
+if (-not $etlExists -or $etlSize -le 0) {
+    throw 'WPR stopped without producing a non-empty ETL file.'
+}
 
 $zip = "$output.zip"
 if (Test-Path -LiteralPath $zip) {
