@@ -9,13 +9,20 @@ report=${A14_AOS_POWER_CLOCK_AUDIT_REPORT:-"$HOME/Downloads/a14-aos-power-clock-
 attr=
 dev=
 of_node=
+clock_names_tmp=
 
 fail() {
     printf 'ERROR: %s\n' "$*" >&2
     exit 1
 }
 
-for tool in cat date grep journalctl readlink sudo tr uname; do
+cleanup() {
+    set +e
+    [ -z "$clock_names_tmp" ] || rm -f "$clock_names_tmp"
+}
+trap cleanup EXIT INT TERM
+
+for tool in cat date grep journalctl mktemp readlink rm sed sudo tee tr uname; do
     command -v "$tool" >/dev/null 2>&1 || fail "required command is missing: $tool"
 done
 
@@ -66,11 +73,10 @@ sudo journalctl -k -b --no-pager -o short-monotonic |
 printf '\n%s\n' '===== LIVE CAMSS DEVICE-TREE CLOCK NAMES ====='
 clock_names_file="$of_node/clock-names"
 if [ -r "$clock_names_file" ]; then
-    tr '\0' '\n' < "$clock_names_file" | sed '/^$/d' | tee /tmp/a14-aon-clock-names.$$
-    clock_names_tmp=/tmp/a14-aon-clock-names.$$
+    clock_names_tmp=$(mktemp)
+    tr '\0' '\n' < "$clock_names_file" | sed '/^$/d' | tee "$clock_names_tmp"
 else
     printf 'clock_names_property=unreadable-or-absent\n'
-    clock_names_tmp=
 fi
 
 printf '\n%s\n' '===== EXPECTED DIAGNOSTIC CLOCK MAPPING ====='
@@ -88,7 +94,6 @@ for clock in \
         printf 'clock=%s dt_status=missing\n' "$clock"
     fi
 done
-[ -z "$clock_names_tmp" ] || rm -f "$clock_names_tmp"
 
 printf '\n%s\n' '===== RUNTIME POWER STATE ====='
 for property in control runtime_status runtime_active_time runtime_suspended_time; do
