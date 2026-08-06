@@ -68,3 +68,22 @@ jobs:
                   throw "$path contains a prohibited hardware-control path."
               }
           }
+
+      - name: Check focused-audit PowerShell 5.1 hazards
+        shell: powershell
+        run: |
+          $path = 'scripts/a14-windows-camera-platform-focused-audit.ps1'
+          $script = Get-Content $path -Raw
+
+          if ($script -match '\[System\.Collections\.Generic\.List\[object\]\]\$List') {
+              throw 'Do not bind an initially empty generic list through a mandatory PowerShell 5.1 parameter.'
+          }
+          if ($script -notmatch 'function Add-SelectedPath') {
+              throw 'The focused collector must use return-based file selection.'
+          }
+          if ($script -match '(?m)\\\s*$') {
+              throw 'Shell-style backslash line continuation is invalid in PowerShell.'
+          }
+          if ($script -notmatch '\[AllowEmptyCollection\(\)\]') {
+              throw 'JSON output parameters must explicitly accept empty collections.'
+          }
