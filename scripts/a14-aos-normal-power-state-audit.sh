@@ -22,8 +22,8 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-for tool in cam cat date find grep journalctl ls mktemp od readlink rm sed \
-            sudo tee timeout tr uname; do
+for tool in basename cam cat date find grep journalctl ls mktemp od readlink rm \
+            sed sort sudo tee timeout tr uname; do
     command -v "$tool" >/dev/null 2>&1 || fail "required command is missing: $tool"
 done
 
