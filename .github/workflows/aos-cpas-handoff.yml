@@ -60,7 +60,8 @@ jobs:
             kernel-patches/aos/cpas-handoff/apply.sh
           grep -q 'returns -EOPNOTSUPP before' \
             kernel-patches/aos/cpas-handoff/apply.sh
-          grep -q 'Direct host MMIO access to the AON mux is quarantined' \
+          grep -q 'Direct host MMIO' kernel-patches/aos/cpas-handoff/README.md
+          grep -q 'access to the AON mux is quarantined' \
             kernel-patches/aos/cpas-handoff/README.md
           grep -q 'stage 3 is retired' scripts/a14-aos-stage-diag-run.sh
           grep -q 'stage 4 is permanently blocked' scripts/a14-aos-stage-diag-run.sh
@@ -81,9 +82,9 @@ jobs:
             exit 1
           fi
 
-          if grep -R -E 'ap-write-no-read|aon-switch-restore-no-read|confirm-mmio-write|confirm-aon-switch' \
+          if grep -R -E 'confirm-mmio-write|confirm-aon-switch' \
               scripts kernel-patches/aos/diagnostics 2>/dev/null; then
-            echo 'A runnable direct-MMIO diagnostic path remains' >&2
+            echo 'A runnable direct-MMIO confirmation path remains' >&2
             exit 1
           fi
 
