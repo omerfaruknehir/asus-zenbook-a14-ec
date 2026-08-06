@@ -43,15 +43,15 @@ function Save-Json {
 
     $path = Join-Path $output $Name
     try {
-        ConvertTo-Json -InputObject $Value -Depth $Depth |
-            Out-File -LiteralPath $path -Encoding utf8 -Width 8192
+        ConvertTo-Json -InputObject $Value -Depth $Depth | Out-File -LiteralPath $path -Encoding utf8 -Width 8192
     }
     catch {
-        ConvertTo-Json -InputObject ([pscustomobject]@{
+        $failure = [pscustomobject]@{
             collection_status = 'failed'
             exception = $_.Exception.GetType().FullName
             message = $_.Exception.Message
-        }) | Out-File -LiteralPath $path -Encoding utf8 -Width 8192
+        }
+        ConvertTo-Json -InputObject $failure | Out-File -LiteralPath $path -Encoding utf8 -Width 8192
     }
 }
 
@@ -68,12 +68,7 @@ function Get-FileMetadata {
         length = $item.Length
         sha256 = $hash.Hash
         signature_status = [string]$signature.Status
-        signer_subject = if ($signature.SignerCertificate) {
-            $signature.SignerCertificate.Subject
-        }
-        else {
-            $null
-        }
+        signer_subject = if ($signature.SignerCertificate) { $signature.SignerCertificate.Subject } else { $null }
         file_version = $item.VersionInfo.FileVersion
         product_version = $item.VersionInfo.ProductVersion
         original_filename = $item.VersionInfo.OriginalFilename
@@ -96,9 +91,7 @@ function Write-OffsetStrings {
     for ($index = 0; $index -lt $bytes.Length; $index++) {
         $value = $bytes[$index]
         if ($value -ge 0x20 -and $value -le 0x7e) {
-            if ($builder.Length -eq 0) {
-                $start = $index
-            }
+            if ($builder.Length -eq 0) { $start = $index }
             [void]$builder.Append([char]$value)
         }
         else {
@@ -118,9 +111,7 @@ function Write-OffsetStrings {
         $low = $bytes[$index]
         $high = $bytes[$index + 1]
         if ($high -eq 0 -and $low -ge 0x20 -and $low -le 0x7e) {
-            if ($builder.Length -eq 0) {
-                $start = $index
-            }
+            if ($builder.Length -eq 0) { $start = $index }
             [void]$builder.Append([char]$low)
         }
         else {
@@ -142,18 +133,20 @@ function Write-OffsetStrings {
     }
 }
 
-function Get-SelectedFile {
+function Add-SelectedPath {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
         [Parameter(Mandatory = $true)][string]$OutputName
     )
 
     if (Test-Path -LiteralPath $Path -PathType Leaf) {
-        [pscustomobject]@{
+        return [pscustomobject]@{
             source = Get-Item -LiteralPath $Path
             output_name = $OutputName
         }
     }
+
+    return $null
 }
 
 Write-Host ('=' * 76)
@@ -174,14 +167,8 @@ Write-Host 'Read-only collection: no camera IOCTL, device restart, or hardware w
 ) | Out-File -LiteralPath (Join-Path $output 'AUDIT-INFO.txt') -Encoding utf8
 
 $repository = Join-Path $env:windir 'System32\DriverStore\FileRepository'
-$platformPackage = Get-ChildItem -LiteralPath $repository -Directory \
-    -Filter 'qccamplatform8380.inf_*' -ErrorAction SilentlyContinue |
-    Sort-Object LastWriteTimeUtc -Descending |
-    Select-Object -First 1
-$extensionPackage = Get-ChildItem -LiteralPath $repository -Directory \
-    -Filter 'qccamplatform_ext8380.inf_*' -ErrorAction SilentlyContinue |
-    Sort-Object LastWriteTimeUtc -Descending |
-    Select-Object -First 1
+$platformPackage = Get-ChildItem -LiteralPath $repository -Directory -Filter 'qccamplatform8380.inf_*' -ErrorAction SilentlyContinue | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
+$extensionPackage = Get-ChildItem -LiteralPath $repository -Directory -Filter 'qccamplatform_ext8380.inf_*' -ErrorAction SilentlyContinue | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
 
 if (-not $platformPackage) {
     throw 'qccamplatform8380 DriverStore package was not found.'
@@ -191,20 +178,18 @@ if (-not $extensionPackage) {
 }
 
 $selected = @()
-foreach ($name in @(
+$platformNames = @(
     'qccamplatform8380.sys',
     'qccamplatform8380.inf',
     'qccamplatform8380.cat',
     'com.qti.tuned.default.bin'
-)) {
-    $entry = Get-SelectedFile \
-        -Path (Join-Path $platformPackage.FullName $name) \
-        -OutputName $name
-    if ($null -ne $entry) {
-        $selected += $entry
-    }
+)
+foreach ($name in $platformNames) {
+    $entry = Add-SelectedPath -Path (Join-Path $platformPackage.FullName $name) -OutputName $name
+    if ($null -ne $entry) { $selected += $entry }
 }
-foreach ($name in @(
+
+$extensionNames = @(
     'qccamplatform_ext8380.inf',
     'qccamplatform_ext8380.cat',
     'CAMP_RES_QRD.bin',
@@ -215,34 +200,21 @@ foreach ($name in @(
     'CAMP_PERF_MTP.bin',
     'CAMP_PCFG_MTP.bin',
     'CAMP_PCF1_MTP.bin'
-)) {
-    $entry = Get-SelectedFile \
-        -Path (Join-Path $extensionPackage.FullName $name) \
-        -OutputName $name
-    if ($null -ne $entry) {
-        $selected += $entry
-    }
+)
+foreach ($name in $extensionNames) {
+    $entry = Add-SelectedPath -Path (Join-Path $extensionPackage.FullName $name) -OutputName $name
+    if ($null -ne $entry) { $selected += $entry }
 }
 
 $alwaysOnCandidates = @()
 $system32 = Join-Path $env:windir 'System32'
-$alwaysOnCandidates += @(
-    Get-ChildItem -LiteralPath $system32 -File \
-        -Filter 'qcAlwaysOnSensing.dll' -ErrorAction SilentlyContinue
-)
-$alwaysOnCandidates += @(
-    Get-ChildItem -LiteralPath $repository -File -Recurse \
-        -Filter 'qcAlwaysOnSensing.dll' -ErrorAction SilentlyContinue
-)
+$alwaysOnCandidates += @(Get-ChildItem -LiteralPath $system32 -File -Filter 'qcAlwaysOnSensing.dll' -ErrorAction SilentlyContinue)
+$alwaysOnCandidates += @(Get-ChildItem -LiteralPath $repository -File -Recurse -Filter 'qcAlwaysOnSensing.dll' -ErrorAction SilentlyContinue)
 $alwaysOnIndex = 0
 foreach ($candidate in @($alwaysOnCandidates | Sort-Object FullName -Unique)) {
     $alwaysOnIndex++
-    $entry = Get-SelectedFile \
-        -Path $candidate.FullName \
-        -OutputName ("qcAlwaysOnSensing-{0}.dll" -f $alwaysOnIndex)
-    if ($null -ne $entry) {
-        $selected += $entry
-    }
+    $entry = Add-SelectedPath -Path $candidate.FullName -OutputName ("qcAlwaysOnSensing-{0}.dll" -f $alwaysOnIndex)
+    if ($null -ne $entry) { $selected += $entry }
 }
 
 if ($selected.Count -eq 0) {
@@ -250,12 +222,9 @@ if ($selected.Count -eq 0) {
 }
 
 $metadata = @()
-$llvmReadObj = Get-Command llvm-readobj.exe -ErrorAction SilentlyContinue |
-    Select-Object -First 1
-$llvmObjdump = Get-Command llvm-objdump.exe -ErrorAction SilentlyContinue |
-    Select-Object -First 1
-$dumpbin = Get-Command dumpbin.exe -ErrorAction SilentlyContinue |
-    Select-Object -First 1
+$llvmReadObj = Get-Command llvm-readobj.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+$llvmObjdump = Get-Command llvm-objdump.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+$dumpbin = Get-Command dumpbin.exe -ErrorAction SilentlyContinue | Select-Object -First 1
 
 foreach ($entry in @($selected | Sort-Object output_name -Unique)) {
     $source = $entry.source
@@ -264,76 +233,47 @@ foreach ($entry in @($selected | Sort-Object output_name -Unique)) {
     Copy-Item -LiteralPath $source.FullName -Destination $destination -Force
 
     $fileMetadata = Get-FileMetadata -Path $source.FullName
-    $fileMetadata | Add-Member \
-        -NotePropertyName output_name \
-        -NotePropertyValue $outputName
+    $fileMetadata | Add-Member -NotePropertyName output_name -NotePropertyValue $outputName
     $metadata += $fileMetadata
 
     if ($source.Extension -in @('.sys', '.dll', '.bin')) {
-        Write-OffsetStrings \
-            -Path $source.FullName \
-            -Destination (Join-Path $payload ($outputName + '.offset-strings.txt'))
+        Write-OffsetStrings -Path $source.FullName -Destination (Join-Path $payload ($outputName + '.offset-strings.txt'))
     }
 
     if ($source.Extension -in @('.sys', '.dll')) {
         $peOutput = Join-Path $payload ($outputName + '.pe.txt')
         if ($llvmReadObj) {
-            & $llvmReadObj.Source \
-                --file-headers --coff-imports --coff-exports \
-                $source.FullName 2>&1 |
-                Out-File -LiteralPath $peOutput -Encoding utf8 -Width 8192
+            & $llvmReadObj.Source --file-headers --coff-imports --coff-exports $source.FullName 2>&1 | Out-File -LiteralPath $peOutput -Encoding utf8 -Width 8192
         }
         elseif ($dumpbin) {
-            & $dumpbin.Source /headers /imports /exports \
-                $source.FullName 2>&1 |
-                Out-File -LiteralPath $peOutput -Encoding utf8 -Width 8192
+            & $dumpbin.Source /headers /imports /exports $source.FullName 2>&1 | Out-File -LiteralPath $peOutput -Encoding utf8 -Width 8192
         }
         else {
-            'Neither llvm-readobj.exe nor dumpbin.exe is installed.' |
-                Out-File -LiteralPath $peOutput -Encoding utf8
+            'Neither llvm-readobj.exe nor dumpbin.exe is installed.' | Out-File -LiteralPath $peOutput -Encoding utf8
         }
 
         if ($llvmObjdump) {
-            & $llvmObjdump.Source --disassemble --print-imm-hex \
-                $source.FullName 2>&1 |
-                Out-File \
-                    -LiteralPath (Join-Path $payload ($outputName + '.disassembly.txt')) \
-                    -Encoding utf8 -Width 8192
+            $disassemblyPath = Join-Path $payload ($outputName + '.disassembly.txt')
+            & $llvmObjdump.Source --disassemble --print-imm-hex $source.FullName 2>&1 | Out-File -LiteralPath $disassemblyPath -Encoding utf8 -Width 8192
         }
     }
 }
 Save-Json -Name 'focused-file-metadata.json' -Value @($metadata) -Depth 6
 
-$pnpIds = @(
-    'QCOM0C32',
-    'QCOM0C17',
-    'QCOM0C2B',
-    'QCOM0C0C',
-    'QCOM0D06',
-    'QCOM0CCC'
-)
+$pnpIds = @('QCOM0C32', 'QCOM0C17', 'QCOM0C2B', 'QCOM0C0C', 'QCOM0D06', 'QCOM0CCC')
 $pnpDevices = @()
 $pnpRecords = @()
 if (Get-Command Get-PnpDevice -ErrorAction SilentlyContinue) {
     $pnpDevices = @(
-        Get-PnpDevice |
-            Where-Object {
-                $instance = $_.InstanceId
-                @(
-                    $pnpIds |
-                        Where-Object { $instance -match [regex]::Escape($_) }
-                ).Count -gt 0
-            } |
-            Sort-Object InstanceId
+        Get-PnpDevice | Where-Object {
+            $instance = $_.InstanceId
+            @($pnpIds | Where-Object { $instance -match [regex]::Escape($_) }).Count -gt 0
+        } | Sort-Object InstanceId
     )
 
     foreach ($device in $pnpDevices) {
         try {
-            $properties = @(
-                Get-PnpDeviceProperty \
-                    -InstanceId $device.InstanceId \
-                    -ErrorAction Stop
-            )
+            $properties = @(Get-PnpDeviceProperty -InstanceId $device.InstanceId -ErrorAction Stop)
             $pnpRecords += [pscustomobject]@{
                 instance_id = $device.InstanceId
                 friendly_name = $device.FriendlyName
@@ -368,20 +308,14 @@ Save-Text -Name 'camera-platform-registry.txt' -Command {
     reg.exe query 'HKLM\SYSTEM\CurrentControlSet\Services\qcCameraPlatform' /s
 }
 Save-Text -Name 'camera-platform-etw-providers.txt' -Command {
-    logman.exe query providers |
-        Select-String \
-            -Pattern 'camera|qcom|qualcomm|cpas|camnoc|aos|sensor|power' \
-            -CaseSensitive:$false
+    logman.exe query providers | Select-String -Pattern 'camera|qcom|qualcomm|cpas|camnoc|aos|sensor|power' -CaseSensitive:$false
 }
 
 $zip = "$output.zip"
 if (Test-Path -LiteralPath $zip) {
     Remove-Item -LiteralPath $zip -Force
 }
-Compress-Archive \
-    -LiteralPath $output \
-    -DestinationPath $zip \
-    -CompressionLevel Optimal
+Compress-Archive -LiteralPath $output -DestinationPath $zip -CompressionLevel Optimal
 
 Write-Host ''
 Write-Host "Audit directory: $output"
