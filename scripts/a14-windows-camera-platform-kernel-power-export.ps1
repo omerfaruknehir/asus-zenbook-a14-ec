@@ -141,11 +141,19 @@ function Get-NamedPayload {
     $pairs = New-Object 'System.Collections.Generic.List[string]'
     try {
         [xml]$document = $EventXml
-        $eventData = $document.Event.EventData
+        $eventData = $document.SelectSingleNode('/*[local-name()="Event"]/*[local-name()="EventData"]')
         if ($null -ne $eventData) {
             foreach ($node in @($eventData.ChildNodes)) {
                 $name = ''
-                try { $name = [string]$node.Name } catch { $name = '' }
+                try {
+                    $nameAttribute = $node.Attributes['Name']
+                    if ($null -ne $nameAttribute) {
+                        $name = [string]$nameAttribute.Value
+                    }
+                }
+                catch {
+                    $name = ''
+                }
                 if ([string]::IsNullOrWhiteSpace($name)) {
                     try { $name = [string]$node.LocalName } catch { $name = 'Value' }
                 }
