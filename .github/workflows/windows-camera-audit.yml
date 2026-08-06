@@ -1,0 +1,56 @@
+name: Validate Windows camera-platform audit
+
+on:
+  push:
+    paths:
+      - 'scripts/a14-windows-camera-platform-audit.ps1'
+      - '.github/workflows/windows-camera-audit.yml'
+  pull_request:
+    paths:
+      - 'scripts/a14-windows-camera-platform-audit.ps1'
+      - '.github/workflows/windows-camera-audit.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  parse:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Parse PowerShell 5.1 script
+        shell: powershell
+        run: |
+          $errors = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path 'scripts/a14-windows-camera-platform-audit.ps1'),
+              [ref]$null,
+              [ref]$errors
+          )
+          if ($errors.Count -ne 0) {
+              $errors | Format-List *
+              throw "PowerShell parser reported $($errors.Count) error(s)."
+          }
+
+      - name: Enforce read-only collector invariants
+        shell: powershell
+        run: |
+          $script = Get-Content 'scripts/a14-windows-camera-platform-audit.ps1' -Raw
+          foreach ($required in @(
+              'hardware_writes=false',
+              'camera_ioctls_sent=false',
+              'Get-PnpDeviceProperty',
+              'qccamplatform',
+              'Get-AuthenticodeSignature',
+              'Get-FileHash',
+              'Compress-Archive'
+          )) {
+              if (-not $script.Contains($required)) {
+                  throw "Missing required collector invariant: $required"
+              }
+          }
+          if ($script -match 'DeviceIoControl|CreateFileW|WriteFile|Set-PnpDevice|Disable-PnpDevice|Enable-PnpDevice') {
+              throw 'The audit script contains a prohibited hardware-control path.'
+          }
