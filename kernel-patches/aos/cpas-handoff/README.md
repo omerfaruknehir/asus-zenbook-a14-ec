@@ -33,6 +33,20 @@ Therefore this is not a read-only-versus-write-only problem. Direct host MMIO
 access to the AON mux is quarantined. **Do not run the former Stage 4 AON
 switch/restore test.**
 
+## Windows power-resource evidence
+
+The installed Windows camera-platform driver refuses the AOS configuration IOCTL
+when its internal `PlatformPowerState` is off. It uses PoFx and ACPI runtime
+resource enumeration, and the matching PEP resource binary names Titan-top
+GDSC, camera core AHB, CPAS AHB, CAMNOC RT/NRT AXI, GCC camera clocks,
+interconnect masters, and performance states.
+
+That resource graph is broader than the Linux Stage 3 setup, which explicitly
+enabled only `cpas_ahb` and `cpas_fast_ahb` after CAMSS runtime PM. Incomplete
+camera-platform power/clock activation is therefore the leading reset
+hypothesis, although exact ordering still requires static analysis of the
+matching driver and configuration binaries.
+
 ## Patch order
 
 1. `0001-dt-bindings-media-qcom-x1e80100-camss-add-cpas-top.patch`
@@ -67,9 +81,18 @@ Do not apply only the earlier experimental patches.
 
 ## Next investigation
 
-The next step is evidence gathering, not another MMIO attempt. Determine what
-`qccamplatform8380.sys` or its dependent Windows camera stack does before the
-register operation: secure/XPU authorization, a firmware-mediated request,
-additional CPAS/CAMNOC power sequencing, or another platform ownership call.
-Any replacement backend must be proven non-resetting before the quarantine is
-removed and before SSC INIT 576 is sent.
+Run the read-only focused Windows collector:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass `
+  -File .\scripts\a14-windows-camera-platform-focused-audit.ps1
+```
+
+It preserves the matching camera-platform driver and only the relevant CAMP
+resource/configuration binaries, records hashes/signatures and dependencies, and
+produces disassembly automatically when `llvm-objdump.exe` is available.
+
+Use those files to locate references to the AOS power-state rejection,
+mux-success and register-log strings, then reconstruct which PoFx resources are
+active before the store. The next Linux test must be a non-MMIO resource
+prerequisite probe; the quarantine must remain until that state is proven.
