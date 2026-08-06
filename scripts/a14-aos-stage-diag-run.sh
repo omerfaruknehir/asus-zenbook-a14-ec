@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-2.0-only
-# Run exactly one isolated CAMSS AON diagnostic stage. Never contacts SSC.
+# Run only the non-MMIO CAMSS prerequisite diagnostics. Never contacts SSC.
 set -Eeuo pipefail
 
 stage=${1:-}
-confirm=${2:-}
 release=${A14_KERNEL_RELEASE:-$(uname -r)}
 report=${A14_AOS_DIAG_REPORT:-"$HOME/Downloads/a14-aos-diag-stage-${stage:-unknown}.txt"}
 marker=${A14_AOS_DIAG_MARKER:-"$HOME/Downloads/a14-aos-diag-last-stage.txt"}
@@ -18,17 +17,13 @@ case "$stage" in
     1) stage_name=runtime-pm ;;
     2) stage_name=cpas-clocks ;;
     3)
-        stage_name=ap-write-no-read
-        [ "$confirm" = --confirm-mmio-write ] || \
-            fail "stage 3 requires the explicit second argument --confirm-mmio-write"
+        fail "stage 3 is retired: an AP-value MMIO write reset the platform before returning"
         ;;
     4)
-        stage_name=aon-switch-restore-no-read
-        [ "$confirm" = --confirm-aon-switch ] || \
-            fail "stage 4 requires the explicit second argument --confirm-aon-switch"
+        fail "stage 4 is permanently blocked because stage 3 already proved direct MMIO unsafe"
         ;;
     *)
-        echo "Usage: $0 {1|2|3|4} [--confirm-mmio-write|--confirm-aon-switch]" >&2
+        echo "Usage: $0 {1|2}" >&2
         exit 2
         ;;
 esac
@@ -91,22 +86,22 @@ boot_id=$boot_id
 started=$started
 status=started
 ssc_contacted=false
-aon_mux_read=false
+aon_mux_access=false
 EOF
 sync "$marker"
 sync
 
 exec > >(tee "$report") 2>&1
 
-printf '%s\n' 'A14 CAMSS isolated AON diagnostic'
-printf '%s\n' '=================================='
+printf '%s\n' 'A14 CAMSS non-MMIO diagnostic'
+printf '%s\n' '==============================='
 printf 'stage=%s\n' "$stage"
 printf 'stage_name=%s\n' "$stage_name"
 printf 'kernel_release=%s\n' "$release"
 printf 'boot_id=%s\n' "$boot_id"
 printf 'sysfs_attribute=%s\n' "$attr"
 printf 'ssc_loaded=false\n'
-printf 'aon_mux_read=false\n'
+printf 'aon_mux_access=false\n'
 printf 'camera_nodes=free\n'
 printf 'marker=%s\n' "$marker"
 
@@ -114,18 +109,17 @@ printf '\n%s\n' '===== PRE-STAGE CAMERA BASELINE ====='
 timeout 25 cam -l 2>&1 || fail "camera enumeration failed before diagnostic stage"
 printf '%s\n' 'camera_baseline=validated'
 
-# cam -l can cause the desktop media stack to reopen nodes after it exits.
 sleep 1
 users=$(sudo fuser /dev/video* /dev/media* 2>/dev/null || true)
 if [ -n "$users" ]; then
     sudo fuser -v /dev/video* /dev/media* 2>&1 || true
-    fail "camera/media nodes reopened after baseline; no diagnostic write was attempted"
+    fail "camera/media nodes reopened after baseline; no diagnostic operation was attempted"
 fi
 
-printf '\n%s\n' '===== EXECUTE ONE DIAGNOSTIC STAGE ====='
+printf '\n%s\n' '===== EXECUTE NON-MMIO DIAGNOSTIC STAGE ====='
 printf 'stage_started_at=%s\n' "$started"
 printf 'sysfs_write=%s\n' "$stage"
-printf 'aon_mux_read=false\n'
+printf 'aon_mux_access=false\n'
 
 set +e
 sudo sh -c 'printf "%s\n" "$1" > "$2"' sh "$stage" "$attr"
@@ -142,7 +136,7 @@ completed=$completed
 status=returned
 return_status=$stage_status
 ssc_contacted=false
-aon_mux_read=false
+aon_mux_access=false
 EOF
 sync "$marker"
 
