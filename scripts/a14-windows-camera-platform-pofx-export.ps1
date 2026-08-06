@@ -4,52 +4,43 @@ param(
     [Parameter(Mandatory = $true, Position = 0)]
     [string]$TracePath,
 
-    [string]$OutputRoot = "$env:USERPROFILE\Desktop",
-
-    [switch]$KeepFullXml
+    [string]$OutputRoot = "$env:USERPROFILE\Desktop"
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$kernelPepGuid = '5412704e-b2e1-4624-8ffd-55777b8f7373'
-$pepPattern = '(?i)(Microsoft-Windows-Kernel-Pep|5412704e-b2e1-4624-8ffd-55777b8f7373)'
-$contextPattern = '(?i)(Microsoft-Windows-Kernel-Pep|5412704e-b2e1-4624-8ffd-55777b8f7373|qccam|qcHumanPresence|QCOM0C32|\bCAMP\b|CPAS|CAMNOC|AlwaysOnSensing|\bAOS\b|presence.sensing)'
+$providerName = 'Microsoft-Windows-Kernel-Pep'
+$providerGuid = [Guid]'5412704e-b2e1-4624-8ffd-55777b8f7373'
+$cameraPattern = '(?i)(QCOM0C32|CAMP|CPAS|CAMNOC|qccam|qcHumanPresence|AlwaysOnSensing|AOS|presence.sensing|camera)'
+$working = Join-Path ([IO.Path]::GetTempPath()) ("A14-PoFx-Export-{0}" -f ([Guid]::NewGuid().ToString('N')))
+$expandedDirectory = $null
 
 function Resolve-TraceEtl {
-    param(
-        [Parameter(Mandatory = $true)][string]$InputPath,
-        [Parameter(Mandatory = $true)][string]$WorkingRoot
-    )
+    param([Parameter(Mandatory = $true)][string]$InputPath)
 
     $resolved = Resolve-Path -LiteralPath $InputPath -ErrorAction Stop
     $item = Get-Item -LiteralPath $resolved.Path
 
     if (-not $item.PSIsContainer -and $item.Extension -ieq '.etl') {
-        return [pscustomobject]@{
-            Etl = $item.FullName
-            ExpandedDirectory = $null
-        }
+        return $item.FullName
     }
 
     if (-not $item.PSIsContainer -and $item.Extension -ieq '.zip') {
-        $expanded = Join-Path $WorkingRoot 'expanded-trace'
-        New-Item -ItemType Directory -Force -Path $expanded | Out-Null
-        Expand-Archive -LiteralPath $item.FullName -DestinationPath $expanded -Force
-        $etl = Get-ChildItem -LiteralPath $expanded -File -Recurse -Filter 'camera-platform-pofx.etl' |
+        $script:expandedDirectory = Join-Path $working 'expanded-trace'
+        New-Item -ItemType Directory -Force -Path $script:expandedDirectory | Out-Null
+        Expand-Archive -LiteralPath $item.FullName -DestinationPath $script:expandedDirectory -Force
+        $etl = Get-ChildItem -LiteralPath $script:expandedDirectory -File -Recurse -Filter 'camera-platform-pofx.etl' |
             Select-Object -First 1
         if (-not $etl) {
-            $etl = Get-ChildItem -LiteralPath $expanded -File -Recurse -Filter '*.etl' |
+            $etl = Get-ChildItem -LiteralPath $script:expandedDirectory -File -Recurse -Filter '*.etl' |
                 Sort-Object Length -Descending |
                 Select-Object -First 1
         }
         if (-not $etl) {
             throw "No ETL file was found inside $($item.FullName)."
         }
-        return [pscustomobject]@{
-            Etl = $etl.FullName
-            ExpandedDirectory = $expanded
-        }
+        return $etl.FullName
     }
 
     if ($item.PSIsContainer) {
@@ -63,177 +54,202 @@ function Resolve-TraceEtl {
         if (-not $etl) {
             throw "No ETL file was found under $($item.FullName)."
         }
-        return [pscustomobject]@{
-            Etl = $etl.FullName
-            ExpandedDirectory = $null
-        }
+        return $etl.FullName
     }
 
     throw 'TracePath must point to the trace ZIP, its directory, or an ETL file.'
 }
 
-function Get-EventIdFromXml {
-    param([Parameter(Mandatory = $true)][string]$Xml)
+function Convert-ToTsvField {
+    param([AllowNull()][object]$Value)
 
-    foreach ($pattern in @(
-        '(?is)<EventID[^>]*>\s*(\d+)\s*</EventID>',
-        '(?is)EventID\s*=\s*["''](\d+)["'']',
-        '(?is)Id\s*=\s*["''](\d+)["'']'
-    )) {
-        $match = [regex]::Match($Xml, $pattern)
-        if ($match.Success) {
-            return $match.Groups[1].Value
-        }
+    if ($null -eq $Value) {
+        return ''
     }
 
-    return 'unknown'
+    return ([string]$Value).Replace("`t", ' ').Replace("`r", ' ').Replace("`n", ' ')
 }
 
-$tracerpt = Get-Command tracerpt.exe -ErrorAction Stop
+function Get-KernelPepEvents {
+    param([Parameter(Mandatory = $true)][string]$EtlPath)
+
+    try {
+        Get-WinEvent -FilterHashtable @{
+            Path = $EtlPath
+            ProviderName = $providerName
+        } -Oldest -ErrorAction Stop
+        return
+    }
+    catch {
+        $filterFailure = $_
+    }
+
+    $guidText = $providerGuid.ToString('B')
+    $xpath = "*[System[Provider[@Guid='$guidText']]]"
+    try {
+        Get-WinEvent -Path $EtlPath -FilterXPath $xpath -Oldest -ErrorAction Stop
+        return
+    }
+    catch {
+        throw "Get-WinEvent could not filter the Kernel-PEP provider. FilterHashtable error: $($filterFailure.Exception.Message) XPath error: $($_.Exception.Message)"
+    }
+}
+
+New-Item -ItemType Directory -Force -Path $working | Out-Null
 $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 $output = Join-Path $OutputRoot "A14-Camera-Platform-PoFx-Export-$stamp"
-$working = Join-Path $output 'working'
-New-Item -ItemType Directory -Force -Path @($output, $working) | Out-Null
-
-$resolvedTrace = Resolve-TraceEtl -InputPath $TracePath -WorkingRoot $working
-$etl = $resolvedTrace.Etl
-$fullXml = Join-Path $working 'trace-full.xml'
-$summary = Join-Path $output 'tracerpt-summary.txt'
-$schema = Join-Path $output 'trace-schema.man'
-$tracerptLog = Join-Path $output 'tracerpt-output.txt'
-
-Write-Host ('=' * 76)
-Write-Host 'ASUS Zenbook A14 offline Windows PoFx trace exporter'
-Write-Host ('=' * 76)
-Write-Host "Input ETL: $etl"
-Write-Host "Output:    $output"
-Write-Host 'This is offline trace decoding. It performs no hardware or device operation.'
-Write-Host ''
-
-$arguments = @(
-    $etl,
-    '-o', $fullXml,
-    '-of', 'XML',
-    '-lr',
-    '-rts',
-    '-summary', $summary,
-    '-export', $schema,
-    '-y'
-)
-
-$tracerptOutput = & $tracerpt.Source @arguments 2>&1
-$tracerptStatus = $LASTEXITCODE
-$tracerptOutput | Out-File -LiteralPath $tracerptLog -Encoding utf8 -Width 8192
-if ($tracerptStatus -ne 0) {
-    throw "tracerpt.exe failed with exit code $tracerptStatus. See $tracerptLog"
-}
-if (-not (Test-Path -LiteralPath $fullXml -PathType Leaf)) {
-    throw 'tracerpt.exe returned success but did not create the XML dump.'
-}
-
-$pepEventsPath = Join-Path $output 'kernel-pep-events.xml'
-$contextEventsPath = Join-Path $output 'camera-context-events.xml'
-$pepWriter = New-Object IO.StreamWriter($pepEventsPath, $false, [Text.UTF8Encoding]::new($false))
-$contextWriter = New-Object IO.StreamWriter($contextEventsPath, $false, [Text.UTF8Encoding]::new($false))
-$pepWriter.WriteLine('<?xml version="1.0" encoding="utf-8"?>')
-$pepWriter.WriteLine('<Events provider="Microsoft-Windows-Kernel-Pep" guid="{0}">' -f $kernelPepGuid)
-$contextWriter.WriteLine('<?xml version="1.0" encoding="utf-8"?>')
-$contextWriter.WriteLine('<Events filter="camera-platform-context">')
-
-$settings = New-Object Xml.XmlReaderSettings
-$settings.IgnoreComments = $true
-$settings.IgnoreProcessingInstructions = $true
-$settings.IgnoreWhitespace = $true
-$reader = [Xml.XmlReader]::Create($fullXml, $settings)
-$pepCount = 0L
-$contextCount = 0L
-$eventIdCounts = @{}
+New-Item -ItemType Directory -Force -Path $output | Out-Null
 
 try {
-    while (-not $reader.EOF) {
-        if ($reader.NodeType -eq [Xml.XmlNodeType]::Element -and $reader.LocalName -eq 'Event') {
-            $eventXml = $reader.ReadOuterXml()
-            if ([string]::IsNullOrWhiteSpace($eventXml)) {
-                continue
-            }
+    $etl = Resolve-TraceEtl -InputPath $TracePath
+    $etlItem = Get-Item -LiteralPath $etl
 
-            $isPep = $eventXml -match $pepPattern
-            $isContext = $eventXml -match $contextPattern
+    Write-Host ('=' * 76)
+    Write-Host 'ASUS Zenbook A14 offline Windows PoFx trace exporter'
+    Write-Host ('=' * 76)
+    Write-Host "Input ETL: $etl"
+    Write-Host "Output:    $output"
+    Write-Host 'This is offline trace decoding. It performs no hardware or device operation.'
+    Write-Host ''
 
-            if ($isPep) {
-                $pepWriter.WriteLine($eventXml)
-                $pepCount++
-                $eventId = Get-EventIdFromXml -Xml $eventXml
-                if (-not $eventIdCounts.ContainsKey($eventId)) {
-                    $eventIdCounts[$eventId] = 0L
-                }
-                $eventIdCounts[$eventId]++
-            }
-
-            if ($isContext) {
-                $contextWriter.WriteLine($eventXml)
-                $contextCount++
-            }
-
-            continue
-        }
-
-        [void]$reader.Read()
+    try {
+        Get-WinEvent -ListProvider $providerName -ErrorAction Stop |
+            Format-List * |
+            Out-File -LiteralPath (Join-Path $output 'kernel-pep-provider-metadata.txt') -Encoding utf8 -Width 8192
     }
+    catch {
+        @(
+            'provider_metadata_status=unavailable'
+            "message=$($_.Exception.Message)"
+        ) | Out-File -LiteralPath (Join-Path $output 'kernel-pep-provider-metadata.txt') -Encoding utf8 -Width 8192
+    }
+
+    $pepXmlPath = Join-Path $output 'kernel-pep-events.xml'
+    $cameraXmlPath = Join-Path $output 'camera-matching-kernel-pep-events.xml'
+    $tablePath = Join-Path $output 'kernel-pep-events.tsv'
+
+    $utf8 = [Text.UTF8Encoding]::new($false)
+    $pepWriter = [IO.StreamWriter]::new($pepXmlPath, $false, $utf8)
+    $cameraWriter = [IO.StreamWriter]::new($cameraXmlPath, $false, $utf8)
+    $tableWriter = [IO.StreamWriter]::new($tablePath, $false, $utf8)
+
+    $pepCount = 0L
+    $cameraMatchCount = 0L
+    $eventIdCounts = @{}
+    $firstTime = $null
+    $lastTime = $null
+
+    $pepWriter.WriteLine('<?xml version="1.0" encoding="utf-8"?>')
+    $pepWriter.WriteLine('<Events provider="Microsoft-Windows-Kernel-Pep" guid="{5412704e-b2e1-4624-8ffd-55777b8f7373}">')
+    $cameraWriter.WriteLine('<?xml version="1.0" encoding="utf-8"?>')
+    $cameraWriter.WriteLine('<Events filter="camera-related-kernel-pep">')
+    $tableWriter.WriteLine("TimeCreated`tId`tVersion`tLevel`tTask`tOpcode`tKeywords`tProcessId`tThreadId`tRecordId`tPayload`tMessage")
+
+    try {
+        Get-KernelPepEvents -EtlPath $etl | ForEach-Object {
+            $event = $_
+            $xml = $event.ToXml()
+            $payloadValues = @($event.Properties | ForEach-Object {
+                if ($null -eq $_.Value) { '' } else { [string]$_.Value }
+            })
+            $payload = $payloadValues -join ' | '
+            $message = ''
+            try {
+                $message = $event.FormatDescription()
+            }
+            catch {
+                $message = ''
+            }
+
+            if ($null -eq $firstTime) {
+                $firstTime = $event.TimeCreated
+            }
+            $lastTime = $event.TimeCreated
+            $pepCount++
+
+            $idKey = [string]$event.Id
+            if (-not $eventIdCounts.ContainsKey($idKey)) {
+                $eventIdCounts[$idKey] = 0L
+            }
+            $eventIdCounts[$idKey]++
+
+            $pepWriter.WriteLine($xml)
+            $tableWriter.WriteLine((@(
+                Convert-ToTsvField $event.TimeCreated.ToString('o')
+                Convert-ToTsvField $event.Id
+                Convert-ToTsvField $event.Version
+                Convert-ToTsvField $event.Level
+                Convert-ToTsvField $event.Task
+                Convert-ToTsvField $event.Opcode
+                Convert-ToTsvField $event.Keywords
+                Convert-ToTsvField $event.ProcessId
+                Convert-ToTsvField $event.ThreadId
+                Convert-ToTsvField $event.RecordId
+                Convert-ToTsvField $payload
+                Convert-ToTsvField $message
+            ) -join "`t"))
+
+            if ($xml -match $cameraPattern -or $payload -match $cameraPattern -or $message -match $cameraPattern) {
+                $cameraWriter.WriteLine($xml)
+                $cameraMatchCount++
+            }
+
+            if (($pepCount % 10000) -eq 0) {
+                Write-Host ("Decoded {0:N0} Kernel-PEP events..." -f $pepCount)
+            }
+        }
+    }
+    finally {
+        $pepWriter.WriteLine('</Events>')
+        $pepWriter.Dispose()
+        $cameraWriter.WriteLine('</Events>')
+        $cameraWriter.Dispose()
+        $tableWriter.Dispose()
+    }
+
+    if ($pepCount -eq 0) {
+        throw 'No Microsoft-Windows-Kernel-Pep events were decoded from the ETL.'
+    }
+
+    $eventIdLines = @(
+        $eventIdCounts.GetEnumerator() |
+            Sort-Object { [int]$_.Key } |
+            ForEach-Object { "kernel_pep_event_id_$($_.Key)=$($_.Value)" }
+    )
+
+    @(
+        "generated_at=$((Get-Date).ToString('o'))"
+        "source_trace=$etl"
+        "source_trace_bytes=$($etlItem.Length)"
+        "kernel_pep_provider=$providerName"
+        "kernel_pep_guid=$($providerGuid.ToString('D'))"
+        "kernel_pep_event_count=$pepCount"
+        "camera_matching_kernel_pep_event_count=$cameraMatchCount"
+        "first_event_time=$(if ($firstTime) { $firstTime.ToString('o') } else { '' })"
+        "last_event_time=$(if ($lastTime) { $lastTime.ToString('o') } else { '' })"
+        $eventIdLines
+        'decoder=Get-WinEvent'
+        'operation=offline-decode-only'
+        'camera_ioctls_sent=false'
+        'devices_restarted=false'
+        'camera_register_writes=false'
+    ) | Out-File -LiteralPath (Join-Path $output 'EXPORT-RESULT.txt') -Encoding utf8 -Width 8192
+
+    $zip = "$output.zip"
+    if (Test-Path -LiteralPath $zip) {
+        Remove-Item -LiteralPath $zip -Force
+    }
+    Compress-Archive -LiteralPath $output -DestinationPath $zip -CompressionLevel Optimal
+
+    Write-Host ''
+    Write-Host "Kernel-PEP events:      $pepCount"
+    Write-Host "Camera-matching events: $cameraMatchCount"
+    Write-Host "Export directory:       $output"
+    Write-Host "Archive:                $zip"
+    Write-Host 'Upload the export ZIP. No new hardware trace was recorded.'
 }
 finally {
-    $reader.Dispose()
-    $pepWriter.WriteLine('</Events>')
-    $pepWriter.Dispose()
-    $contextWriter.WriteLine('</Events>')
-    $contextWriter.Dispose()
+    if (Test-Path -LiteralPath $working) {
+        Remove-Item -LiteralPath $working -Recurse -Force -ErrorAction SilentlyContinue
+    }
 }
-
-$eventIdLines = @(
-    $eventIdCounts.GetEnumerator() |
-        Sort-Object {
-            $parsed = 0
-            if ([int]::TryParse([string]$_.Key, [ref]$parsed)) { $parsed } else { [int]::MaxValue }
-        } |
-        ForEach-Object { "kernel_pep_event_id_$($_.Key)=$($_.Value)" }
-)
-
-@(
-    "generated_at=$((Get-Date).ToString('o'))"
-    "source_trace=$etl"
-    "source_trace_bytes=$((Get-Item -LiteralPath $etl).Length)"
-    "tracerpt_exit_code=$tracerptStatus"
-    "kernel_pep_guid=$kernelPepGuid"
-    "kernel_pep_event_count=$pepCount"
-    "camera_context_event_count=$contextCount"
-    $eventIdLines
-    "full_xml_retained=$([bool]$KeepFullXml)"
-    'operation=offline-decode-only'
-    'camera_ioctls_sent=false'
-    'devices_restarted=false'
-    'camera_register_writes=false'
-) | Out-File -LiteralPath (Join-Path $output 'EXPORT-RESULT.txt') -Encoding utf8 -Width 8192
-
-if ($KeepFullXml) {
-    Move-Item -LiteralPath $fullXml -Destination (Join-Path $output 'trace-full.xml') -Force
-}
-
-if ($resolvedTrace.ExpandedDirectory -and (Test-Path -LiteralPath $resolvedTrace.ExpandedDirectory)) {
-    Remove-Item -LiteralPath $resolvedTrace.ExpandedDirectory -Recurse -Force
-}
-if (Test-Path -LiteralPath $working) {
-    Remove-Item -LiteralPath $working -Recurse -Force
-}
-
-$zip = "$output.zip"
-if (Test-Path -LiteralPath $zip) {
-    Remove-Item -LiteralPath $zip -Force
-}
-Compress-Archive -LiteralPath $output -DestinationPath $zip -CompressionLevel Optimal
-
-Write-Host ''
-Write-Host "Kernel-PEP events:      $pepCount"
-Write-Host "Camera-context events:  $contextCount"
-Write-Host "Export directory:       $output"
-Write-Host "Archive:                $zip"
-Write-Host 'Upload the export ZIP. No new hardware trace was recorded.'
