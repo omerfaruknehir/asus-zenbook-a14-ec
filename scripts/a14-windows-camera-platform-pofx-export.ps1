@@ -13,7 +13,8 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $kernelPepGuid = '5412704e-b2e1-4624-8ffd-55777b8f7373'
-$matchPattern = '(?i)(Microsoft-Windows-Kernel-Pep|5412704e-b2e1-4624-8ffd-55777b8f7373|qccam|qcHumanPresence|QCOM0C32|CAMP|CPAS|CAMNOC|AlwaysOnSensing|AOS|presence.sensing)'
+$pepPattern = '(?i)(Microsoft-Windows-Kernel-Pep|5412704e-b2e1-4624-8ffd-55777b8f7373)'
+$contextPattern = '(?i)(Microsoft-Windows-Kernel-Pep|5412704e-b2e1-4624-8ffd-55777b8f7373|qccam|qcHumanPresence|QCOM0C32|\bCAMP\b|CPAS|CAMNOC|AlwaysOnSensing|\bAOS\b|presence.sensing)'
 
 function Resolve-TraceEtl {
     param(
@@ -149,33 +150,35 @@ $contextCount = 0L
 $eventIdCounts = @{}
 
 try {
-    while ($reader.Read()) {
-        if ($reader.NodeType -ne [Xml.XmlNodeType]::Element -or $reader.LocalName -ne 'Event') {
-            continue
-        }
-
-        $eventXml = $reader.ReadOuterXml()
-        if ([string]::IsNullOrWhiteSpace($eventXml)) {
-            continue
-        }
-
-        $isPep = $eventXml -match '(?i)(Microsoft-Windows-Kernel-Pep|5412704e-b2e1-4624-8ffd-55777b8f7373)'
-        $isContext = $eventXml -match $matchPattern
-
-        if ($isPep) {
-            $pepWriter.WriteLine($eventXml)
-            $pepCount++
-            $eventId = Get-EventIdFromXml -Xml $eventXml
-            if (-not $eventIdCounts.ContainsKey($eventId)) {
-                $eventIdCounts[$eventId] = 0L
+    while (-not $reader.EOF) {
+        if ($reader.NodeType -eq [Xml.XmlNodeType]::Element -and $reader.LocalName -eq 'Event') {
+            $eventXml = $reader.ReadOuterXml()
+            if ([string]::IsNullOrWhiteSpace($eventXml)) {
+                continue
             }
-            $eventIdCounts[$eventId]++
+
+            $isPep = $eventXml -match $pepPattern
+            $isContext = $eventXml -match $contextPattern
+
+            if ($isPep) {
+                $pepWriter.WriteLine($eventXml)
+                $pepCount++
+                $eventId = Get-EventIdFromXml -Xml $eventXml
+                if (-not $eventIdCounts.ContainsKey($eventId)) {
+                    $eventIdCounts[$eventId] = 0L
+                }
+                $eventIdCounts[$eventId]++
+            }
+
+            if ($isContext) {
+                $contextWriter.WriteLine($eventXml)
+                $contextCount++
+            }
+
+            continue
         }
 
-        if ($isContext) {
-            $contextWriter.WriteLine($eventXml)
-            $contextCount++
-        }
+        [void]$reader.Read()
     }
 }
 finally {
