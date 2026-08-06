@@ -21,7 +21,7 @@ diff --git a/drivers/media/platform/qcom/camss/camss.c b/drivers/media/platform/
 index 000000000005..000000000006 100644
 --- a/drivers/media/platform/qcom/camss/camss.c
 +++ b/drivers/media/platform/qcom/camss/camss.c
-@@ -73,6 +73,7 @@ int qcom_camss_aon_acquire(struct device *camss_dev)
+@@ -73,6 +73,6 @@ int qcom_camss_aon_acquire(struct device *camss_dev)
  {
  	struct camss *camss;
 +	int ret = -EOPNOTSUPP;
@@ -29,7 +29,7 @@ index 000000000005..000000000006 100644
  
  	if (!camss_dev)
  		return -EINVAL;
-@@ -91,27 +92,13 @@ int qcom_camss_aon_acquire(struct device *camss_dev)
+@@ -91,25 +92,8 @@ int qcom_camss_aon_acquire(struct device *camss_dev)
  		goto out_unlock;
  	}
  
@@ -57,7 +57,7 @@ index 000000000005..000000000006 100644
  out_unlock:
  	mutex_unlock(&camss->aon_lock);
  	return ret;
-@@ -131,9 +118,9 @@ void qcom_camss_aon_release(struct device *camss_dev)
+@@ -131,9 +118,8 @@ void qcom_camss_aon_release(struct device *camss_dev)
  	if (!camss->aon_owned)
  		goto out_unlock;
  
