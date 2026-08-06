@@ -33,7 +33,7 @@ on_error() {
 }
 trap 'on_error $LINENO' ERR
 
-for tool in cp find git grep make modinfo readelf sed sha256sum strings tee; do
+for tool in apt-get cp dpkg-query find git grep make modinfo readelf sed sha256sum strings tee; do
     command -v "$tool" >/dev/null 2>&1 || fail "required command is missing: $tool"
 done
 
@@ -50,6 +50,44 @@ printf 'work=%s\n' "$work"
 printf 'direct_cpas_mmio_allowed=false\n'
 printf 'ssc_activation_allowed=false\n'
 printf 'system_changes=false\n'
+
+printf '\n%s\n' '===== PREFETCH EXACT KERNEL SOURCE ====='
+mkdir -p "$source_root"
+camss_source=$(find "$source_root" -type f \
+    -path '*/drivers/media/platform/qcom/camss/camss.c' -print -quit)
+if [ -z "$camss_source" ]; then
+    source_pkg=$(dpkg-query -W -f='${source:Package}' \
+        "linux-image-$release" 2>/dev/null || true)
+    source_version=$(dpkg-query -W -f='${source:Version}' \
+        "linux-image-$release" 2>/dev/null || true)
+    [ -n "$source_pkg" ] || \
+        fail "could not resolve the source package for linux-image-$release"
+    [ -n "$source_version" ] || \
+        fail "could not resolve the source version for linux-image-$release"
+
+    printf 'source_package=%s\n' "$source_pkg"
+    printf 'source_version=%s\n' "$source_version"
+    printf '%s\n' 'apt_source_resolution=source-name-forced'
+
+    if ! (cd "$source_root" && \
+          apt-get source --only-source "$source_pkg=$source_version"); then
+        cat >&2 <<EOF
+The exact kernel source package could not be downloaded. Verify that deb-src is
+enabled for the repository supplying $source_pkg. The --only-source option is
+required here because APT otherwise resolves linux-qcom-x1e to the similarly
+named meta binary package.
+No module, DTB, boot file, or installed package was changed.
+EOF
+        exit 1
+    fi
+
+    camss_source=$(find "$source_root" -type f \
+        -path '*/drivers/media/platform/qcom/camss/camss.c' -print -quit)
+fi
+[ -n "$camss_source" ] || \
+    fail "the exact source download completed but CAMSS source is still missing"
+printf 'prefetched_kernel_source=%s\n' \
+    "${camss_source%/drivers/media/platform/qcom/camss/camss.c}"
 
 printf '\n%s\n' '===== BUILD FRESH QUARANTINED BASE ====='
 A14_AOS_WORKDIR="$base_work" bash "$repo/scripts/a14-aos-stage-build.sh"
