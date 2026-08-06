@@ -73,11 +73,14 @@ function Convert-ToTsvField {
 function Get-KernelPepEvents {
     param([Parameter(Mandatory = $true)][string]$EtlPath)
 
+    $filter = @{
+        Path = $EtlPath
+        ProviderName = $providerName
+    }
+
     try {
-        Get-WinEvent -FilterHashtable @{
-            Path = $EtlPath
-            ProviderName = $providerName
-        } -Oldest -ErrorAction Stop
+        $null = Get-WinEvent -FilterHashtable $filter -Oldest -MaxEvents 1 -ErrorAction Stop
+        Get-WinEvent -FilterHashtable $filter -Oldest -ErrorAction Stop
         return
     }
     catch {
@@ -87,6 +90,7 @@ function Get-KernelPepEvents {
     $guidText = $providerGuid.ToString('B')
     $xpath = "*[System[Provider[@Guid='$guidText']]]"
     try {
+        $null = Get-WinEvent -Path $EtlPath -FilterXPath $xpath -Oldest -MaxEvents 1 -ErrorAction Stop
         Get-WinEvent -Path $EtlPath -FilterXPath $xpath -Oldest -ErrorAction Stop
         return
     }
@@ -146,6 +150,7 @@ try {
     $tableWriter.WriteLine("TimeCreated`tId`tVersion`tLevel`tTask`tOpcode`tKeywords`tProcessId`tThreadId`tRecordId`tPayload`tMessage")
 
     try {
+        Write-Host 'Decoding Microsoft-Windows-Kernel-Pep events...'
         Get-KernelPepEvents -EtlPath $etl | ForEach-Object {
             $event = $_
             $xml = $event.ToXml()
@@ -175,18 +180,18 @@ try {
 
             $pepWriter.WriteLine($xml)
             $tableWriter.WriteLine((@(
-                Convert-ToTsvField $event.TimeCreated.ToString('o')
-                Convert-ToTsvField $event.Id
-                Convert-ToTsvField $event.Version
-                Convert-ToTsvField $event.Level
-                Convert-ToTsvField $event.Task
-                Convert-ToTsvField $event.Opcode
-                Convert-ToTsvField $event.Keywords
-                Convert-ToTsvField $event.ProcessId
-                Convert-ToTsvField $event.ThreadId
-                Convert-ToTsvField $event.RecordId
-                Convert-ToTsvField $payload
-                Convert-ToTsvField $message
+                Convert-ToTsvField -Value ($event.TimeCreated.ToString('o'))
+                Convert-ToTsvField -Value $event.Id
+                Convert-ToTsvField -Value $event.Version
+                Convert-ToTsvField -Value $event.Level
+                Convert-ToTsvField -Value $event.Task
+                Convert-ToTsvField -Value $event.Opcode
+                Convert-ToTsvField -Value $event.Keywords
+                Convert-ToTsvField -Value $event.ProcessId
+                Convert-ToTsvField -Value $event.ThreadId
+                Convert-ToTsvField -Value $event.RecordId
+                Convert-ToTsvField -Value $payload
+                Convert-ToTsvField -Value $message
             ) -join "`t"))
 
             if ($xml -match $cameraPattern -or $payload -match $cameraPattern -or $message -match $cameraPattern) {
