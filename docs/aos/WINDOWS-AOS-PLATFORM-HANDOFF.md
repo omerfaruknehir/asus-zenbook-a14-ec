@@ -78,25 +78,85 @@ sufficient. Hardware disproved that assumption.
 
 The Stage 3 marker remained `status=started`, `ssc_contacted=false`, and
 `aon_mux_read=false`. This places the failure at the direct write itself or at a
-platform firewall/firmware response to it.
+missing platform prerequisite.
+
+## Windows platform-power evidence
+
+A read-only audit of the installed Windows 11 ARM64 camera stack found stronger
+evidence for incomplete resource activation than for a secure-world-only mux.
+
+The installed camera-platform package is `qccamplatform8380`, version
+`4934.911.0.0`. Its binary contains all of the following:
+
+- `IOCTL_KMD_CAMERA_PLATFORM_SET_AOS_CONFIG failed: PlatformPowerState is OFF`
+- `Successfully config Mclk Mux for AOS`
+- `CameraCPAS_Init` and `CameraCPAS_DeInit`
+- CAMNOC bandwidth and AXI-clock selection paths
+- PoFx device, component, performance-state and power-control registration
+- runtime-resource enumeration/configuration through ACPI
+- direct `MmMapIoSpaceEx` and `MmUnmapIoSpace` imports
+
+No static import indicating a direct SCM/QSEE/secure-monitor call was found in
+this platform driver. That does not completely rule out secure mediation through
+another device, but it weakens the secure-register-only explanation.
+
+Windows reports `CAMP` as dependent on:
+
+- the Qualcomm Power Engine Plug-in device (`QCOM0C17`);
+- the Qualcomm PMIC power-management device (`QCOM0C2B`);
+- the Qualcomm System Manager GPIO device (`QCOM0C0C`).
+
+The installed `CAMP_RES_QRD.bin` PEP resource graph names a substantially larger
+set of resources than the Linux Stage 3 experiment enabled:
+
+- `cam_cc_titan_top_gdsc`
+- `cam_cc_gdsc_clk`
+- `cam_cc_core_ahb_clk`
+- `cam_cc_cpas_ahb_clk`
+- `cam_cc_cpas_fast_ahb_clk`
+- `cam_cc_camnoc_axi_rt_clk`
+- `cam_cc_camnoc_axi_nrt_clk`
+- `gcc_camera_ahb_clk`
+- `gcc_camera_hf_axi_clk`
+- `gcc_camera_sf_axi_clk`
+- `gcc_camera_xo_clk`
+- CAMNOC HF/SF interconnect masters and performance states
+
+`CAMP_PERF_QRD.bin` additionally maps RT/NRT bandwidth demand to CAMNOC AXI
+clock and P-state selection.
+
+## Current interpretation
+
+The leading hypothesis is now that Windows reaches a complete
+`PlatformPowerState=ON` through PEP/PoFx before accessing the mux. Linux Stage 3
+activated the CAMSS runtime-PM path and only the two CPAS AHB clocks, but did not
+explicitly reproduce the complete camera-platform resource graph. An access to
+a partially powered or locally clock-gated CPAS/CAMNOC register window can
+explain the abrupt platform reset.
+
+This remains a hypothesis until the exact Windows function path and resource
+ordering are reconstructed from the matching driver binary and resource files.
+The direct MMIO quarantine therefore remains mandatory.
 
 ## Revised implementation requirements
 
-The CAMSS provider now fails acquisition with `-EOPNOTSUPP` before touching the
-register. Direct MMIO remains quarantined.
+The CAMSS provider fails acquisition with `-EOPNOTSUPP` before touching the
+register. No further mux access is allowed yet.
 
-Before implementing another backend, determine which prerequisite the Windows
-path supplies but the Linux experiment did not. Candidate classes include:
+The next investigation must:
 
-- secure or XPU authorization;
-- a firmware-mediated camera-platform request;
-- a CPAS/CAMNOC power or interconnect sequence beyond the two AHB clocks;
-- another ownership or lifecycle call performed by the Windows camera stack.
-
-The investigation must inspect the call path around the Windows register helper,
-not merely the final store instruction. No further register access should occur
-until a non-resetting access mechanism is supported by evidence.
+1. preserve the exact matching `qccamplatform8380.sys` and CAMP resource/config
+   binaries;
+2. locate code references to the AOS power-state rejection, mux-success and
+   register-log strings;
+3. reconstruct which PoFx components/resources are activated before the store;
+4. compare that sequence against the X1E80100 Linux CAMSS clock, genpd and ICC
+   model;
+5. add a non-MMIO Linux prerequisite probe that only enables and reports the
+   candidate resources, then releases them cleanly;
+6. consider another MMIO test only after the prerequisite state is proven and
+   the test has a separately reviewed reset-safe design.
 
 The SSC/IIO driver remains a consumer of the CAMSS provider. It may send
-camera-handshake INIT 576 only after a future provider backend has successfully
-and safely acquired AOS ownership.
+camera-handshake INIT 576 only after a future provider backend has safely
+acquired AOS ownership.
