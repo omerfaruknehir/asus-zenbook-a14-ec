@@ -1,0 +1,64 @@
+name: Validate Windows Kernel-PEP exporter
+
+on:
+  push:
+    paths:
+      - 'scripts/a14-windows-camera-platform-kernel-pep-export.ps1'
+      - '.github/workflows/windows-kernel-pep-export.yml'
+  pull_request:
+    paths:
+      - 'scripts/a14-windows-camera-platform-kernel-pep-export.ps1'
+      - '.github/workflows/windows-kernel-pep-export.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Parse PowerShell 5.1 exporter
+        shell: powershell
+        run: |
+          $path = 'scripts/a14-windows-camera-platform-kernel-pep-export.ps1'
+          $tokens = $null
+          $errors = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path $path),
+              [ref]$tokens,
+              [ref]$errors
+          )
+          if ($errors.Count -ne 0) {
+              $errors | Format-List *
+              throw "PowerShell parser reported $($errors.Count) error(s)."
+          }
+
+      - name: Enforce offline-only invariants
+        shell: powershell
+        run: |
+          $path = 'scripts/a14-windows-camera-platform-kernel-pep-export.ps1'
+          $script = Get-Content $path -Raw
+
+          foreach ($required in @(
+              'Microsoft-Windows-Kernel-Pep',
+              '5412704E-B2E1-4624-8FFD-55777B8F7373',
+              'Get-WinEvent',
+              'operation=offline-decode-only',
+              'camera_ioctls_sent=false',
+              'devices_restarted=false',
+              'pnp_state_changed=false',
+              'camera_register_writes=false',
+              'direct_cpas_mmio=false',
+              'Compress-Archive'
+          )) {
+              if (-not $script.Contains($required)) {
+                  throw "Exporter is missing required invariant: $required"
+              }
+          }
+
+          if ($script -match 'DeviceIoControl|CreateFileW|WriteFile|Set-PnpDevice|Disable-PnpDevice|Enable-PnpDevice|devcon(?:\.exe)?|MmMapIoSpace|0x0ac191e0') {
+              throw 'Offline Kernel-PEP exporter contains a prohibited hardware-control path.'
+          }
