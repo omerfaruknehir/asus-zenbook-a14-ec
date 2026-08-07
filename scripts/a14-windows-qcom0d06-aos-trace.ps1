@@ -2,7 +2,8 @@
 [CmdletBinding()]
 param(
     [string]$OutputRoot = "$env:USERPROFILE\Desktop",
-    [switch]$OpenPresenceSettings
+    [switch]$OpenPresenceSettings,
+    [switch]$UsePresenceSensorSample
 )
 
 Set-StrictMode -Version Latest
@@ -84,20 +85,24 @@ $traceStarted = $false
 $traceStopped = $false
 $traceStart = $null
 $traceEnd = $null
+$sampleAcquireConfirmed = $null
+$sampleReleaseConfirmed = $null
+$triggerMode = if ($UsePresenceSensorSample) { 'Microsoft-PresenceSensor-sample' } else { 'Windows-Presence-Sensing-settings' }
 
 Write-Host ('=' * 76)
 Write-Host 'ASUS Zenbook A14 QCOM0D06 / Windows Presence Sensing AOS trace'
 Write-Host ('=' * 76)
 Write-Host "Output: $output"
+Write-Host "Trigger mode: $triggerMode"
 Write-Host ''
 Write-Host 'Purpose:'
-Write-Host '  Capture a real Windows Presence Sensing activation of ACPI\QCOM0D06.'
+Write-Host '  Capture a real supported Windows HumanPresenceSensor activation of ACPI\QCOM0D06.'
 Write-Host ''
 Write-Host 'Safety:'
-Write-Host '  This collector sends NO camera IOCTL, restarts NO device, changes NO'
-Write-Host '  PnP state, and performs NO camera/CPAS register access.'
-Write-Host '  The only state change is whatever normal Windows Presence Sensing feature'
-Write-Host '  you choose to exercise in Settings.'
+Write-Host '  This collector sends NO camera IOCTL, reads NO HumanPresenceSensor itself,'
+Write-Host '  restarts NO device, changes NO PnP state, and performs NO camera/CPAS'
+Write-Host '  register access. Any sensor acquisition is initiated by Windows or by the'
+Write-Host '  Microsoft PresenceSensor sample through the public HumanPresenceSensor API.'
 Write-Host ''
 
 Save-Text -Path (Join-Path $output 'wpr-status-before.txt') -Command {
@@ -121,6 +126,7 @@ Save-Text -Path (Join-Path $output 'powercfg-requests-before.txt') -Command {
     "wpr_path=$($wpr.Source)"
     'trace_profile=Power'
     'trace_mode=filemode'
+    "trigger_mode=$triggerMode"
     'target_device=ACPI\QCOM0D06'
     'target_role=Windows-Presence-Sensing-camera-AOS-client'
     'known_client=qcAlwaysOnSensing.dll'
@@ -131,20 +137,32 @@ Save-Text -Path (Join-Path $output 'powercfg-requests-before.txt') -Command {
     'pnp_state_changed_by_collector=false'
     'camera_register_writes_by_collector=false'
     'direct_cpas_mmio=false'
-    'normal_windows_presence_feature_activation_required=true'
+    'microsoft_presence_sensor_sample_supported=true'
+    'sample_api=Windows.Devices.Sensors.HumanPresenceSensor'
+    'sample_source=https://github.com/microsoft/Windows-universal-samples/tree/main/Samples/PresenceSensor'
 ) | Out-File -LiteralPath (Join-Path $output 'TRACE-INFO.txt') -Encoding utf8 -Width 8192
 
-if ($OpenPresenceSettings) {
+if ($OpenPresenceSettings -and -not $UsePresenceSensorSample) {
     Start-Process 'ms-settings:presence'
 }
 
 Write-Host 'Before starting the trace:'
-Write-Host '  1. Open Windows Presence sensing (Settings URI: ms-settings:presence).'
-Write-Host '  2. Ensure at least one normal OS feature is enabled, for example:'
-Write-Host '       - Lock on Leave'
-Write-Host '       - Wake on Approach'
-Write-Host '       - Adaptive Dimming'
-Write-Host '  3. Do not use Device Manager, custom IOCTL tools, or camera test tools.'
+if ($UsePresenceSensorSample) {
+    Write-Host '  1. Start Microsoft''s PresenceSensor sample.'
+    Write-Host '  2. Select the "Data Events" scenario.'
+    Write-Host '  3. IMPORTANT: do NOT click "Get default sensor" yet.'
+    Write-Host '  4. Leave the sample at that ready screen and return here.'
+    Write-Host ''
+    Write-Host 'Why: clicking Get default sensor before WPR starts could make us miss the'
+    Write-Host '     CAMP component activation that this trace is intended to capture.'
+} else {
+    Write-Host '  1. Open Windows Presence sensing (Settings URI: ms-settings:presence).'
+    Write-Host '  2. Ensure at least one normal OS feature is enabled, for example:'
+    Write-Host '       - Lock on Leave'
+    Write-Host '       - Wake on Approach'
+    Write-Host '       - Adaptive Dimming'
+}
+Write-Host '  Do not use Device Manager, custom IOCTL tools, or camera test tools.'
 Write-Host ''
 Read-Host 'Press ENTER when ready to start the Power trace' | Out-Null
 
@@ -155,14 +173,35 @@ try {
 
     Write-Host ''
     Write-Host 'TRACE RUNNING.'
-    Write-Host 'Exercise the enabled Windows Presence Sensing feature naturally.'
-    Write-Host 'Recommended sequence:'
-    Write-Host '  - remain in front of the laptop for a few seconds;'
-    Write-Host '  - step away until Windows detects absence / Lock on Leave reacts;'
-    Write-Host '  - return and let Wake on Approach / presence detection react;'
-    Write-Host '  - leave the feature active for another few seconds.'
-    Write-Host ''
-    Read-Host 'Press ENTER after that sequence to stop and save the trace' | Out-Null
+
+    if ($UsePresenceSensorSample) {
+        Write-Host 'Now switch to the Microsoft PresenceSensor sample and:'
+        Write-Host '  1. Click "Get default sensor" in Data Events.'
+        Write-Host '  2. Wait until it shows a live timestamp and Presence/Engagement value.'
+        Write-Host '  3. Stay in front briefly, step away, then return.'
+        Write-Host '  4. Confirm the displayed reading/timestamp changes while you do this.'
+        Write-Host ''
+        Read-Host 'After you have SEEN live sensor data, press ENTER here to mark acquisition' | Out-Null
+        $sampleAcquireConfirmed = Get-Date
+
+        Write-Host ''
+        Write-Host 'Now release the sample''s sensor subscription:'
+        Write-Host '  - navigate away from Data Events, OR close the PresenceSensor sample.'
+        Write-Host '  - then wait a couple of seconds.'
+        Write-Host ''
+        Read-Host 'After the sample has released/closed, press ENTER to mark release' | Out-Null
+        $sampleReleaseConfirmed = Get-Date
+        Start-Sleep -Seconds 2
+    } else {
+        Write-Host 'Exercise the enabled Windows Presence Sensing feature naturally.'
+        Write-Host 'Recommended sequence:'
+        Write-Host '  - remain in front of the laptop for a few seconds;'
+        Write-Host '  - step away until Windows detects absence / Lock on Leave reacts;'
+        Write-Host '  - return and let Wake on Approach / presence detection react;'
+        Write-Host '  - leave the feature active for another few seconds.'
+        Write-Host ''
+        Read-Host 'Press ENTER after that sequence to stop and save the trace' | Out-Null
+    }
 
     $traceEnd = Get-Date
     Invoke-Wpr -Arguments @('-stop', $etl) -LogPath (Join-Path $output 'wpr-stop.txt')
@@ -185,6 +224,16 @@ finally {
 
 if (-not $traceStart) { throw 'The trace did not start.' }
 if (-not $traceEnd) { $traceEnd = Get-Date }
+
+@(
+    "trace_started=$($traceStart.ToString('o'))"
+    "trigger_mode=$triggerMode"
+    "sample_acquisition_user_confirmed=$($null -ne $sampleAcquireConfirmed)"
+    $(if ($sampleAcquireConfirmed) { "sample_acquisition_confirmed_at=$($sampleAcquireConfirmed.ToString('o'))" } else { 'sample_acquisition_confirmed_at=not-applicable' })
+    "sample_release_user_confirmed=$($null -ne $sampleReleaseConfirmed)"
+    $(if ($sampleReleaseConfirmed) { "sample_release_confirmed_at=$($sampleReleaseConfirmed.ToString('o'))" } else { 'sample_release_confirmed_at=not-applicable' })
+    "trace_stopped=$($traceEnd.ToString('o'))"
+) | Out-File -LiteralPath (Join-Path $output 'USER-MARKERS.txt') -Encoding utf8 -Width 8192
 
 Save-QcomCameraDevices -Path (Join-Path $output 'qcom-camera-devices-after.txt')
 Save-AosHostState -Path (Join-Path $output 'always-on-sensing-host-after.txt')
@@ -212,12 +261,14 @@ if ($etlExists) {
     "trace_started=$($traceStart.ToString('o'))"
     "trace_stopped=$($traceEnd.ToString('o'))"
     "trace_duration_seconds=$([math]::Round(($traceEnd - $traceStart).TotalSeconds, 3))"
+    "trigger_mode=$triggerMode"
     "etl=$etl"
     "etl_exists=$etlExists"
     "etl_size=$etlSize"
     'target_device=ACPI\QCOM0D06'
     'collector_hardware_control=false'
     'collector_sends_platform_ioctl=false'
+    'collector_reads_human_presence_sensor=false'
     'direct_cpas_mmio=false'
 ) | Out-File -LiteralPath (Join-Path $output 'TRACE-RESULT.txt') -Encoding utf8 -Width 8192
 
