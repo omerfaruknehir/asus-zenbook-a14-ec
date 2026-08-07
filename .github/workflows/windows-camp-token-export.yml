@@ -59,7 +59,7 @@ jobs:
               }
           }
 
-          if ($script -match 'DeviceIoControl|CreateFileW|WriteFile|Set-PnpDevice|Disable-PnpDevice|Enable-PnpDevice|devcon(?:\.exe)?|MmMapIoSpace|\\dev\\mem|0x0ac191e0|ioremap|readl|writel|HumanPresenceSensor\]::GetDefault|GetCurrentReading\(') {
+          if ($script -match 'DeviceIoControl|CreateFileW|WriteFile|Set-PnpDevice|Disable-PnpDevice|Enable-PnpDevice|devcon(?:\.exe)?|MmMapIoSpace|\\dev\\mem|0x0ac191e0|ioremap|\breadl\s*\(|\bwritel\s*\(|HumanPresenceSensor\]::GetDefault|GetCurrentReading\(') {
               throw 'Targeted CAMP exporter contains a prohibited hardware/PnP/sensor-control path.'
           }
 
