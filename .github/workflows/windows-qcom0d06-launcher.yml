@@ -1,0 +1,58 @@
+name: Validate QCOM0D06 Windows PowerShell launcher
+
+on:
+  push:
+    paths:
+      - 'scripts/a14-windows-qcom0d06-aos-trace-launch.ps1'
+      - '.github/workflows/windows-qcom0d06-launcher.yml'
+  pull_request:
+    paths:
+      - 'scripts/a14-windows-qcom0d06-aos-trace-launch.ps1'
+      - '.github/workflows/windows-qcom0d06-launcher.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Parse launcher in Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          $path = 'scripts/a14-windows-qcom0d06-aos-trace-launch.ps1'
+          $tokens = $null
+          $errors = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path $path),
+              [ref]$tokens,
+              [ref]$errors
+          )
+          if ($errors.Count -ne 0) {
+              $errors | Format-List *
+              throw "PowerShell parser reported $($errors.Count) error(s)."
+          }
+
+      - name: Enforce launcher invariants
+        shell: powershell
+        run: |
+          $path = 'scripts/a14-windows-qcom0d06-aos-trace-launch.ps1'
+          $script = Get-Content $path -Raw
+          foreach ($required in @(
+              'WindowsPowerShell\v1.0\powershell.exe',
+              "PSEdition -ne 'Desktop'",
+              'HumanPresenceSensor,Windows.Devices.Sensors,ContentType=WindowsRuntime',
+              'System.Runtime.WindowsRuntime',
+              'failed BEFORE WPR was started',
+              'a14-windows-qcom0d06-aos-trace.ps1'
+          )) {
+              if (-not $script.Contains($required)) {
+                  throw "Launcher is missing invariant: $required"
+              }
+          }
+          if ($script -match 'DeviceIoControl|CreateFileW|WriteFile|Set-PnpDevice|Disable-PnpDevice|Enable-PnpDevice|0x0ac191e0') {
+              throw 'Launcher contains a prohibited hardware-control path.'
+          }
