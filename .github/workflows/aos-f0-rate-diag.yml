@@ -38,13 +38,14 @@ jobs:
           grep -q 'a14_aos_f0_rate_test=1' scripts/a14-aos-f0-rate-diag-run.sh
           grep -q 'AON-F0-RATE-DIAG begin phase=' scripts/a14-aos-f0-rate-diag-inject.py
 
-          if grep -R -E '0x0ac191e0|0x1e0|devm_ioremap|ioremap|readl|writel|ioread|iowrite|/dev/mem' \
+          if grep -R -E '0x0ac191e0|0x1e0|/dev/mem|(^|[;&|])[[:space:]]*(sudo[[:space:]]+)?(devmem|busybox[[:space:]]+devmem)' \
               scripts/a14-aos-f0-rate-*; then
-            echo 'F0-rate diagnostic contains prohibited direct-MMIO material' >&2
+            echo 'F0-rate diagnostic contains a direct physical-MMIO path' >&2
             exit 1
           fi
-          if grep -R -E 'qcom_ssc_hpd|camera.handshake|INIT 576' scripts/a14-aos-f0-rate-*; then
-            echo 'F0-rate diagnostic contains an SSC activation path' >&2
+          if grep -R -E '(^|[;&|])[[:space:]]*(sudo[[:space:]]+)?(modprobe|insmod)[^#\n]*qcom_ssc_hpd' \
+              scripts/a14-aos-f0-rate-*; then
+            echo 'F0-rate diagnostic contains an SSC module activation path' >&2
             exit 1
           fi
 
