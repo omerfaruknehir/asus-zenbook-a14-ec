@@ -1,0 +1,85 @@
+name: Validate AOS F0 rate diagnostic
+
+on:
+  push:
+    paths:
+      - 'scripts/a14-aos-f0-rate-*'
+      - '.github/workflows/aos-f0-rate-diag.yml'
+  pull_request:
+    paths:
+      - 'scripts/a14-aos-f0-rate-*'
+      - '.github/workflows/aos-f0-rate-diag.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Syntax and safety checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile scripts/a14-aos-f0-rate-diag-inject.py
+          bash -n scripts/a14-aos-f0-rate-diag-build.sh
+          bash -n scripts/a14-aos-f0-rate-diag-install-test.sh
+          bash -n scripts/a14-aos-f0-rate-diag-run.sh
+
+          grep -q 'platform-power-f0-rate-subset-no-mmio-v1' scripts/a14-aos-f0-rate-diag-build.sh
+          grep -q 'direct_cpas_mmio_allowed=false' scripts/a14-aos-f0-rate-diag-build.sh
+          grep -q 'ssc_activation_allowed=false' scripts/a14-aos-f0-rate-diag-build.sh
+          grep -q 'restore_original_rates=true' scripts/a14-aos-f0-rate-diag-build.sh
+          grep -q 'exact_round_rate_required=true' scripts/a14-aos-f0-rate-diag-build.sh
+          grep -q 'a14_aos_f0_rate_test=1' scripts/a14-aos-f0-rate-diag-install-test.sh
+          grep -q 'a14_aos_f0_rate_test=1' scripts/a14-aos-f0-rate-diag-run.sh
+          grep -q 'AON-F0-RATE-DIAG begin phase=' scripts/a14-aos-f0-rate-diag-inject.py
+
+          if grep -R -E '0x0ac191e0|0x1e0|devm_ioremap|ioremap|readl|writel|ioread|iowrite|/dev/mem' \
+              scripts/a14-aos-f0-rate-*; then
+            echo 'F0-rate diagnostic contains prohibited direct-MMIO material' >&2
+            exit 1
+          fi
+          if grep -R -E 'qcom_ssc_hpd|camera.handshake|INIT 576' scripts/a14-aos-f0-rate-*; then
+            echo 'F0-rate diagnostic contains an SSC activation path' >&2
+            exit 1
+          fi
+
+      - name: Check injector against Linux master
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --filter=blob:none --sparse \
+            https://github.com/torvalds/linux.git linux
+          git -C linux sparse-checkout set --no-cone \
+            drivers/media/platform/qcom/camss/
+
+          camss=linux/drivers/media/platform/qcom/camss/camss.c
+          python3 "$GITHUB_WORKSPACE/scripts/a14-aos-f0-rate-diag-inject.py" "$camss"
+
+          grep -q 'a14_camss_f0_rate_probe' "$camss"
+          grep -q 'A14_F0_RATE_CLK_COUNT 7' "$camss"
+          grep -q 'A14_F0_RATE_TARGET_COUNT 5' "$camss"
+          grep -q '300000000' "$camss"
+          grep -q '100000000' "$camss"
+          for clock in camnoc_rt_axi camnoc_nrt_axi cpas_ahb core_ahb \
+                       cpas_fast_ahb gcc_axi_hf gcc_axi_sf; do
+            grep -q "\"$clock\"" "$camss"
+          done
+
+          helper=$(sed -n \
+            '/static int a14_camss_f0_rate_probe/,/static DEVICE_ATTR_WO(a14_f0_rate_probe)/p' \
+            "$camss")
+          if printf '%s\n' "$helper" | grep -Eq '\<(readl|writel|ioread|iowrite|ioremap)\>'; then
+            echo 'Injected F0-rate helper contains direct MMIO' >&2
+            exit 1
+          fi
+          if printf '%s\n' "$helper" | grep -Eq 'qcom_ssc_hpd|camera.handshake|INIT 576'; then
+            echo 'Injected F0-rate helper contains an SSC path' >&2
+            exit 1
+          fi
+
+          git -C linux diff --check
