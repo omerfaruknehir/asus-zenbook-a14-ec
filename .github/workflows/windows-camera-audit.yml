@@ -86,7 +86,6 @@ jobs:
               foreach ($required in @(
                   "'-start', 'Power', '-filemode'",
                   'devices_restarted=false',
-                  'direct_cpas_mmio=false',
                   'Compress-Archive'
               )) {
                   if (-not $script.Contains($required)) {
@@ -103,6 +102,7 @@ jobs:
               'target_device=ACPI\QCOM0D06',
               'collector_sends_platform_ioctl=false',
               'collector_reads_human_presence_sensor=false',
+              'direct_cpas_mmio=false',
               'ms-settings:presence'
           )) {
               if (-not $qcom.Contains($required)) {
