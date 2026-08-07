@@ -1,0 +1,71 @@
+name: Validate Windows camera boot PoFx trace
+
+on:
+  push:
+    paths:
+      - 'scripts/a14-windows-camera-platform-boot-pofx-trace.ps1'
+      - '.github/workflows/windows-camera-boot-pofx-trace.yml'
+  pull_request:
+    paths:
+      - 'scripts/a14-windows-camera-platform-boot-pofx-trace.ps1'
+      - '.github/workflows/windows-camera-boot-pofx-trace.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Parse PowerShell 5.1 script
+        shell: powershell
+        run: |
+          $path = 'scripts/a14-windows-camera-platform-boot-pofx-trace.ps1'
+          $tokens = $null
+          $errors = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path $path),
+              [ref]$tokens,
+              [ref]$errors
+          )
+          if ($errors.Count -ne 0) {
+              $errors | Format-List *
+              throw "PowerShell parser reported $($errors.Count) error(s)."
+          }
+
+      - name: Enforce supported boot-trace safety boundary
+        shell: powershell
+        run: |
+          $path = 'scripts/a14-windows-camera-platform-boot-pofx-trace.ps1'
+          $script = Get-Content $path -Raw
+
+          foreach ($required in @(
+              "'-boottrace','-addboot','Power','-filemode'",
+              "'-boottrace','-stopboot'",
+              "'-boottrace','-cancelboot'",
+              'collector_sends_platform_ioctl=false',
+              'devices_restarted_by_collector=false',
+              'pnp_state_changed_by_collector=false',
+              'camera_register_access=false',
+              'direct_cpas_mmio=false',
+              'boot_autologger_removed=true',
+              'qcAlwaysOnSensing.dll',
+              'QCOM0C32',
+              'QCOM0D06',
+              'QCOM06D9'
+          )) {
+              if (-not $script.Contains($required)) {
+                  throw "Missing required boot-trace invariant: $required"
+              }
+          }
+
+          if ($script -match 'DeviceIoControl|CreateFileW|WriteFile|Set-PnpDevice|Disable-PnpDevice|Enable-PnpDevice|devcon(?:\.exe)?|MmMapIoSpace|\\dev\\mem|0x0ac191e0|ioremap|readl|writel|HumanPresenceSensor\]::GetDefault|GetCurrentReading\(') {
+              throw 'Boot trace helper contains a prohibited direct hardware/PnP/sensor-control path.'
+          }
+
+      - name: Check repository whitespace
+        shell: bash
+        run: git diff --check HEAD^ HEAD || git diff --check
