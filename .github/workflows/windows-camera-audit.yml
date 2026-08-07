@@ -75,7 +75,7 @@ jobs:
               }
           }
 
-      - name: Enforce passive WPR trace invariants
+      - name: Enforce safe WPR trace invariants
         shell: powershell
         run: |
           foreach ($path in @(
@@ -101,13 +101,20 @@ jobs:
           foreach ($required in @(
               'target_device=ACPI\QCOM0D06',
               'collector_sends_platform_ioctl=false',
-              'collector_reads_human_presence_sensor=false',
+              'collector_reads_human_presence_sensor=',
               'direct_cpas_mmio=false',
-              'ms-settings:presence'
+              'ms-settings:presence',
+              'UseBuiltInPresenceMonitor',
+              'HumanPresenceSensor]::GetDefault()',
+              'GetCurrentReading()'
           )) {
               if (-not $qcom.Contains($required)) {
                   throw "QCOM0D06 trace collector is missing invariant: $required"
               }
+          }
+
+          if ($qcom -match 'DeviceIoControl|CreateFileW|MmMapIoSpace|WriteFile') {
+              throw 'QCOM0D06 collector must not contain a direct camera-platform control path.'
           }
 
       - name: Check focused-audit PowerShell 5.1 hazards
