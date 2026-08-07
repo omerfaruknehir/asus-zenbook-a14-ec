@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 from typing import NoReturn
 
-MARKER = "AON-F0-RATE-DIAG begin direct-mmio=false ssc=false"
+MARKER = "AON-F0-RATE-DIAG begin phase="
 
 
 def fail(message: str) -> NoReturn:
