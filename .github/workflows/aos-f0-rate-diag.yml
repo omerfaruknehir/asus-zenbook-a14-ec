@@ -4,10 +4,12 @@ on:
   push:
     paths:
       - 'scripts/a14-aos-f0-rate-*'
+      - 'scripts/a14-aos-f0-resource-audit.sh'
       - '.github/workflows/aos-f0-rate-diag.yml'
   pull_request:
     paths:
       - 'scripts/a14-aos-f0-rate-*'
+      - 'scripts/a14-aos-f0-resource-audit.sh'
       - '.github/workflows/aos-f0-rate-diag.yml'
   workflow_dispatch:
 
@@ -28,6 +30,7 @@ jobs:
           bash -n scripts/a14-aos-f0-rate-diag-build.sh
           bash -n scripts/a14-aos-f0-rate-diag-install-test.sh
           bash -n scripts/a14-aos-f0-rate-diag-run.sh
+          bash -n scripts/a14-aos-f0-resource-audit.sh
 
           grep -q 'platform-power-f0-rate-subset-no-mmio-v1' scripts/a14-aos-f0-rate-diag-build.sh
           grep -q 'direct_cpas_mmio_allowed=false' scripts/a14-aos-f0-rate-diag-build.sh
@@ -38,14 +41,28 @@ jobs:
           grep -q 'a14_aos_f0_rate_test=1' scripts/a14-aos-f0-rate-diag-run.sh
           grep -q 'AON-F0-RATE-DIAG begin phase=' scripts/a14-aos-f0-rate-diag-inject.py
 
+          grep -q 'operation=read-only' scripts/a14-aos-f0-resource-audit.sh
+          grep -q 'sysfs_writes=false' scripts/a14-aos-f0-resource-audit.sh
+          grep -q 'clock_changes=false' scripts/a14-aos-f0-resource-audit.sh
+          grep -q 'module_changes=false' scripts/a14-aos-f0-resource-audit.sh
+          grep -q 'camera_enumeration=false' scripts/a14-aos-f0-resource-audit.sh
+          grep -q 'camera_streaming=false' scripts/a14-aos-f0-resource-audit.sh
+          grep -q 'direct_cpas_mmio=false' scripts/a14-aos-f0-resource-audit.sh
+          grep -q 'ssc_contact=false' scripts/a14-aos-f0-resource-audit.sh
+
           if grep -R -E '0x0ac191e0|0x1e0|/dev/mem|(^|[;&|])[[:space:]]*(sudo[[:space:]]+)?(devmem|busybox[[:space:]]+devmem)' \
-              scripts/a14-aos-f0-rate-*; then
-            echo 'F0-rate diagnostic contains a direct physical-MMIO path' >&2
+              scripts/a14-aos-f0-rate-* scripts/a14-aos-f0-resource-audit.sh; then
+            echo 'F0 diagnostic/audit contains a direct physical-MMIO path' >&2
             exit 1
           fi
           if grep -R -E '(^|[;&|])[[:space:]]*(sudo[[:space:]]+)?(modprobe|insmod)[^#\n]*qcom_ssc_hpd' \
-              scripts/a14-aos-f0-rate-*; then
-            echo 'F0-rate diagnostic contains an SSC module activation path' >&2
+              scripts/a14-aos-f0-rate-* scripts/a14-aos-f0-resource-audit.sh; then
+            echo 'F0 diagnostic/audit contains an SSC module activation path' >&2
+            exit 1
+          fi
+          if grep -E '(^|[;&|])[[:space:]]*(sudo[[:space:]]+)?(tee|dd|cp|mv|rm|chmod|chown|systemctl)[[:space:]].*/sys/' \
+              scripts/a14-aos-f0-resource-audit.sh; then
+            echo 'F0 resource audit contains a sysfs write-capable command' >&2
             exit 1
           fi
 
