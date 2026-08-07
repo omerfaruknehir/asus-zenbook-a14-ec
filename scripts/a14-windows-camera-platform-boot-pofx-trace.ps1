@@ -195,11 +195,55 @@ if (-not $etlExists -or $etlSize -le 0) {
     throw 'WPR stopboot completed without producing a non-empty ETL file.'
 }
 
+# Compress-Archive uses System.IO.Compression.ZipArchive and cannot package an
+# individual file larger than 2 GiB. Boot Power traces can exceed that easily.
+# Preserve the raw trace directory in that case; the offline exporters accept
+# a directory or ETL directly, so no trace data needs to be discarded/re-recorded.
+$compressArchiveMaxFileBytes = [int64]2GB - 1
+$largestFile = Get-ChildItem -LiteralPath $output -File -Recurse |
+    Sort-Object Length -Descending |
+    Select-Object -First 1
 $zip = "$output.zip"
-if (Test-Path -LiteralPath $zip) { Remove-Item -LiteralPath $zip -Force }
-Compress-Archive -LiteralPath $output -DestinationPath $zip -CompressionLevel Optimal
+$archiveCreated = $false
+$archiveReason = ''
+
+if ($null -ne $largestFile -and [int64]$largestFile.Length -gt $compressArchiveMaxFileBytes) {
+    if (Test-Path -LiteralPath $zip) {
+        Remove-Item -LiteralPath $zip -Force -ErrorAction SilentlyContinue
+    }
+    $archiveReason = 'skipped-compress-archive-2gb-per-file-limit'
+    @(
+        "archive_created=false"
+        "archive_reason=$archiveReason"
+        "largest_file=$($largestFile.FullName)"
+        "largest_file_bytes=$($largestFile.Length)"
+        "trace_directory=$output"
+        "etl=$etl"
+        'next_step=run-kernel-power-exporter-directly-on-trace-directory'
+    ) | Out-File -LiteralPath (Join-Path $output 'PACKAGING.txt') -Encoding utf8 -Width 8192
+}
+else {
+    if (Test-Path -LiteralPath $zip) { Remove-Item -LiteralPath $zip -Force }
+    Compress-Archive -LiteralPath $output -DestinationPath $zip -CompressionLevel Optimal
+    $archiveCreated = $true
+    $archiveReason = 'created-with-compress-archive'
+}
+
+@(
+    "archive_created=$archiveCreated"
+    "archive_reason=$archiveReason"
+    "archive_path=$(if ($archiveCreated) { $zip } else { '' })"
+) | Add-Content -LiteralPath (Join-Path $output 'TRACE-RESULT.txt') -Encoding utf8
 
 Write-Host ''
 Write-Host "Boot trace directory: $output"
-Write-Host "Archive:              $zip"
-Write-Host 'Upload the ZIP. Decode it with the existing Kernel-Power exporter first.'
+if ($archiveCreated) {
+    Write-Host "Archive:              $zip"
+    Write-Host 'Upload the ZIP. Decode it with the existing Kernel-Power exporter first.'
+}
+else {
+    Write-Host 'Archive:              skipped (ETL exceeds Compress-Archive 2 GiB per-file limit)' -ForegroundColor Yellow
+    Write-Host "ETL size:             $etlSize bytes"
+    Write-Host 'Do NOT record the trace again.' -ForegroundColor Green
+    Write-Host 'Run the existing Kernel-Power exporter directly on the trace directory.'
+}
