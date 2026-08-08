@@ -76,6 +76,17 @@ The leading explanation is therefore that Stage 3 accessed the CPAS window
 while it was only partially clocked relative to Windows' PoFx state. This is
 still a hardware hypothesis; it does not weaken the MMIO quarantine.
 
+The combined framework-managed prerequisite test subsequently held CAMSS, both
+CCI controllers and the five Windows-matched CAMSS rates concurrently without a
+reset. The remaining named Windows F0 clock gap is the ICP pair:
+
+- `icp_ahb` -> `CAM_CC_ICP_AHB_CLK` (Windows default 80 MHz)
+- `icp` -> `CAM_CC_ICP_CLK` (Windows default 400 MHz)
+
+Patch 0006 represents those as **AOS-only CAMSS consumer clocks** and obtains
+only managed optional handles at probe time. It deliberately contains no
+prepare/enable or rate-change operation for either ICP clock.
+
 ## Patch order
 
 1. `0001-dt-bindings-media-qcom-x1e80100-camss-add-cpas-top.patch`
@@ -89,6 +100,9 @@ still a hardware hypothesis; it does not weaken the MMIO quarantine.
 5. `0005-media-qcom-camss-quarantine-direct-aon-mmio.patch`
    records the write-reset result and makes acquisition fail with
    `-EOPNOTSUPP` before any register access.
+6. `0006-media-qcom-camss-own-aos-icp-platform-clocks.patch`
+   adds the AOS-only `icp_ahb` / `icp` consumer handles without activating
+   either clock.
 
 Always apply the complete production series with:
 
@@ -104,6 +118,8 @@ Do not apply only the earlier experimental patches.
 - The production provider does not read or write the AON mux.
 - AOS activation fails closed with `-EOPNOTSUPP`.
 - The normal AP camera path remains available.
+- The ICP pair is represented only through CAMSS-owned optional clock handles;
+  production code does not prepare, enable or set their rate.
 - No boot-time register script, `/dev/mem` access, or userspace MMIO workaround
   is permitted.
 - The former write-capable diagnostic builder and installer are retired.
