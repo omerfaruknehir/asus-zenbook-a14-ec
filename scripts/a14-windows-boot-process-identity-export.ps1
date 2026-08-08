@@ -25,24 +25,15 @@ if (-not $NoDesktopRelaunch -and $PSVersionTable.PSEdition -ne 'Desktop') {
         throw "Windows PowerShell 5.1 was not found at $desktopPowerShell."
     }
 
-    $forward = New-Object 'System.Collections.Generic.List[string]'
-    $forward.Add('-NoProfile')
-    $forward.Add('-ExecutionPolicy')
-    $forward.Add('Bypass')
-    $forward.Add('-File')
-    $forward.Add($PSCommandPath)
-    $forward.Add('-TracePath')
-    $forward.Add($TracePath)
-    if ($ProcessId.Count -gt 0) {
-        $forward.Add('-ProcessId')
-        foreach ($pidValue in $ProcessId) { $forward.Add([string]$pidValue) }
-    }
-    $forward.Add('-OutputRoot')
-    $forward.Add($OutputRoot)
-    $forward.Add('-NoDesktopRelaunch')
+    $scriptLiteral = $PSCommandPath.Replace("'", "''")
+    $traceLiteral = $TracePath.Replace("'", "''")
+    $outputLiteral = $OutputRoot.Replace("'", "''")
+    $pidLiteral = (($ProcessId | ForEach-Object { [string][int]$_ }) -join ',')
+    $desktopCommand = "& '$scriptLiteral' -TracePath '$traceLiteral' -ProcessId @($pidLiteral) -OutputRoot '$outputLiteral' -NoDesktopRelaunch"
+    $encodedCommand = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($desktopCommand))
 
-    Write-Host "Relaunching offline ETL decode under Windows PowerShell 5.1..."
-    & $desktopPowerShell @forward
+    Write-Host 'Relaunching offline ETL decode under Windows PowerShell 5.1...'
+    & $desktopPowerShell -NoProfile -ExecutionPolicy Bypass -EncodedCommand $encodedCommand
     exit $LASTEXITCODE
 }
 
