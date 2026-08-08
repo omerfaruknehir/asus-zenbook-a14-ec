@@ -1,0 +1,65 @@
+name: Validate Windows AOS known-window exporter
+
+on:
+  push:
+    paths:
+      - 'scripts/a14-windows-aos-host-known-windows-export.ps1'
+      - '.github/workflows/windows-aos-known-windows-export.yml'
+  pull_request:
+    paths:
+      - 'scripts/a14-windows-aos-host-known-windows-export.ps1'
+      - '.github/workflows/windows-aos-known-windows-export.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Parse PowerShell 5.1 exporter
+        shell: powershell
+        run: |
+          $path = 'scripts/a14-windows-aos-host-known-windows-export.ps1'
+          $tokens = $null
+          $errors = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path $path), [ref]$tokens, [ref]$errors
+          )
+          if ($errors.Count -ne 0) {
+              $errors | Format-List *
+              throw "PowerShell parser reported $($errors.Count) error(s)."
+          }
+
+      - name: Enforce trace-specific offline-only boundary
+        shell: powershell
+        run: |
+          $path = 'scripts/a14-windows-aos-host-known-windows-export.ps1'
+          $script = Get-Content $path -Raw
+          foreach ($required in @(
+              '0xffffd30c46ce4b20',
+              '2026-08-07T23:11:14.2672870+03:00',
+              '2026-08-07T23:11:16.1216700+03:00',
+              '2026-08-07T23:11:20.2234110+03:00',
+              "Execution[@ProcessID=",
+              'discovery_passes=0',
+              'operation=offline-decode-only',
+              'collector_sends_platform_ioctl=false',
+              'devices_restarted=false',
+              'camera_register_access=false',
+              'direct_cpas_mmio=false'
+          )) {
+              if (-not $script.Contains($required)) {
+                  throw "Missing required invariant: $required"
+              }
+          }
+          if ($script -match 'DeviceIoControl|CreateFileW|Set-PnpDevice|Disable-PnpDevice|Enable-PnpDevice|devcon(?:\.exe)?|MmMapIoSpace|\\dev\\mem|0x0ac191e0|ioremap|\breadl\s*\(|\bwritel\s*\(|HumanPresenceSensor\]::GetDefault|GetCurrentReading\(') {
+              throw 'Known-window exporter contains a prohibited control path.'
+          }
+
+      - name: Check repository whitespace
+        shell: bash
+        run: git diff --check HEAD^ HEAD || git diff --check
