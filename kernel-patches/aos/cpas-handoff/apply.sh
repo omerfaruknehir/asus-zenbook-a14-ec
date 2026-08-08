@@ -148,7 +148,33 @@ grep -q 'CAM_CC_ICP_AHB_CLK' "$aos_dtsi" || { echo 'Runtime DTS lacks ICP AHB cl
 grep -q 'CAM_CC_ICP_CLK' "$aos_dtsi" || { echo 'Runtime DTS lacks ICP clock' >&2; rollback; exit 1; }
 grep -q 'aon_platform_clks\[0\].id = "icp_ahb"' "$camss" || { echo 'CAMSS lacks ICP AHB ownership handle' >&2; rollback; exit 1; }
 grep -q 'aon_platform_clks\[1\].id = "icp"' "$camss" || { echo 'CAMSS lacks ICP ownership handle' >&2; rollback; exit 1; }
-grep -q 'return -EOPNOTSUPP' "$camss" || { echo 'CAMSS AON provider is not fail-closed' >&2; rollback; exit 1; }
+
+acquire_body=$(sed -n '/^int qcom_camss_aon_acquire(/,/^}/p' "$camss")
+release_body=$(sed -n '/^void qcom_camss_aon_release(/,/^}/p' "$camss")
+[ -n "$acquire_body" ] || { echo 'CAMSS AON acquire provider is missing' >&2; rollback; exit 1; }
+[ -n "$release_body" ] || { echo 'CAMSS AON release provider is missing' >&2; rollback; exit 1; }
+printf '%s\n' "$acquire_body" | grep -q 'int ret = -EOPNOTSUPP;' || {
+    echo 'CAMSS AON acquire does not default to -EOPNOTSUPP' >&2
+    rollback
+    exit 1
+}
+printf '%s\n' "$acquire_body" | grep -q 'AON handoff unavailable: direct CPAS MMIO resets this platform' || {
+    echo 'CAMSS AON acquire lacks the direct-MMIO quarantine marker' >&2
+    rollback
+    exit 1
+}
+if printf '%s\n%s\n' "$acquire_body" "$release_body" | grep -Eq '\<(readl|writel|ioread|iowrite)\>'; then
+    echo 'CAMSS AON provider still contains direct MMIO access' >&2
+    rollback
+    exit 1
+fi
+if printf '%s\n' "$acquire_body" | grep -Eq '\<(pm_runtime_resume_and_get|clk_bulk_prepare_enable)\>'; then
+    echo 'CAMSS AON acquire still activates the quarantined direct-MMIO path' >&2
+    rollback
+    exit 1
+fi
+printf '%s\n' 'camss_aon_quarantine=validated-fail-closed-no-mmio'
+
 grep -q 'qcom_cci_platform_hold_get' "$cci" || { echo 'CCI owner API is missing' >&2; rollback; exit 1; }
 grep -q 'platform_hold_faulted' "$cci" || { echo 'CCI fail-closed restore state is missing' >&2; rollback; exit 1; }
 
