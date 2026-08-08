@@ -1,0 +1,88 @@
+From 0000000000000000000000000000000000000008 Mon Sep 17 00:00:00 2001
+From: Omer Faruk Nehir <omerfaruknehir@gmail.com>
+Date: Sun, 9 Aug 2026 00:58:00 +0300
+Subject: [PATCH 8/8] i2c: qcom-cci: fail closed on hold restore error
+
+The platform clock-hold API changes the CCI functional clock only while normal
+I2C transfers are excluded. Do not reopen transfers if restoring the pre-hold
+rate fails or returns a different rate.
+
+Latch a fault in that case. A faulted controller rejects both new platform
+holds and normal I2C transfers, leaving recovery to an explicit unbind/reboot
+instead of operating with uncertain timing. Runtime PM may still suspend the
+idle hardware after the failed restore; the fault gate prevents a later resume
+from being used for transfers.
+
+This remains compile-only plumbing: no caller is added by this patch.
+
+Signed-off-by: Omer Faruk Nehir <omerfaruknehir@gmail.com>
+---
+ drivers/i2c/busses/i2c-qcom-cci.c | 16 +++++++++++++---
+ 1 file changed, 13 insertions(+), 3 deletions(-)
+
+diff --git a/drivers/i2c/busses/i2c-qcom-cci.c b/drivers/i2c/busses/i2c-qcom-cci.c
+index 000000000001..000000000002 100644
+--- a/drivers/i2c/busses/i2c-qcom-cci.c
++++ b/drivers/i2c/busses/i2c-qcom-cci.c
+@@ -152,6 +152,7 @@ struct cci {
+ 	unsigned long platform_hold_restore_rate;
+ 	unsigned int platform_hold_count;
+ 	unsigned int platform_active_xfers;
++	bool platform_hold_faulted;
+ };
+ 
+ static irqreturn_t cci_isr(int irq, void *dev)
+@@ -437,7 +438,7 @@ static int cci_platform_xfer_get(struct cci *cci)
+ 	int ret = 0;
+ 
+ 	mutex_lock(&cci->platform_hold_lock);
+-	if (cci->platform_hold_count)
++	if (cci->platform_hold_count || cci->platform_hold_faulted)
+ 		ret = -EBUSY;
+ 	else
+ 		cci->platform_active_xfers++;
+@@ -477,6 +478,11 @@ int qcom_cci_platform_hold_get(struct device *dev, unsigned long rate)
+ 
+ 	mutex_lock(&cci->platform_hold_lock);
+ 
++	if (cci->platform_hold_faulted) {
++		ret = -EIO;
++		goto out_unlock;
++	}
++
+ 	if (!cci->platform_hold_clk) {
+ 		ret = -ENODEV;
+ 		goto out_unlock;
+@@ -544,8 +550,10 @@ err_restore:
+ 	actual_rate = clk_get_rate(cci->platform_hold_clk);
+ 	if (!restore_ret && actual_rate != restore_rate)
+ 		restore_ret = -ERANGE;
+-	if (restore_ret)
++	if (restore_ret) {
++		cci->platform_hold_faulted = true;
+ 		dev_err(dev,
+ 			"failed to restore CCI clock after platform hold error: %d\n",
+ 			restore_ret);
++	}
+ err_pm_put:
+ 	pm_runtime_mark_last_busy(dev);
+ 	pm_runtime_put_autosuspend(dev);
+@@ -591,10 +599,12 @@ int qcom_cci_platform_hold_put(struct device *dev)
+ 	if (!ret && actual_rate != restore_rate)
+ 		ret = -ERANGE;
+-	if (ret)
++	if (ret) {
++		cci->platform_hold_faulted = true;
+ 		dev_err(dev, "failed to restore CCI platform-hold rate: %d\n", ret);
+-
+-	cci->platform_hold_rate = 0;
+-	cci->platform_hold_restore_rate = 0;
++	} else {
++		cci->platform_hold_rate = 0;
++		cci->platform_hold_restore_rate = 0;
++	}
+ 	pm_runtime_mark_last_busy(dev);
+ 	pm_runtime_put_autosuspend(dev);
+ 
+-- 
+2.51.0
