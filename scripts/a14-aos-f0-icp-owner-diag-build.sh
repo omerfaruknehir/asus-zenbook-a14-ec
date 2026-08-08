@@ -189,8 +189,10 @@ make -C "$headers" M="$cci_modsrc" W=1 -j"$jobs" modules
 cci_ko="$cci_modsrc/i2c-qcom-cci.ko"
 [ -s "$cci_ko" ] || fail "patched i2c-qcom-cci.ko was not produced"
 case "$(modinfo -F vermagic "$cci_ko")" in "$release "*) ;; *) fail "CCI vermagic mismatch" ;; esac
-readelf -Ws "$cci_ko" | grep -q 'qcom_cci_platform_hold_get' || fail "CCI get symbol missing"
-readelf -Ws "$cci_ko" | grep -q 'qcom_cci_platform_hold_put' || fail "CCI put symbol missing"
+cci_symbols="$work/i2c-qcom-cci.symbols.txt"
+readelf -Ws "$cci_ko" > "$cci_symbols"
+grep -q 'qcom_cci_platform_hold_get' "$cci_symbols" || fail "CCI get symbol missing"
+grep -q 'qcom_cci_platform_hold_put' "$cci_symbols" || fail "CCI put symbol missing"
 grep -q 'qcom_cci_platform_hold_get' "$cci_modsrc/Module.symvers" || fail "CCI symbol CRC missing"
 grep -aFq 'platform clock hold' "$cci_ko" || fail "CCI owner module lacks hold implementation"
 printf '%s\n' 'cci_owner_module=validated'
@@ -213,10 +215,10 @@ grep -Fq 'camss->aon_platform_clks' "$camss_modsrc/camss.c" || \
 helper=$(sed -n \
     '/static int a14_camss_f0_icp_owner_probe/,/static DEVICE_ATTR_WO(a14_f0_icp_owner_probe)/p' \
     "$camss_modsrc/camss.c")
-if printf '%s\n' "$helper" | grep -Eq '\<(readl|writel|ioread|iowrite|ioremap)\>'; then
+if grep -Eq '\<(readl|writel|ioread|iowrite|ioremap)\>' <<< "$helper"; then
     fail "ICP owner diagnostic contains prohibited direct MMIO"
 fi
-if printf '%s\n' "$helper" | grep -Eq 'qcom_ssc_hpd|camera.handshake|INIT 576'; then
+if grep -Eq 'qcom_ssc_hpd|camera.handshake|INIT 576' <<< "$helper"; then
     fail "ICP owner diagnostic contains an SSC path"
 fi
 
@@ -226,11 +228,15 @@ make -C "$headers" M="$camss_modsrc" W=1 \
 camss_ko="$camss_modsrc/qcom-camss.ko"
 [ -s "$camss_ko" ] || fail "diagnostic qcom-camss.ko was not produced"
 case "$(modinfo -F vermagic "$camss_ko")" in "$release "*) ;; *) fail "CAMSS vermagic mismatch" ;; esac
-nm -u "$camss_ko" | grep -q 'qcom_cci_platform_hold_get' || fail "CAMSS lacks CCI get dependency"
-nm -u "$camss_ko" | grep -q 'qcom_cci_platform_hold_put' || fail "CAMSS lacks CCI put dependency"
+camss_undef="$work/qcom-camss.undefined.txt"
+nm -u "$camss_ko" > "$camss_undef"
+grep -q 'qcom_cci_platform_hold_get' "$camss_undef" || fail "CAMSS lacks CCI get dependency"
+grep -q 'qcom_cci_platform_hold_put' "$camss_undef" || fail "CAMSS lacks CCI put dependency"
 grep -aFq 'AON-F0-ICP-OWNER-DIAG targets-ok' "$camss_ko" || \
     fail "diagnostic target-hold implementation is missing"
-if strings "$camss_ko" | grep -Eq 'AON-DIAG stage=3|ap-write-no-read|aon-switch-restore-no-read'; then
+camss_strings="$work/qcom-camss.strings.txt"
+strings "$camss_ko" > "$camss_strings"
+if grep -Eq 'AON-DIAG stage=3|ap-write-no-read|aon-switch-restore-no-read' "$camss_strings"; then
     fail "CAMSS diagnostic contains a retired direct-access test marker"
 fi
 printf '%s\n' 'camss_icp_owner_module=validated'
