@@ -66,6 +66,7 @@ function Resolve-TraceEtl {
 
 function Get-EventDataMap {
     param([Parameter(Mandatory = $true)][string]$EventXml)
+
     $map = @{}
     [xml]$document = $EventXml
     $nodes = $document.SelectNodes('/*[local-name()="Event"]/*[local-name()="EventData"]/*[local-name()="Data"]')
@@ -80,6 +81,7 @@ function Get-EventDataMap {
 
 function Get-NamedPayload {
     param([Parameter(Mandatory = $true)][string]$EventXml)
+
     try {
         $map = Get-EventDataMap -EventXml $EventXml
         $pairs = @()
@@ -93,6 +95,7 @@ function Get-NamedPayload {
 
 function Get-ProviderIdentity {
     param([Parameter(Mandatory = $true)][string]$EventXml)
+
     try {
         [xml]$document = $EventXml
         $provider = $document.SelectSingleNode('/*[local-name()="Event"]/*[local-name()="System"]/*[local-name()="Provider"]')
@@ -100,6 +103,11 @@ function Get-ProviderIdentity {
         return (([string]$provider.GetAttribute('Name')) + ' ' + ([string]$provider.GetAttribute('Guid'))).Trim()
     }
     catch { return '' }
+}
+
+function Convert-ToSystemTimeText {
+    param([Parameter(Mandatory = $true)][DateTime]$Time)
+    return $Time.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fffffffZ', [Globalization.CultureInfo]::InvariantCulture)
 }
 
 New-Item -ItemType Directory -Force -Path $working | Out-Null
@@ -120,7 +128,7 @@ try {
     Write-Host 'Offline decode only: no process, device, PnP, IOCTL, sensor, or register operation.'
     Write-Host ''
 
-    Write-Host 'Resolving CAMP token and PID-owned PowerRequired windows...'
+    Write-Host 'Resolving CAMP token...'
     $tokens = @()
     Get-WinEvent -FilterHashtable @{
         Path = $etl
@@ -130,10 +138,11 @@ try {
         $xml = $_.ToXml()
         if ($xml -notmatch $cameraPattern) { return }
         $map = Get-EventDataMap -EventXml $xml
-        foreach ($name in @('Token','DeviceNode')) {
-            if ($map.ContainsKey($name)) {
-                foreach ($value in @($map[$name])) {
-                    if ($value -match '^0x[0-9a-fA-F]+$' -and $tokens -notcontains $value) { $tokens += $value }
+        foreach ($name in @('Token', 'DeviceNode')) {
+            if (-not $map.ContainsKey($name)) { continue }
+            foreach ($value in @($map[$name])) {
+                if ($value -match '^0x[0-9a-fA-F]+$' -and $tokens -notcontains $value) {
+                    $tokens += $value
                 }
             }
         }
@@ -142,29 +151,39 @@ try {
     $campToken = [string]$tokens[0]
     Write-Host "CAMP token:      $campToken"
 
-    $tokenXPath = "*[EventData[Data='$campToken']]"
-    $campEvents = @(Get-WinEvent -Path $etl -FilterXPath $tokenXPath -Oldest -ErrorAction Stop |
-        Where-Object { $_.ProviderName -eq $kernelPowerName })
+    # Event 317 is the only event needed to find the PowerRequired lifetime.
+    # Query it directly instead of performing an expensive all-event token XPath scan.
+    Write-Host 'Reading CAMP PowerRequired events only...'
+    $powerRequiredEvents = @(Get-WinEvent -FilterHashtable @{
+        Path = $etl
+        ProviderName = $kernelPowerName
+        Id = 317
+    } -Oldest -ErrorAction Stop | Where-Object {
+        $_.ToXml() -match [Regex]::Escape($campToken)
+    })
+    Write-Host "CAMP PowerRequired events: $($powerRequiredEvents.Count)"
 
-    $requests = @($campEvents | Where-Object {
+    $requests = @($powerRequiredEvents | Where-Object {
         $_.ProcessId -eq $AosProcessId -and
-        $_.Id -eq 317 -and
         $_.ToXml() -match 'PowerRequired[^<]*true|<Data Name="PowerRequired">true</Data>'
     })
     if ($requests.Count -eq 0) { throw "No CAMP PowerRequired=true request owned by PID $AosProcessId was found." }
 
     $windows = @()
     foreach ($request in $requests) {
-        $release = $campEvents | Where-Object {
-            $_.ProcessId -eq $AosProcessId -and
-            $_.Id -eq 317 -and
+        # Completion can run in System/PID 4 even when the request originated in the
+        # AOS UMDF host. Pair by CAMP lifetime, not by completion process context.
+        $release = $powerRequiredEvents | Where-Object {
             $_.TimeCreated -gt $request.TimeCreated -and
             $_.ToXml() -match 'PowerRequired[^<]*false|<Data Name="PowerRequired">false</Data>'
         } | Select-Object -First 1
         if ($null -eq $release) { continue }
+
         $windows += [pscustomobject]@{
             Request = $request.TimeCreated
+            RequestProcessId = $request.ProcessId
             Release = $release.TimeCreated
+            ReleaseProcessId = $release.ProcessId
             Start = $request.TimeCreated.AddMilliseconds(-100)
             End = $release.TimeCreated.AddMilliseconds(100)
         }
@@ -172,53 +191,64 @@ try {
     if ($windows.Count -eq 0) { throw 'No complete PID-owned CAMP PowerRequired window was found.' }
 
     $windows | ForEach-Object {
-        "request=$($_.Request.ToString('o')) release=$($_.Release.ToString('o')) query_start=$($_.Start.ToString('o')) query_end=$($_.End.ToString('o'))"
+        "request=$($_.Request.ToString('o')) request_pid=$($_.RequestProcessId) release=$($_.Release.ToString('o')) release_pid=$($_.ReleaseProcessId) query_start=$($_.Start.ToString('o')) query_end=$($_.End.ToString('o'))"
     } | Out-File -LiteralPath (Join-Path $output 'AOS-CAMP-WINDOWS.txt') -Encoding utf8 -Width 8192
 
     Write-Host "Resolved $($windows.Count) AOS-host CAMP window(s)."
-    Write-Host 'Querying ETL events whose System/Execution ProcessID is the AOS host...'
+    foreach ($window in $windows) {
+        Write-Host ("  {0} PID {1} -> {2} PID {3}" -f $window.Request.ToString('HH:mm:ss.fffffff'), $window.RequestProcessId, $window.Release.ToString('HH:mm:ss.fffffff'), $window.ReleaseProcessId)
+    }
 
-    $pidXPath = "*[System[Execution[@ProcessID='$AosProcessId']]]"
-    $pidEvents = @(Get-WinEvent -Path $etl -FilterXPath $pidXPath -Oldest -ErrorAction Stop)
-    Write-Host "PID-executed events returned: $($pidEvents.Count)"
-
+    # Query only the narrow time spans around each real AOS CAMP lifetime. The
+    # explicit Execution predicate keeps the requested process context visible
+    # while avoiding a whole-ETL PID scan.
     $rows = @()
     $xmlEvents = @()
     $providerCounts = @{}
-    foreach ($event in $pidEvents) {
-        $inside = $false
-        $windowNumber = 0
-        for ($i = 0; $i -lt $windows.Count; $i++) {
-            if ($event.TimeCreated -ge $windows[$i].Start -and $event.TimeCreated -le $windows[$i].End) {
-                $inside = $true
-                $windowNumber = $i + 1
-                break
+    $eventsReturned = 0L
+
+    for ($i = 0; $i -lt $windows.Count; $i++) {
+        $window = $windows[$i]
+        $startUtc = Convert-ToSystemTimeText -Time $window.Start
+        $endUtc = Convert-ToSystemTimeText -Time $window.End
+        $windowNumber = $i + 1
+        Write-Host ("Querying AOS window {0}/{1}: {2} -> {3}" -f $windowNumber, $windows.Count, $window.Start.ToString('HH:mm:ss.fff'), $window.End.ToString('HH:mm:ss.fff'))
+
+        $windowXPath = "*[System[TimeCreated[@SystemTime>='$startUtc' and @SystemTime<='$endUtc'] and Execution[@ProcessID='$AosProcessId']]]"
+        $windowEvents = @()
+        try {
+            $windowEvents = @(Get-WinEvent -Path $etl -FilterXPath $windowXPath -Oldest -ErrorAction Stop)
+        }
+        catch {
+            if ($_.Exception.Message -notmatch 'No events were found') { throw }
+        }
+        $eventsReturned += $windowEvents.Count
+        Write-Host "  PID $AosProcessId events returned: $($windowEvents.Count)"
+
+        foreach ($event in $windowEvents) {
+            $xml = $event.ToXml()
+            $provider = Get-ProviderIdentity -EventXml $xml
+            $providerKey = if ([string]::IsNullOrWhiteSpace($event.ProviderName)) { $provider } else { [string]$event.ProviderName }
+            if (-not $providerCounts.ContainsKey($providerKey)) { $providerCounts[$providerKey] = 0 }
+            $providerCounts[$providerKey]++
+
+            $payload = (Get-NamedPayload -EventXml $xml).Replace("`t", ' ').Replace("`r", ' ').Replace("`n", ' ')
+            $message = ''
+            try { $message = ([string]$event.FormatDescription()).Replace("`t", ' ').Replace("`r", ' ').Replace("`n", ' ') } catch {}
+            $rows += [pscustomobject]@{
+                Window = $windowNumber
+                TimeCreated = $event.TimeCreated.ToString('o')
+                Id = $event.Id
+                Version = $event.Version
+                Provider = $provider
+                ProcessId = $event.ProcessId
+                ThreadId = $event.ThreadId
+                RecordId = $event.RecordId
+                Payload = $payload
+                Message = $message
             }
+            $xmlEvents += $xml
         }
-        if (-not $inside) { continue }
-
-        $xml = $event.ToXml()
-        $provider = Get-ProviderIdentity -EventXml $xml
-        $providerKey = if ([string]::IsNullOrWhiteSpace($event.ProviderName)) { $provider } else { [string]$event.ProviderName }
-        if (-not $providerCounts.ContainsKey($providerKey)) { $providerCounts[$providerKey] = 0 }
-        $providerCounts[$providerKey]++
-
-        $payload = (Get-NamedPayload -EventXml $xml).Replace("`t", ' ').Replace("`r", ' ').Replace("`n", ' ')
-        $message = ''
-        try { $message = ([string]$event.FormatDescription()).Replace("`t", ' ').Replace("`r", ' ').Replace("`n", ' ') } catch {}
-        $rows += [pscustomobject]@{
-            Window = $windowNumber
-            TimeCreated = $event.TimeCreated.ToString('o')
-            Id = $event.Id
-            Version = $event.Version
-            Provider = $provider
-            ProcessId = $event.ProcessId
-            ThreadId = $event.ThreadId
-            RecordId = $event.RecordId
-            Payload = $payload
-            Message = $message
-        }
-        $xmlEvents += $xml
     }
 
     $rows | Export-Csv -LiteralPath (Join-Path $output 'aos-host-window-events.csv') -NoTypeInformation -Encoding utf8
@@ -239,9 +269,11 @@ try {
         "source_trace_bytes=$($etlItem.Length)"
         "aos_process_id=$AosProcessId"
         "camp_token=$campToken"
+        "camp_power_required_events=$($powerRequiredEvents.Count)"
         "aos_camp_windows=$($windows.Count)"
-        "pid_executed_events=$($pidEvents.Count)"
+        "bounded_pid_events=$eventsReturned"
         "window_events_retained=$($rows.Count)"
+        'query_strategy=event317-plus-time-bounded-pid-xpath'
         'operation=offline-decode-only'
         'process_control=false'
         'collector_sends_platform_ioctl=false'
@@ -256,6 +288,7 @@ try {
 
     Write-Host ''
     Write-Host "AOS CAMP windows:       $($windows.Count)"
+    Write-Host "Bounded PID events:     $eventsReturned"
     Write-Host "Window events retained: $($rows.Count)"
     Write-Host "Archive:                $zip"
     Write-Host 'Upload this small offline AOS-host window export ZIP.'
