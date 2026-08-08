@@ -1,0 +1,92 @@
+name: Validate combined AOS F0 prerequisite diagnostic
+
+on:
+  push:
+    paths:
+      - 'scripts/a14-aos-f0-combined-diag-*.sh'
+      - 'scripts/a14-aos-f0-rate-diag-*.sh'
+      - 'scripts/a14-aos-f0-rate-diag-inject.py'
+      - 'scripts/a14-aos-f0-cci-rate-diag-*.sh'
+      - 'scripts/a14-aos-f0-cci-rate-diag-inject.py'
+      - 'docs/aos/WINDOWS-AOS-WPP-RUNTIME-CORRELATION.md'
+      - '.github/workflows/aos-f0-combined-diag.yml'
+  pull_request:
+    paths:
+      - 'scripts/a14-aos-f0-combined-diag-*.sh'
+      - 'scripts/a14-aos-f0-rate-diag-*.sh'
+      - 'scripts/a14-aos-f0-rate-diag-inject.py'
+      - 'scripts/a14-aos-f0-cci-rate-diag-*.sh'
+      - 'scripts/a14-aos-f0-cci-rate-diag-inject.py'
+      - 'docs/aos/WINDOWS-AOS-WPP-RUNTIME-CORRELATION.md'
+      - '.github/workflows/aos-f0-combined-diag.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Parse combined shell scripts
+        shell: bash
+        run: |
+          set -euo pipefail
+          for script in \
+            scripts/a14-aos-f0-combined-diag-build.sh \
+            scripts/a14-aos-f0-combined-diag-install-test.sh \
+            scripts/a14-aos-f0-combined-diag-run.sh; do
+            bash -n "$script"
+          done
+
+      - name: Enforce framework-only boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          files=(
+            scripts/a14-aos-f0-combined-diag-build.sh
+            scripts/a14-aos-f0-combined-diag-install-test.sh
+            scripts/a14-aos-f0-combined-diag-run.sh
+          )
+          combined=$(cat "${files[@]}")
+
+          for required in \
+            'platform-power-f0-combined-framework-only-v1' \
+            'direct_cpas_mmio_allowed=false' \
+            'ssc_activation_allowed=false' \
+            'icp_clock_manipulation=false' \
+            'raw_interconnect_manipulation=false' \
+            'a14_aos_f0_combined_test=1' \
+            'AON-F0-RATE-DIAG phase=3 targets-ok hold-ms=250' \
+            'AON-F0-CCI-RATE-DIAG target-ok device=ac15000.cci hold-ms=250' \
+            'AON-F0-CCI-RATE-DIAG target-ok device=ac16000.cci hold-ms=250' \
+            'overlap_status=validated-at-least-100ms' \
+            'authorization_for_cpas_mmio=false'; do
+            grep -Fq "$required" <<<"$combined" || {
+              echo "Missing combined diagnostic invariant: $required" >&2
+              exit 1
+            }
+          done
+
+          if grep -Eqi '(^|[^[:alnum:]_])(readl|writel|ioread|iowrite|ioremap)[[:space:]]*\(|/dev/mem|0x0ac191e0|qcom_ssc_hpd.*(load|modprobe|insmod)|INIT[[:space:]]+576|cam_cc_icp(_ahb)?_clk.*(enable|prepare)|icc_set_bw' "${files[@]}"; then
+            echo 'Combined diagnostic contains a prohibited MMIO/SSC/ICP/raw-ICC path.' >&2
+            exit 1
+          fi
+
+      - name: Verify combined builder reuses validated probes
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -Fq 'a14-aos-f0-rate-diag-build.sh' scripts/a14-aos-f0-combined-diag-build.sh
+          grep -Fq 'a14-aos-f0-cci-rate-diag-build.sh' scripts/a14-aos-f0-combined-diag-build.sh
+          grep -Fq 'camss_phase=3' scripts/a14-aos-f0-combined-diag-build.sh
+          grep -Fq 'cci0_target=37500000' scripts/a14-aos-f0-combined-diag-build.sh
+          grep -Fq 'cci1_target=37500000' scripts/a14-aos-f0-combined-diag-build.sh
+          grep -Fq 'dtb_changes=false' scripts/a14-aos-f0-combined-diag-install-test.sh
+          grep -Fq 'persistent_module_override=false' scripts/a14-aos-f0-combined-diag-install-test.sh
+
+      - name: Check repository whitespace
+        shell: bash
+        run: git diff --check HEAD^ HEAD || git diff --check
