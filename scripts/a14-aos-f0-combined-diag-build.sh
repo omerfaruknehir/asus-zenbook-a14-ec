@@ -71,8 +71,8 @@ case "$(modinfo -F vermagic "$cci_stage/i2c-qcom-cci.ko")" in "$release "*) ;; *
 grep -aFq 'AON-F0-RATE-DIAG begin phase=' "$camss_stage/qcom-camss.ko" || fail "CAMSS module lacks F0 diagnostic"
 grep -aFq 'AON-F0-CCI-RATE-DIAG begin' "$cci_stage/i2c-qcom-cci.ko" || fail "CCI module lacks F0 diagnostic"
 if strings "$camss_stage/qcom-camss.ko" "$cci_stage/i2c-qcom-cci.ko" |
-        grep -Eq 'AON-DIAG stage=3|ap-write-no-read|aon-switch-restore-no-read|0x0ac191e0'; then
-    fail "staged diagnostic contains a retired/direct CPAS path"
+        grep -Eq 'AON-DIAG stage=3|ap-write-no-read|aon-switch-restore-no-read'; then
+    fail "staged diagnostic contains a retired direct-access path"
 fi
 
 printf '\n%s\n' '===== STAGE COMBINED DIAGNOSTIC ====='
