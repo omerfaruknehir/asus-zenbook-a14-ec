@@ -87,6 +87,12 @@ Patch 0006 represents those as **AOS-only CAMSS consumer clocks** and obtains
 only managed optional handles at probe time. It deliberately contains no
 prepare/enable or rate-change operation for either ICP clock.
 
+Patch 0007 adds the matching **CCI-owned platform-hold API**. The helper uses
+the CCI device's own runtime-PM and `cci` clock handle, requires an exactly
+roundable rate, reference-counts same-rate holds, restores the pre-hold rate on
+the final put, and prevents normal I2C transfers from overlapping a platform
+hold. No CAMSS/AOS caller is wired to it yet.
+
 ## Patch order
 
 1. `0001-dt-bindings-media-qcom-x1e80100-camss-add-cpas-top.patch`
@@ -103,6 +109,9 @@ prepare/enable or rate-change operation for either ICP clock.
 6. `0006-media-qcom-camss-own-aos-icp-platform-clocks.patch`
    adds the AOS-only `icp_ahb` / `icp` consumer handles without activating
    either clock.
+7. `0007-i2c-qcom-cci-add-platform-clock-hold-api.patch`
+   adds compile-only CCI runtime-PM/rate ownership plumbing without wiring a
+   camera-platform caller.
 
 Always apply the complete production series with:
 
@@ -120,6 +129,10 @@ Do not apply only the earlier experimental patches.
 - The normal AP camera path remains available.
 - The ICP pair is represented only through CAMSS-owned optional clock handles;
   production code does not prepare, enable or set their rate.
+- The CCI platform-hold API has no caller; adding it does not change clock rates
+  or runtime-PM state on its own.
+- A future CCI hold rejects active normal transfers, and normal transfers reject
+  an active hold, so the changed CCI functional rate cannot overlap AP I2C use.
 - No boot-time register script, `/dev/mem` access, or userspace MMIO workaround
   is permitted.
 - The former write-capable diagnostic builder and installer are retired.
