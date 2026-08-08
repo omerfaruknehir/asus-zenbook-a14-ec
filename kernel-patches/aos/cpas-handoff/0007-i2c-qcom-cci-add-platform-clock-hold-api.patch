@@ -25,8 +25,8 @@ hardware activation.
 Signed-off-by: Omer Faruk Nehir <omerfaruknehir@gmail.com>
 ---
  drivers/i2c/busses/i2c-qcom-cci.c | 166 ++++++++++++++++++++++++++++++
- include/linux/i2c-qcom-cci.h       |  29 ++++++
- 2 files changed, 195 insertions(+)
+ include/linux/i2c-qcom-cci.h       |  27 +++++
+ 2 files changed, 193 insertions(+)
  create mode 100644 include/linux/i2c-qcom-cci.h
 
 diff --git a/include/linux/i2c-qcom-cci.h b/include/linux/i2c-qcom-cci.h
@@ -34,7 +34,7 @@ new file mode 100644
 index 000000000000..000000000001
 --- /dev/null
 +++ b/include/linux/i2c-qcom-cci.h
-@@ -0,0 +1,29 @@
+@@ -0,0 +1,27 @@
 +/* SPDX-License-Identifier: GPL-2.0 */
 +#ifndef __LINUX_I2C_QCOM_CCI_H__
 +#define __LINUX_I2C_QCOM_CCI_H__
@@ -66,7 +66,7 @@ diff --git a/drivers/i2c/busses/i2c-qcom-cci.c b/drivers/i2c/busses/i2c-qcom-cci
 index bdeda3979c48..000000000001 100644
 --- a/drivers/i2c/busses/i2c-qcom-cci.c
 +++ b/drivers/i2c/busses/i2c-qcom-cci.c
-@@ -4,11 +4,13 @@
+@@ -4,10 +4,12 @@
  
  #include <linux/clk.h>
  #include <linux/completion.h>
@@ -93,7 +93,7 @@ index bdeda3979c48..000000000001 100644
  };
  
  static irqreturn_t cci_isr(int irq, void *dev)
-@@ -423,6 +432,149 @@ static int cci_i2c_write(struct cci *cci, u16 master,
+@@ -423,12 +432,155 @@ static int cci_i2c_write(struct cci *cci, u16 master,
  	return cci_run_queue(cci, master, queue);
  }
  
