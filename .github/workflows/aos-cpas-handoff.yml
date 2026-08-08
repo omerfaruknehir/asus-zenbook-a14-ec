@@ -55,9 +55,12 @@ jobs:
           builder=scripts/a14-aos-power-diag-build.sh
           installer=scripts/a14-aos-power-diag-install-test.sh
           runner=scripts/a14-aos-power-diag-run.sh
+          stage_a_patch=kernel-patches/aos/cpas-handoff/0006-media-qcom-camss-own-aos-icp-platform-clocks.patch
 
           test -s docs/aos/WINDOWS-AOS-PLATFORM-HANDOFF.md
+          test -s docs/aos/LINUX-AOS-PLATFORM-OWNER-DESIGN.md
           test -s kernel-patches/aos/cpas-handoff/0005-media-qcom-camss-quarantine-direct-aon-mmio.patch
+          test -s "$stage_a_patch"
           test -s "$injector"
           test -s "$builder"
           test -s "$installer"
@@ -65,10 +68,14 @@ jobs:
 
           grep -q '0005-media-qcom-camss-quarantine-direct-aon-mmio.patch' \
             kernel-patches/aos/cpas-handoff/apply.sh
+          grep -q '0006-media-qcom-camss-own-aos-icp-platform-clocks.patch' \
+            kernel-patches/aos/cpas-handoff/apply.sh
           grep -q 'returns -EOPNOTSUPP before' \
             kernel-patches/aos/cpas-handoff/apply.sh
           grep -q 'Direct host MMIO' kernel-patches/aos/cpas-handoff/README.md
           grep -q 'access to the AON mux is quarantined' \
+            kernel-patches/aos/cpas-handoff/README.md
+          grep -q 'AOS-only CAMSS consumer clocks' \
             kernel-patches/aos/cpas-handoff/README.md
           grep -q 'stage 3 is retired' scripts/a14-aos-stage-diag-run.sh
           grep -q 'stage 4 is permanently blocked' scripts/a14-aos-stage-diag-run.sh
@@ -86,6 +93,12 @@ jobs:
           grep -q 'a14_aos_power_test=1' "$installer"
           grep -q 'a14_aos_power_test=1' "$runner"
           grep -q 'AON-POWER-DIAG begin direct-mmio=false ssc=false' "$injector"
+
+          if grep -Eq '^\+.*\b(clk_prepare_enable|clk_bulk_prepare_enable|clk_set_rate)\b' \
+              "$stage_a_patch"; then
+            echo 'Stage A patch must not activate or rate-change ICP clocks' >&2
+            exit 1
+          fi
 
           if grep -q 'a14-aos-stage-build.sh' "$builder"; then
             echo 'Power diagnostic must not depend on the master-oriented CPAS build' >&2
@@ -135,6 +148,10 @@ jobs:
           done
 
           camss=linux/drivers/media/platform/qcom/camss/camss.c
+          camss_h=linux/drivers/media/platform/qcom/camss/camss.h
+          binding=linux/Documentation/devicetree/bindings/media/qcom,x1e80100-camss.yaml
+          aos_dtsi=linux/arch/arm64/boot/dts/qcom/x1e80100-asus-zenbook-a14-aos.dtsi
+
           grep -q 'AON handoff unavailable: direct CPAS MMIO resets this platform' "$camss"
           grep -q 'ret = -EOPNOTSUPP' "$camss"
           ! grep -q 'aon_diag_stage' "$camss"
@@ -146,6 +163,23 @@ jobs:
             echo 'Direct AON MMIO remains in the final provider implementation' >&2
             exit 1
           fi
+          if printf '%s\n' "$provider" | grep -Eq '\<(clk_prepare_enable|clk_bulk_prepare_enable|clk_set_rate)\>'; then
+            echo 'Production AON provider must not activate Stage A ICP resources' >&2
+            exit 1
+          fi
+
+          grep -q 'aon_platform_clks\[2\]' "$camss_h"
+          grep -q 'aon_platform_clks\[0\].id = "icp_ahb"' "$camss"
+          grep -q 'aon_platform_clks\[1\].id = "icp"' "$camss"
+          grep -q 'devm_clk_bulk_get_optional' "$camss"
+          test "$(grep -c 'aon_platform_clks' "$camss")" -eq 3
+
+          grep -A1 '^  clocks:' "$binding" | grep -q 'maxItems: 31'
+          grep -q -- '- const: icp_ahb' "$binding"
+          grep -q -- '- const: icp' "$binding"
+          grep -q 'CAM_CC_ICP_AHB_CLK' "$aos_dtsi"
+          grep -q 'CAM_CC_ICP_CLK' "$aos_dtsi"
+          grep -q '"icp_ahb", "icp"' "$aos_dtsi"
 
           git -C linux reset --hard
           python3 "$GITHUB_WORKSPACE/scripts/a14-aos-power-diag-inject.py" "$camss"
