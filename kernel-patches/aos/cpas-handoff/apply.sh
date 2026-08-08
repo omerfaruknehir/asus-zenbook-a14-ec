@@ -48,11 +48,12 @@ $series/0004-media-qcom-camss-treat-aon-mux-as-write-only.patch
 $series/0005-media-qcom-camss-quarantine-direct-aon-mmio.patch
 $series/0006-media-qcom-camss-own-aos-icp-platform-clocks.patch
 $series/0007-i2c-qcom-cci-add-platform-clock-hold-api.patch
+$series/0008-i2c-qcom-cci-fail-closed-on-hold-restore-error.patch
 "
 
-# The later patches intentionally depend on the earlier CAMSS ownership
-# plumbing, so validate and apply the series in order. If a later patch stops
-# applying, unwind everything this invocation already changed.
+# The later patches intentionally depend on the earlier ownership plumbing, so
+# validate and apply the series in order. If a later patch stops applying,
+# unwind everything this invocation already changed.
 applied=""
 for patch in $patches; do
     [ -s "$patch" ] || { echo "Missing patch: $patch" >&2; exit 1; }
@@ -89,14 +90,16 @@ Stage A represents the Windows F0 ICP pair as optional CAMSS-owned clock handles
 production path.
 
 Stage B adds a CCI-owned, reference-counted platform clock-hold API with exact
-rate/restore validation and transfer exclusion. No CAMSS or AOS caller is wired
-to that API yet, so applying this series does not create a platform hold.
+rate/restore validation and transfer exclusion. Restore failures latch the CCI
+owner fail-closed so normal I2C cannot resume with uncertain timing. No CAMSS or
+AOS caller is wired to that API yet, so applying this series does not create a
+platform hold.
 
 Next required validations:
   make ARCH=arm64 dt_binding_check DT_SCHEMA_FILES=qcom,x1e80100-camss.yaml
   build the Ubuntu A14 DTB, qcom-camss and i2c-qcom-cci
   confirm the Stage A/B ownership plumbing compiles cleanly
-  design a no-MMIO diagnostic before any ICP activation test
+  use the isolated no-MMIO/no-SSC Stage C diagnostic before any ICP activation
 
 No boot files or installed kernel packages were changed.
 EOF
