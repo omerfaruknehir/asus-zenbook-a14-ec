@@ -271,6 +271,11 @@ static int a14_camss_f0_icp_owner_probe(struct device *dev)
 	for (i = 0; i < A14_F0_OWNER_CAMSS_TARGET_COUNT; i++) {
 		unsigned long actual;
 
+		/* Once a rate change is attempted, cleanup must restore it even if
+		 * CCF reports an error; an error is not treated as proof that the
+		 * underlying hardware state remained untouched.
+		 */
+		camss_changed[i] = true;
 		ret = clk_set_rate(diag->camss_clks[i].clk,
 				   a14_f0_owner_camss_targets[i]);
 		actual = clk_get_rate(diag->camss_clks[i].clk);
@@ -280,7 +285,6 @@ static int a14_camss_f0_icp_owner_probe(struct device *dev)
 			  actual, ret);
 		if (ret)
 			goto out_cleanup;
-		camss_changed[i] = true;
 		if (actual != a14_f0_owner_camss_targets[i]) {
 			ret = -ERANGE;
 			goto out_cleanup;
@@ -298,6 +302,10 @@ static int a14_camss_f0_icp_owner_probe(struct device *dev)
 				  camss->aon_platform_clks[i].id, ret);
 			goto out_cleanup;
 		}
+		/* Same fail-safe rule as the CAMSS rates: any attempted change is
+		 * paired with a restore attempt on the cleanup path.
+		 */
+		icp_changed[i] = true;
 		ret = clk_set_rate(camss->aon_platform_clks[i].clk,
 				   a14_f0_owner_icp_targets[i]);
 		actual = clk_get_rate(camss->aon_platform_clks[i].clk);
@@ -307,7 +315,6 @@ static int a14_camss_f0_icp_owner_probe(struct device *dev)
 			  a14_f0_owner_icp_targets[i], actual, ret);
 		if (ret)
 			goto out_cleanup;
-		icp_changed[i] = true;
 		if (actual != a14_f0_owner_icp_targets[i]) {
 			ret = -ERANGE;
 			goto out_cleanup;
