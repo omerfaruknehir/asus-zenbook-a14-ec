@@ -21,6 +21,10 @@ series=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
     echo "CAMSS source is missing from $src" >&2
     exit 2
 }
+[ -f "$src/drivers/i2c/busses/i2c-qcom-cci.c" ] || {
+    echo "Qualcomm CCI source is missing from $src" >&2
+    exit 2
+}
 [ -f "$src/arch/arm64/boot/dts/qcom/x1e80100-asus-zenbook-a14.dts" ] || {
     echo "The A14 DTS is missing from $src" >&2
     exit 2
@@ -43,6 +47,7 @@ $series/0003-arm64-dts-qcom-hamoa-add-cpas-top.patch
 $series/0004-media-qcom-camss-treat-aon-mux-as-write-only.patch
 $series/0005-media-qcom-camss-quarantine-direct-aon-mmio.patch
 $series/0006-media-qcom-camss-own-aos-icp-platform-clocks.patch
+$series/0007-i2c-qcom-cci-add-platform-clock-hold-api.patch
 "
 
 # The later patches intentionally depend on the earlier CAMSS ownership
@@ -79,15 +84,19 @@ The direct CPAS MMIO handoff is quarantined because both reads and writes reset
 this platform. The provider returns -EOPNOTSUPP before direct MMIO until the
 correct firmware-mediated or platform-specific access mechanism is implemented.
 
-Stage A now represents the Windows F0 ICP pair as optional CAMSS-owned clock
-handles (icp_ahb / icp). Those clocks are not prepared, enabled or rate-changed
-by the production path.
+Stage A represents the Windows F0 ICP pair as optional CAMSS-owned clock handles
+(icp_ahb / icp). Those clocks are not prepared, enabled or rate-changed by the
+production path.
+
+Stage B adds a CCI-owned, reference-counted platform clock-hold API with exact
+rate/restore validation and transfer exclusion. No CAMSS or AOS caller is wired
+to that API yet, so applying this series does not create a platform hold.
 
 Next required validations:
   make ARCH=arm64 dt_binding_check DT_SCHEMA_FILES=qcom,x1e80100-camss.yaml
-  build the Ubuntu A14 DTB and qcom-camss module
-  confirm the ownership-only Stage A plumbing compiles cleanly
-  implement the compile-only CCI hold API before any ICP activation test
+  build the Ubuntu A14 DTB, qcom-camss and i2c-qcom-cci
+  confirm the Stage A/B ownership plumbing compiles cleanly
+  design a no-MMIO diagnostic before any ICP activation test
 
 No boot files or installed kernel packages were changed.
 EOF
