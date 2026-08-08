@@ -42,18 +42,33 @@ $series/0002-media-qcom-camss-add-aon-ownership-handoff.patch
 $series/0003-arm64-dts-qcom-hamoa-add-cpas-top.patch
 $series/0004-media-qcom-camss-treat-aon-mux-as-write-only.patch
 $series/0005-media-qcom-camss-quarantine-direct-aon-mmio.patch
+$series/0006-media-qcom-camss-own-aos-icp-platform-clocks.patch
 "
 
+# The later patches intentionally depend on the earlier CAMSS ownership
+# plumbing, so validate and apply the series in order. If a later patch stops
+# applying, unwind everything this invocation already changed.
+applied=""
 for patch in $patches; do
     [ -s "$patch" ] || { echo "Missing patch: $patch" >&2; exit 1; }
+
     if ! git -C "$src" apply --check "$patch"; then
         echo "Patch does not apply cleanly: $patch" >&2
+        for applied_patch in $applied; do
+            git -C "$src" apply -R "$applied_patch" || true
+        done
         exit 1
     fi
-done
 
-for patch in $patches; do
-    git -C "$src" apply "$patch"
+    if ! git -C "$src" apply "$patch"; then
+        echo "Failed to apply patch: $patch" >&2
+        for applied_patch in $applied; do
+            git -C "$src" apply -R "$applied_patch" || true
+        done
+        exit 1
+    fi
+
+    applied="$patch $applied"
 done
 
 cat <<EOF
@@ -64,11 +79,15 @@ The direct CPAS MMIO handoff is quarantined because both reads and writes reset
 this platform. The provider returns -EOPNOTSUPP before direct MMIO until the
 correct firmware-mediated or platform-specific access mechanism is implemented.
 
+Stage A now represents the Windows F0 ICP pair as optional CAMSS-owned clock
+handles (icp_ahb / icp). Those clocks are not prepared, enabled or rate-changed
+by the production path.
+
 Next required validations:
   make ARCH=arm64 dt_binding_check DT_SCHEMA_FILES=qcom,x1e80100-camss.yaml
   build the Ubuntu A14 DTB and qcom-camss module
-  validate the non-MMIO platform-power prerequisite probe
-  replace the quarantine only after a non-resetting hardware access is proven
+  confirm the ownership-only Stage A plumbing compiles cleanly
+  implement the compile-only CCI hold API before any ICP activation test
 
 No boot files or installed kernel packages were changed.
 EOF
