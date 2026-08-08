@@ -13,7 +13,7 @@ $KernelPowerProvider = 'Microsoft-Windows-Kernel-Power'
 $session = "A14-AOS-WPP-$PID"
 $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 $output = Join-Path $OutputRoot "A14-AOS-WPP-Trace-$stamp"
-$etl = Join-Path $output 'aos-wpp-kernel-power.etl'
+$requestedEtl = Join-Path $output 'aos-wpp-kernel-power.etl'
 $started = $false
 $created = $false
 
@@ -63,6 +63,42 @@ function Invoke-LogmanChecked {
     if ($exitCode -ne 0) {
         throw "logman $Label failed with exit code $exitCode. See $logPath"
     }
+}
+
+function Resolve-TraceOutputEtl {
+    param(
+        [Parameter(Mandatory = $true)][string]$PreferredPath,
+        [Parameter(Mandatory = $true)][string]$OutputDirectory
+    )
+
+    if (Test-Path -LiteralPath $PreferredPath -PathType Leaf) {
+        return (Get-Item -LiteralPath $PreferredPath)
+    }
+
+    # logman may append a sequence suffix (for example _000001.etl) to trace
+    # output even when an exact .etl path was requested. Recover that actual
+    # output rather than treating a successful trace as missing.
+    $candidates = @(Get-ChildItem -LiteralPath $OutputDirectory -File -Recurse -Filter '*.etl' -ErrorAction SilentlyContinue |
+        Sort-Object @{ Expression = 'Length'; Descending = $true }, @{ Expression = 'LastWriteTime'; Descending = $true })
+
+    if ($candidates.Count -eq 0) {
+        $inventory = @(Get-ChildItem -LiteralPath $OutputDirectory -File -Recurse -Force -ErrorAction SilentlyContinue |
+            Sort-Object Length -Descending |
+            Select-Object -First 20 FullName, Length, LastWriteTime |
+            Out-String -Width 8192)
+        throw "Trace stopped but no ETL file was found under $OutputDirectory.`nLargest output files:`n$inventory"
+    }
+
+    $resolved = $candidates[0]
+    @(
+        "requested_etl=$PreferredPath"
+        "resolved_etl=$($resolved.FullName)"
+        "resolved_etl_bytes=$($resolved.Length)"
+        'resolution=segmented-or-renamed-logman-output'
+    ) | Out-File -LiteralPath (Join-Path $OutputDirectory 'ETL-RESOLUTION.txt') -Encoding utf8 -Width 8192
+
+    Write-Host "Resolved actual ETL: $($resolved.FullName)"
+    return $resolved
 }
 
 function Initialize-MonitorPowerApi {
@@ -142,6 +178,7 @@ New-Item -ItemType Directory -Force -Path $output | Out-Null
     "aos_wpp_control_guid=$AosWppGuid"
     "aos_wpp_message_guid=$AosMessageGuid"
     "kernel_power_provider=$KernelPowerProvider"
+    "requested_etl=$requestedEtl"
     'operation=targeted-etw-capture-only'
     'display_transition=collector_requests_monitor_power_off_via_wm_syscommand'
     'machine_sleep_requested=false'
@@ -182,11 +219,9 @@ Save-CommandOutput -Name 'aos-process-inventory-before.txt' -Command {
 }
 
 try {
-    # A unique persistent collector set is used so each provider can be added
-    # explicitly and the session can always be stopped/deleted in finally.
     Invoke-LogmanChecked -Label 'create' -Arguments @(
         'create', 'trace', '-n', $session,
-        '-o', $etl,
+        '-o', $requestedEtl,
         '-f', 'bincirc',
         '-max', '128',
         '-nb', '16', '128',
@@ -195,15 +230,11 @@ try {
     )
     $created = $true
 
-    # qcAlwaysOnSensing.dll is a classic RegisterTraceGuids/TraceMessage WPP
-    # provider. Use all 32 WPP flags and verbose level.
     Invoke-LogmanChecked -Label 'add-aos-wpp' -Arguments @(
         'update', 'trace', '-n', $session,
         '-p', $AosWppGuid, '0xffffffff', '0xff'
     )
 
-    # Keep Kernel-Power in the same ETL so WPP message numbers can be correlated
-    # against CAMP PoFx timestamps without cross-session clock conversion.
     Invoke-LogmanChecked -Label 'add-kernel-power' -Arguments @(
         'update', 'trace', '-n', $session,
         '-p', $KernelPowerProvider, '0xffffffffffffffff', '0xff'
@@ -231,8 +262,8 @@ try {
     Write-Host 'Next:'
     Write-Host '  1. Press Enter below.'
     Write-Host '  2. The collector waits briefly, then asks Windows to turn the display OFF.'
-    Write-Host '  3. Leave it off for about 3-5 seconds, then wake it using the touchpad,'
-    Write-Host '     mouse, or keyboard. The machine itself does NOT sleep.'
+    Write-Host '  3. Let Presence Sensing wake it naturally, or keep the camera covered if'
+    Write-Host '     you want a longer display-off interval. The machine itself does NOT sleep.'
     Write-Host '  4. When this terminal is visible again, press Enter once more to stop.'
     Write-Host ''
 
@@ -241,7 +272,6 @@ try {
     "action_before=$($beforeAction.ToString('o'))" |
         Add-Content -LiteralPath (Join-Path $output 'ACTION-MARKERS.txt') -Encoding utf8
 
-    # Avoid the Enter key-up event immediately waking the panel again.
     Start-Sleep -Milliseconds 1000
     Request-MonitorPowerOff
 
@@ -276,13 +306,12 @@ try {
         }
     }
 
-    if (-not (Test-Path -LiteralPath $etl -PathType Leaf)) {
-        throw "Trace stopped but ETL was not found at $etl"
-    }
+    $etlItem = Resolve-TraceOutputEtl -PreferredPath $requestedEtl -OutputDirectory $output
+    $etl = $etlItem.FullName
 
-    $etlItem = Get-Item -LiteralPath $etl
     @(
         "completed_at=$((Get-Date).ToString('o'))"
+        "requested_etl=$requestedEtl"
         "etl=$etl"
         "etl_bytes=$($etlItem.Length)"
         "aos_wpp_control_guid=$AosWppGuid"
@@ -303,6 +332,7 @@ try {
     Compress-Archive -LiteralPath $output -DestinationPath $zip -CompressionLevel Optimal
 
     Write-Host ''
+    Write-Host "ETL:      $etl"
     Write-Host "ETL size: $([Math]::Round($etlItem.Length / 1MB, 2)) MiB"
     Write-Host "Archive:  $zip"
     Write-Host 'Upload this ZIP. No additional broad/boot trace is needed.'
