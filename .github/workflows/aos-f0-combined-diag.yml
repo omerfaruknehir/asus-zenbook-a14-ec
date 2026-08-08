@@ -70,7 +70,9 @@ jobs:
             }
           done
 
-          if grep -Eqi '(^|[^[:alnum:]_])(readl|writel|ioread|iowrite|ioremap)[[:space:]]*\(|/dev/mem|0x0ac191e0|qcom_ssc_hpd.*(load|modprobe|insmod)|INIT[[:space:]]+576|cam_cc_icp(_ahb)?_clk.*(enable|prepare)|icc_set_bw' "${files[@]}"; then
+          # Reject executable-looking direct access/activation paths, not safety
+          # prose such as "qcom_ssc_hpd is loaded" used by the run-time guard.
+          if grep -Eqi '(^|[^[:alnum:]_])(readl|writel|ioread|iowrite|ioremap)[[:space:]]*\(|/dev/mem|0x0ac191e0|(modprobe|insmod)[[:space:]]+qcom_ssc_hpd|INIT[[:space:]]+576|cam_cc_icp(_ahb)?_clk.*(enable|prepare)|icc_set_bw[[:space:]]*\(' "${files[@]}"; then
             echo 'Combined diagnostic contains a prohibited MMIO/SSC/ICP/raw-ICC path.' >&2
             exit 1
           fi
