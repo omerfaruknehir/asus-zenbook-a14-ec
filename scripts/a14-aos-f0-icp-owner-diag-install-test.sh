@@ -14,8 +14,8 @@ entry_id=a14-f0-icp-owner-test
 entry_title="ASUS Zenbook A14 F0 ICP owner diagnostic ($release)"
 
 fail() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
-for tool in cp depmod fdtoverlay fdtget findmnt grep install lsinitramfs \
-            mkinitramfs modinfo readlink sed sha256sum update-grub zstd xz gzip; do
+for tool in cat cp depmod fdtoverlay fdtget findmnt grep install lsinitramfs \
+            mkinitramfs modinfo readlink sed sha256sum sudo update-grub zstd xz gzip; do
     command -v "$tool" >/dev/null 2>&1 || fail "required command is missing: $tool"
 done
 [ "${EUID:-$(id -u)}" -ne 0 ] || fail "run this installer as your normal user, not with sudo"
@@ -136,6 +136,16 @@ printf '%s\n' 'custom_initramfs=validated'
 printf '\n%s\n' '===== INSTALL TEST-ONLY BOOT FILES ====='
 sudo install -m 0644 "$merged_dtb" "$test_dtb"
 sudo install -m 0644 "$tmp_initrd" "$test_initrd"
+
+# Validate privileged /boot writes by hashing the installed files through sudo.
+merged_dtb_sha=$(sha256sum "$merged_dtb" | sed 's/[[:space:]].*$//')
+installed_dtb_sha=$(sudo sha256sum "$test_dtb" | sed 's/[[:space:]].*$//')
+[ "$merged_dtb_sha" = "$installed_dtb_sha" ] || fail "installed test DTB differs from validated merged DTB"
+tmp_initrd_sha=$(sha256sum "$tmp_initrd" | sed 's/[[:space:]].*$//')
+installed_initrd_sha=$(sudo sha256sum "$test_initrd" | sed 's/[[:space:]].*$//')
+[ "$tmp_initrd_sha" = "$installed_initrd_sha" ] || fail "installed test initramfs differs from validated custom initramfs"
+printf '%s\n' 'installed_boot_payload=validated-exact-hashes'
+
 root_uuid=$(findmnt -no UUID /)
 [ -n "$root_uuid" ] || fail "could not resolve root filesystem UUID"
 cmdline=$(sed -E 's/(^| )BOOT_IMAGE=[^ ]+//; s/^ +//; s/ +$//' /proc/cmdline)
@@ -161,9 +171,15 @@ chmod 0755 "$grub_tmp"
 sudo install -m 0755 "$grub_tmp" "$grub_script"
 sudo update-grub
 
-grep -Fq "menuentry '$entry_title'" /boot/grub/grub.cfg || fail "test GRUB entry was not generated"
-grep -Fq "devicetree /boot/$(basename "$test_dtb")" /boot/grub/grub.cfg || fail "GRUB entry lacks test DTB"
-grep -Fq "initrd /boot/$(basename "$test_initrd")" /boot/grub/grub.cfg || fail "GRUB entry lacks test initramfs"
+# /boot/grub/grub.cfg is commonly root-readable only. Snapshot it through sudo,
+# then perform all final assertions as the unprivileged caller.
+grub_cfg_snapshot="$work/grub.cfg.generated"
+sudo cat /boot/grub/grub.cfg > "$grub_cfg_snapshot"
+[ -s "$grub_cfg_snapshot" ] || fail "could not snapshot generated GRUB configuration"
+grep -Fq "menuentry '$entry_title'" "$grub_cfg_snapshot" || fail "test GRUB entry was not generated"
+grep -Fq "devicetree /boot/$(basename "$test_dtb")" "$grub_cfg_snapshot" || fail "GRUB entry lacks test DTB"
+grep -Fq "initrd /boot/$(basename "$test_initrd")" "$grub_cfg_snapshot" || fail "GRUB entry lacks test initramfs"
+printf '%s\n' 'grub_entry=validated-from-privileged-snapshot'
 
 printf '\n%s\n' '===== INSTALLED TEST ENTRY ====='
 printf 'grub_entry_id=%s\n' "$entry_id"
