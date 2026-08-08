@@ -6,11 +6,45 @@ param(
 
     [int[]]$ProcessId = @(8288, 10252, 5560),
 
-    [string]$OutputRoot = "$env:USERPROFILE\Desktop"
+    [string]$OutputRoot = "$env:USERPROFILE\Desktop",
+
+    [switch]$NoDesktopRelaunch
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+
+# PowerShell 7 can hit a runtime binder failure ("Argument types do not match")
+# when converting generic List[object] instances through array-subexpression
+# syntax. Get-WinEvent ETL decoding is also most predictable in the inbox
+# Windows PowerShell 5.1 host. Relaunch there automatically unless explicitly
+# disabled for CI/parser tests.
+if (-not $NoDesktopRelaunch -and $PSVersionTable.PSEdition -ne 'Desktop') {
+    $desktopPowerShell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    if (-not (Test-Path -LiteralPath $desktopPowerShell -PathType Leaf)) {
+        throw "Windows PowerShell 5.1 was not found at $desktopPowerShell."
+    }
+
+    $forward = New-Object 'System.Collections.Generic.List[string]'
+    $forward.Add('-NoProfile')
+    $forward.Add('-ExecutionPolicy')
+    $forward.Add('Bypass')
+    $forward.Add('-File')
+    $forward.Add($PSCommandPath)
+    $forward.Add('-TracePath')
+    $forward.Add($TracePath)
+    if ($ProcessId.Count -gt 0) {
+        $forward.Add('-ProcessId')
+        foreach ($pidValue in $ProcessId) { $forward.Add([string]$pidValue) }
+    }
+    $forward.Add('-OutputRoot')
+    $forward.Add($OutputRoot)
+    $forward.Add('-NoDesktopRelaunch')
+
+    Write-Host "Relaunching offline ETL decode under Windows PowerShell 5.1..."
+    & $desktopPowerShell @forward
+    exit $LASTEXITCODE
+}
 
 $kernelProcessName = 'Microsoft-Windows-Kernel-Process'
 $kernelProcessGuid = [Guid]'22FB2CD6-0E7B-422B-A0C7-2FAD1FD0E716'
@@ -108,6 +142,7 @@ try {
     Write-Host ('=' * 76)
     Write-Host 'ASUS Zenbook A14 offline boot process identity exporter'
     Write-Host ('=' * 76)
+    Write-Host "PowerShell host: $($PSVersionTable.PSEdition) $($PSVersionTable.PSVersion)"
     Write-Host "Input ETL: $etl"
     Write-Host "Target PID(s): $($ProcessId -join ', ')"
     Write-Host 'Offline decode only: no process, device, PnP, IOCTL, sensor, or register operation.'
@@ -124,8 +159,10 @@ try {
     }
     $xpath = "*[EventData[" + ($predicateParts -join ' or ') + ']]'
 
-    $rows = New-Object 'System.Collections.Generic.List[object]'
-    $xmlEvents = New-Object 'System.Collections.Generic.List[string]'
+    # Keep these as ordinary PowerShell arrays. The event count for this
+    # targeted decoder is small, and this avoids PS7's generic-list binder edge.
+    $rows = @()
+    $xmlEvents = @()
     $queryMode = 'payload-xpath'
     $events = @()
 
@@ -160,12 +197,12 @@ try {
         if (-not $isKernelProcess) { continue }
         if (-not (Test-TargetPidPayload -EventXml $xml -Pids $ProcessId)) { continue }
 
-        $xmlEvents.Add($xml)
+        $xmlEvents += $xml
         $payload = Get-NamedPayload -EventXml $xml
         $message = ''
         try { $message = [string]$event.FormatDescription() } catch {}
 
-        $rows.Add([pscustomobject]@{
+        $rows += [pscustomobject]@{
             TimeCreated = $event.TimeCreated.ToString('o')
             Id = $event.Id
             Version = $event.Version
@@ -175,11 +212,11 @@ try {
             Provider = $providerIdentity
             Payload = $payload
             Message = $message
-        })
+        }
     }
 
     $csv = Join-Path $output 'target-process-events.csv'
-    @($rows) | Export-Csv -LiteralPath $csv -NoTypeInformation -Encoding utf8
+    $rows | Export-Csv -LiteralPath $csv -NoTypeInformation -Encoding utf8
 
     @(
         '<?xml version="1.0" encoding="utf-8"?>'
@@ -206,6 +243,8 @@ try {
         "generated_at=$((Get-Date).ToString('o'))"
         "source_trace=$etl"
         "source_trace_bytes=$($etlItem.Length)"
+        "powershell_edition=$($PSVersionTable.PSEdition)"
+        "powershell_version=$($PSVersionTable.PSVersion)"
         "target_pids=$($ProcessId -join ',')"
         "query_mode=$queryMode"
         "events_returned_by_query=$($events.Count)"
