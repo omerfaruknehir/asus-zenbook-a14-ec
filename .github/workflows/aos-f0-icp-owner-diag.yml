@@ -1,0 +1,145 @@
+name: Validate AOS F0 ICP owner diagnostic
+
+on:
+  push:
+    paths:
+      - 'kernel-patches/aos/cpas-handoff/**'
+      - 'scripts/a14-aos-f0-icp-owner-diag-*.sh'
+      - 'scripts/a14-aos-f0-icp-owner-diag-*.py'
+      - '.github/workflows/aos-f0-icp-owner-diag.yml'
+  pull_request:
+    paths:
+      - 'kernel-patches/aos/cpas-handoff/**'
+      - 'scripts/a14-aos-f0-icp-owner-diag-*.sh'
+      - 'scripts/a14-aos-f0-icp-owner-diag-*.py'
+      - '.github/workflows/aos-f0-icp-owner-diag.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate scripts and safety invariants
+        shell: bash
+        run: |
+          set -euo pipefail
+          injector=scripts/a14-aos-f0-icp-owner-diag-inject.py
+          builder=scripts/a14-aos-f0-icp-owner-diag-build.sh
+          installer=scripts/a14-aos-f0-icp-owner-diag-install-test.sh
+          runner=scripts/a14-aos-f0-icp-owner-diag-run.sh
+
+          python3 -m py_compile "$injector"
+          bash -n "$builder"
+          bash -n "$installer"
+          bash -n "$runner"
+
+          grep -Fq 'operation=build-and-stage-only' "$builder"
+          grep -Fq 'icp_activation_during_build=false' "$builder"
+          grep -Fq 'uses_production_icp_handles=true' "$builder"
+          grep -Fq 'uses_production_cci_hold_api=true' "$builder"
+          grep -Fq 'a14-f0-icp-owner-overlay.dtbo' "$installer"
+          grep -Fq '/__symbols__ camcc' "$installer"
+          grep -Fq '/__symbols__ gcc' "$installer"
+          grep -Fq 'a14_aos_f0_icp_owner_test=1' "$installer"
+          grep -Fq 'a14_aos_f0_icp_owner_test=1' "$runner"
+          grep -Fq 'status=started' "$runner"
+          grep -Fq 'AON-F0-ICP-OWNER-DIAG targets-ok hold-ms=250' "$runner"
+          grep -Fq 'AON-F0-ICP-OWNER-DIAG icp-restore-ok' "$runner"
+          grep -Fq 'This validates only the F0 resource prerequisite' "$runner"
+
+          if grep -Eq 'qcom_ssc_hpd\.ko|force_load qcom_ssc_hpd' "$builder" "$installer"; then
+            echo 'Stage C must not stage or force-load SSC' >&2
+            exit 1
+          fi
+          if grep -Eq '/dev/mem|ioremap|confirm-aon-switch|confirm-mmio-write' \
+              "$builder" "$installer" "$runner"; then
+            echo 'Stage C userspace path contains prohibited direct-access machinery' >&2
+            exit 1
+          fi
+
+          python3 - "$runner" <<'PY'
+          import sys
+          text = open(sys.argv[1], encoding='utf-8').read()
+          marker = text.index('status=started')
+          trigger = text.index("printf \"1\\n\" > \"$1\"")
+          if marker >= trigger:
+              raise SystemExit('persistent status=started marker is not written before the hardware trigger')
+          PY
+
+      - name: Apply ownership series and inject diagnostic on Linux master
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y device-tree-compiler
+          git clone --depth 1 --filter=blob:none --sparse \
+            https://github.com/torvalds/linux.git linux
+          git -C linux sparse-checkout set --no-cone \
+            Documentation/devicetree/bindings/media/qcom,x1e80100-camss.yaml \
+            drivers/media/platform/qcom/camss/ \
+            drivers/i2c/busses/i2c-qcom-cci.c \
+            include/media/ \
+            include/linux/i2c-qcom-cci.h \
+            include/dt-bindings/clock/qcom,x1e80100-camcc.h \
+            include/dt-bindings/clock/qcom,x1e80100-gcc.h \
+            arch/arm64/boot/dts/qcom/x1e80100-asus-zenbook-a14.dts
+
+          for patch in "$GITHUB_WORKSPACE"/kernel-patches/aos/cpas-handoff/0*.patch; do
+            git -C linux apply --check "$patch"
+            git -C linux apply "$patch"
+          done
+
+          camss=linux/drivers/media/platform/qcom/camss/camss.c
+          cci=linux/drivers/i2c/busses/i2c-qcom-cci.c
+          python3 "$GITHUB_WORKSPACE/scripts/a14-aos-f0-icp-owner-diag-inject.py" "$camss"
+
+          grep -Fq 'AON-F0-ICP-OWNER-DIAG begin' "$camss"
+          grep -Fq 'qcom_cci_platform_hold_get' "$camss"
+          grep -Fq 'qcom_cci_platform_hold_put' "$camss"
+          grep -Fq 'camss->aon_platform_clks' "$camss"
+          grep -Fq 'platform_hold_faulted' "$cci"
+          grep -Fq 'platform_hold_count || cci->platform_hold_faulted' "$cci"
+
+          helper=$(sed -n \
+            '/static int a14_camss_f0_icp_owner_probe/,/static DEVICE_ATTR_WO(a14_f0_icp_owner_probe)/p' \
+            "$camss")
+          if printf '%s\n' "$helper" | grep -Eq '\<(readl|writel|ioread|iowrite|ioremap)\>'; then
+            echo 'Injected Stage C helper contains direct MMIO' >&2
+            exit 1
+          fi
+          if printf '%s\n' "$helper" | grep -Eq 'qcom_camss_aon_acquire|qcom_ssc_hpd|camera.handshake|INIT 576'; then
+            echo 'Injected Stage C helper enters an AON/SSC path' >&2
+            exit 1
+          fi
+
+          git -C linux diff --check
+
+      - name: Validate Stage C overlay source
+        shell: bash
+        run: |
+          set -euo pipefail
+          builder=scripts/a14-aos-f0-icp-owner-diag-build.sh
+          awk '
+            /cat > "\$overlay_dts" <<'"'"'DTS'"'"'/ {capture=1; next}
+            capture && /^DTS$/ {exit}
+            capture {print}
+          ' "$builder" > /tmp/overlay.dts
+          test -s /tmp/overlay.dts
+
+          git clone --depth 1 --filter=blob:none --sparse \
+            https://github.com/torvalds/linux.git linux-overlay
+          git -C linux-overlay sparse-checkout set --no-cone include/dt-bindings/clock/
+          cpp -nostdinc -undef -x assembler-with-cpp -I linux-overlay/include \
+            /tmp/overlay.dts > /tmp/overlay.pp.dts
+          dtc -@ -I dts -O dtb -o /tmp/overlay.dtbo /tmp/overlay.pp.dts
+          fdtget -t s /tmp/overlay.dtbo /__fixups__ camcc >/dev/null
+          fdtget -t s /tmp/overlay.dtbo /__fixups__ gcc >/dev/null
+          clock_names=$(fdtget -t s /tmp/overlay.dtbo /fragment@0/__overlay__ clock-names)
+          test "$(wc -w <<<"$clock_names")" -eq 31
+          test "$(awk '{print $(NF-1)}' <<<"$clock_names")" = icp_ahb
+          test "$(awk '{print $NF}' <<<"$clock_names")" = icp
