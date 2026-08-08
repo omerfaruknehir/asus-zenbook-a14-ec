@@ -53,16 +53,13 @@ activated. The driver performs no readback around the store.
 
 The matching Windows PEP resource graph names Titan-top GDSC, camera core and
 CPAS AHB clocks, CAMNOC RT/NRT AXI clocks, GCC camera clocks, interconnect
-masters, and performance states.
+masters, CCI clocks and the ICP clock pair.
 
 ## Linux prerequisite comparison
 
 CAMSS runtime PM already retains the named `top` power domain and raises the
-four configured ICC paths. The original Stage 3 explicitly enabled only two
-local clocks.
-
-The X1E80100 CAMSS binding exposes seven direct Linux-visible equivalents for
-the Windows base camera-platform clock state:
+four configured ICC paths. The X1E80100 CAMSS binding also exposes the seven
+Linux-visible platform clocks used by the earlier safe diagnostics:
 
 - `camnoc_rt_axi`
 - `camnoc_nrt_axi`
@@ -72,26 +69,26 @@ the Windows base camera-platform clock state:
 - `gcc_axi_hf`
 - `gcc_axi_sf`
 
-The leading explanation is therefore that Stage 3 accessed the CPAS window
-while it was only partially clocked relative to Windows' PoFx state. This is
-still a hardware hypothesis; it does not weaken the MMIO quarantine.
-
 The combined framework-managed prerequisite test subsequently held CAMSS, both
-CCI controllers and the five Windows-matched CAMSS rates concurrently without a
-reset. The remaining named Windows F0 clock gap is the ICP pair:
+CCI controllers and the five Windows-matched CAMSS rates concurrently for
+232.6 ms without a reset. The remaining named Windows F0 clock gap was the ICP
+pair:
 
 - `icp_ahb` -> `CAM_CC_ICP_AHB_CLK` (Windows default 80 MHz)
 - `icp` -> `CAM_CC_ICP_CLK` (Windows default 400 MHz)
 
 Patch 0006 represents those as **AOS-only CAMSS consumer clocks** and obtains
-only managed optional handles at probe time. It deliberately contains no
+only managed optional handles at probe time. Production code contains no
 prepare/enable or rate-change operation for either ICP clock.
 
 Patch 0007 adds the matching **CCI-owned platform-hold API**. The helper uses
 the CCI device's own runtime-PM and `cci` clock handle, requires an exactly
 roundable rate, reference-counts same-rate holds, restores the pre-hold rate on
 the final put, and prevents normal I2C transfers from overlapping a platform
-hold. No CAMSS/AOS caller is wired to it yet.
+hold. No production CAMSS/AOS caller is wired to it.
+
+Patch 0008 hardens that API fail-closed: a failed exact restore latches the CCI
+owner faulted so normal I2C cannot resume with uncertain timing.
 
 ## Patch order
 
@@ -112,6 +109,8 @@ hold. No CAMSS/AOS caller is wired to it yet.
 7. `0007-i2c-qcom-cci-add-platform-clock-hold-api.patch`
    adds compile-only CCI runtime-PM/rate ownership plumbing without wiring a
    camera-platform caller.
+8. `0008-i2c-qcom-cci-fail-closed-on-hold-restore-error.patch`
+   keeps CCI transfer access blocked if exact rate restoration ever fails.
 
 Always apply the complete production series with:
 
@@ -129,43 +128,54 @@ Do not apply only the earlier experimental patches.
 - The normal AP camera path remains available.
 - The ICP pair is represented only through CAMSS-owned optional clock handles;
   production code does not prepare, enable or set their rate.
-- The CCI platform-hold API has no caller; adding it does not change clock rates
-  or runtime-PM state on its own.
-- A future CCI hold rejects active normal transfers, and normal transfers reject
-  an active hold, so the changed CCI functional rate cannot overlap AP I2C use.
-- No boot-time register script, `/dev/mem` access, or userspace MMIO workaround
-  is permitted.
-- The former write-capable diagnostic builder and installer are retired.
-- The safe power probe contains no register access and never contacts SSC.
+- The CCI platform-hold API has no production caller.
+- Normal CCI transfers cannot overlap a platform hold; a failed exact restore
+  leaves that CCI owner faulted/fail-closed.
+- No boot-time register script, `/dev/mem` access, raw CPAS `ioremap`, or
+  userspace MMIO workaround is permitted.
+- The former write-capable Stage 3/4 diagnostics remain retired.
 
-## Safe prerequisite test
+## Stage C — isolated real-owner F0 diagnostic
 
-The separate diagnostic patch under `../power-diagnostics/` reproduces the
-Linux-visible part of the Windows component-0 power state without accessing the
-CPAS window. It:
+Stage A/B are now represented and compile/static validated. The next permitted
+Linux hardware experiment is the isolated Stage C prerequisite test. It is the
+**first diagnostic that may actually enable the ICP clocks**, and it still:
 
-1. obtains CAMSS runtime PM;
-2. retains the existing top-GDSC and ICC state;
-3. enables the seven platform clocks listed above;
-4. logs their rates and holds them for 250 ms;
-5. unwinds all resources in reverse.
+- performs no CPAS mux MMIO;
+- never loads or contacts `qcom_ssc_hpd`;
+- uses CAMSS's real `icp_ahb` / `icp` consumer handles;
+- uses the CCI driver's exported owner API for both 37.5 MHz holds;
+- recreates the already validated CAMSS 300/300/80/80/100 MHz state;
+- programs ICP AHB / ICP to 80/400 MHz;
+- holds the complete state for 250 ms;
+- disables/restores ICP before releasing the other owners;
+- requires exact ICP and CCI restoration;
+- tolerates only the already-known CAMNOC 19.2 -> 240 MHz parking limitation;
+- checks normal camera enumeration after the hold.
 
-Build and install it from a normal boot:
-
-```bash
-bash ./scripts/a14-aos-power-diag-build.sh
-bash ./scripts/a14-aos-power-diag-install-test.sh
-```
-
-Manually select the generated isolated GRUB entry. In that boot, run:
+The build path itself does not activate hardware:
 
 ```bash
-bash ./scripts/a14-aos-power-diag-run.sh
+bash ./scripts/a14-aos-f0-icp-owner-diag-build.sh
+bash ./scripts/a14-aos-f0-icp-owner-diag-install-test.sh
 ```
 
-The runner rejects a loaded `qcom_ssc_hpd`, verifies camera nodes are idle,
-records a persistent marker before the operation, captures the kernel log, and
-checks normal camera enumeration after the resources are released.
+The installer creates a one-shot GRUB entry and preserves the existing HM1092
+DTB by applying a symbolic CAMSS overlay that adds `cpas-top` plus the complete
+31-clock consumer list. It refuses a base DTB without `camcc` and `gcc` symbols.
 
-A successful result proves only that the expanded power prerequisite is safe.
-It does **not** authorize another mux read or write.
+After explicitly booting that isolated entry, the hardware trigger is still
+manual:
+
+```bash
+bash ./scripts/a14-aos-f0-icp-owner-diag-run.sh
+```
+
+The runner writes and syncs a persistent `status=started` marker before the
+first real-owner ICP activation. If the platform resets during the 250 ms hold,
+the next normal boot therefore preserves evidence that the operation did not
+return.
+
+A successful Stage C result would prove only that the full Windows-named F0
+resource prerequisite can be held through legitimate Linux owners. It still
+would **not** authorize direct `CPAS + 0x1e0` access or SSC activation.
