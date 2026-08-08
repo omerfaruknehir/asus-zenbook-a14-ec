@@ -36,8 +36,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python3 kernel-patches/aos/cpas-handoff/normalize-patch.py --check \
-            kernel-patches/aos/cpas-handoff/0*.patch
+          patches=(kernel-patches/aos/cpas-handoff/0*.patch)
+          if ! python3 kernel-patches/aos/cpas-handoff/normalize-patch.py --check \
+              "${patches[@]}"; then
+            echo 'Patch hunk metadata is not normalized; corrected diff follows:' >&2
+            python3 kernel-patches/aos/cpas-handoff/normalize-patch.py "${patches[@]}"
+            git diff -- "${patches[@]}"
+            exit 1
+          fi
 
       - name: Validate quarantine and ownership plumbing
         shell: bash
@@ -80,6 +86,8 @@ jobs:
           grep -q 'access to the AON mux is quarantined' \
             kernel-patches/aos/cpas-handoff/README.md
           grep -q 'AOS-only CAMSS consumer clocks' \
+            kernel-patches/aos/cpas-handoff/README.md
+          grep -q 'CCI-owned platform-hold API' \
             kernel-patches/aos/cpas-handoff/README.md
           grep -q 'stage 3 is retired' scripts/a14-aos-stage-diag-run.sh
           grep -q 'stage 4 is permanently blocked' scripts/a14-aos-stage-diag-run.sh
