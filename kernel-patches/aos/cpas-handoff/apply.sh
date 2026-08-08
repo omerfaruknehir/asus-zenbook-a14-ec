@@ -153,22 +153,35 @@ acquire_body=$(sed -n '/^int qcom_camss_aon_acquire(/,/^}/p' "$camss")
 release_body=$(sed -n '/^void qcom_camss_aon_release(/,/^}/p' "$camss")
 [ -n "$acquire_body" ] || { echo 'CAMSS AON acquire provider is missing' >&2; rollback; exit 1; }
 [ -n "$release_body" ] || { echo 'CAMSS AON release provider is missing' >&2; rollback; exit 1; }
-printf '%s\n' "$acquire_body" | grep -q 'int ret = -EOPNOTSUPP;' || {
-    echo 'CAMSS AON acquire does not default to -EOPNOTSUPP' >&2
-    rollback
-    exit 1
-}
-printf '%s\n' "$acquire_body" | grep -q 'AON handoff unavailable: direct CPAS MMIO resets this platform' || {
-    echo 'CAMSS AON acquire lacks the direct-MMIO quarantine marker' >&2
-    rollback
-    exit 1
-}
-if printf '%s\n%s\n' "$acquire_body" "$release_body" | grep -Eq '\<(readl|writel|ioread|iowrite)\>'; then
+case "$acquire_body" in
+    *'int ret = -EOPNOTSUPP;'*) ;;
+    *)
+        echo 'CAMSS AON acquire does not default to -EOPNOTSUPP' >&2
+        rollback
+        exit 1
+        ;;
+esac
+case "$acquire_body" in
+    *'AON handoff unavailable: direct CPAS MMIO resets this platform'*) ;;
+    *)
+        echo 'CAMSS AON acquire lacks the direct-MMIO quarantine marker' >&2
+        rollback
+        exit 1
+        ;;
+esac
+if grep -Eq '\<(readl|writel|ioread|iowrite)\>' <<EOF
+$acquire_body
+$release_body
+EOF
+then
     echo 'CAMSS AON provider still contains direct MMIO access' >&2
     rollback
     exit 1
 fi
-if printf '%s\n' "$acquire_body" | grep -Eq '\<(pm_runtime_resume_and_get|clk_bulk_prepare_enable)\>'; then
+if grep -Eq '\<(pm_runtime_resume_and_get|clk_bulk_prepare_enable)\>' <<EOF
+$acquire_body
+EOF
+then
     echo 'CAMSS AON acquire still activates the quarantined direct-MMIO path' >&2
     rollback
     exit 1
