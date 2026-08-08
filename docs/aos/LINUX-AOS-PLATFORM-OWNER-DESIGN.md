@@ -1,210 +1,240 @@
 # Linux AOS platform-resource ownership design
 
-This document defines the next implementation boundary after the combined
-framework-managed F0 prerequisite test succeeded on the ASUS Zenbook A14
-UX3407RA / X1E80100.
+This document tracks the Linux resource-ownership model for the ASUS Zenbook
+A14 UX3407RA / X1E80100 AOS camera path after the framework-managed F0
+prerequisite work.
 
-It is a design document only. It does **not** authorize direct CPAS MMIO, SSC
-activation, ICP firmware boot, deviceless clock manipulation, or a new hardware
-test.
+Stages A and B are implemented and compile/static validated. Stage C is prepared
+as an isolated diagnostic but has **not** been run on hardware yet. Stage D,
+which concerns the actual AP/AOS ownership switch, remains blocked.
+
+Nothing in this document authorizes direct CPAS MMIO or SSC activation.
 
 ## Evidence boundary
 
-The evidence now establishes all of the following:
+The evidence currently establishes all of the following:
 
-1. Windows `SET_AOS_CONFIG(state=0)` first obtains CAMP component 0 Active/F0,
-   then completes the route-to-AOS operation. The targeted WPP trace placed the
-   successful state-0 message about 16 microseconds after CAMP became Active.
-2. The preserved Windows `CAMP_RES_QRD.bin` FSTATE 0 sequence explicitly enables
-   `cam_cc_icp_ahb_clk` at 80 MHz and `cam_cc_icp_clk` at 400 MHz as CAMP
-   component-active resources. FSTATE 1 disables them in the reverse resource
-   sequence.
-3. Linux safely held, concurrently for at least 232.600 ms:
+1. Windows `SET_AOS_CONFIG(state=0)` obtains CAMP component 0 Active/F0 before
+   the route-to-AOS operation. The targeted trace placed the successful state-0
+   message about 16 microseconds after CAMP became Active.
+2. The preserved Windows CAMP FSTATE 0 resources include:
+   - CCI0 / CCI1 at 37.5 / 37.5 MHz;
+   - CAMNOC RT / NRT at 300 / 300 MHz;
+   - CPAS / Core / Fast AHB at 80 / 80 / 100 MHz;
+   - ICP AHB / ICP at 80 / 400 MHz.
+3. Linux safely held the already-owned subset concurrently for 232.6 ms:
    - CCI0 and CCI1 at 37.5 MHz;
    - CAMNOC RT/NRT at 300/300 MHz;
    - CPAS/Core/Fast AHB at 80/80/100 MHz;
-   - normal CAMSS runtime PM, Titan-top genpd and existing CAMSS interconnect
-     votes.
-4. No reset, watchdog fault, panic, SError, call trace, oops or internal error
-   occurred during that combined hold.
-5. X1E80100 Linux already keeps the Windows-named GCC camera AHB/XO support
-   clocks available through the clock-controller implementation, and CAMCC's
-   GDSC support CBCR is critical. Those are no longer separate AOS test targets.
+   - normal CAMSS runtime PM, Titan-top genpd and existing CAMSS ICC votes.
+4. That combined hold produced no reset, watchdog fault, panic, SError, call
+   trace, oops or internal error.
+5. X1E80100 Linux already accounts for the Windows-named GCC camera support
+   resources and CAMSS interconnects through existing framework owners.
+6. Direct Linux access to `CPAS + 0x1e0` remains independently unsafe: both the
+   earlier read and the later AP-value-only write reset the platform. The
+   production AON provider therefore remains quarantined and returns
+   `-EOPNOTSUPP` before direct CPAS access.
 
-The remaining named Windows FSTATE-0 clock gap is therefore the ICP pair.
+The ICP pair was the remaining named FSTATE-0 clock gap. It is now represented
+through a legitimate Linux consumer, but it has not yet been activated on this
+machine through the new owner path.
 
-## Why a provider-global ICP clock access is rejected
-
-`CAM_CC_ICP_AHB_CLK` and `CAM_CC_ICP_CLK` exist in the X1E80100 CAMCC provider,
-but the current Linux CAMSS device does not list them as consumer clocks and
-there is no upstream X1E80100 ICP platform device that owns them.
-
-Calling a provider-global/deviceless clock lookup and enabling those clocks
-would reproduce only a register-level side effect, not a Linux device/resource
-lifecycle. That is exactly the class of experiment this branch is trying to
-avoid.
-
-Qualcomm downstream camera stacks model ICP as a real device with CPAS/SOC
-resource management and a firmware/HFI lifecycle. That proves the clocks are
-not normally intended to be manipulated as anonymous global resources.
-
-At the same time, Windows CAMP FSTATE 0 only shows the ICP clocks as platform
-power resources around the AOS ownership transaction; it does not show an ICP
-firmware/HFI boot at the mux boundary. Therefore porting the full downstream ICP
-functional driver is not yet justified merely to reproduce the CAMP power
-prerequisite.
-
-## Recommended Linux ownership model
-
-Use the existing Linux devices as the resource owners and make the AOS handoff
-a short coordinated transaction.
+## Ownership model
 
 ### CAMSS / camera-platform owner
 
 The X1E80100 CAMSS device is the closest existing Linux equivalent of the
-Windows CAMP camera-platform resource owner. It already owns:
+Windows CAMP camera-platform resource owner. It already owns the normal camera
+platform resources used by the validated prerequisite:
 
 - CAMNOC RT/NRT;
-- CPAS/Core/Fast AHB clocks used by the validated prerequisite;
+- CPAS/Core/Fast AHB;
 - GCC HF/SF AXI consumer clocks;
-- the `ahb`, `hf_mnoc`, `sf_mnoc` and `sf_icp_mnoc` interconnect paths;
-- the Titan-top power domain through genpd.
+- `ahb`, `hf_mnoc`, `sf_mnoc` and `sf_icp_mnoc` ICC paths;
+- Titan-top through genpd.
 
-Extend the X1E80100 CAMSS binding/device-tree clock list with two explicitly
-named **AOS-only platform-resource clocks**:
+Stage A extends the X1E80100 CAMSS consumer clock list with two explicitly
+AOS-only resources:
 
 ```text
 icp_ahb -> CAM_CC_ICP_AHB_CLK
 icp     -> CAM_CC_ICP_CLK
 ```
 
-CAMSS then obtains those handles from its own device node. They must not be
-added to normal VFE/CSID streaming clock tables and must not be enabled merely
-because ordinary CAMSS runtime PM resumes.
+CAMSS acquires those handles from its own device node. They are not part of
+ordinary VFE/CSID streaming tables and ordinary CAMSS runtime PM does not enable
+them.
 
-This makes CAMSS a legitimate Common Clock Framework consumer without creating
-an incomplete fake ICP functional device.
+This deliberately avoids both bad alternatives:
+
+- provider-global/deviceless ICP clock manipulation; and
+- inventing an incomplete functional ICP device merely to own two CAMP F0
+  clocks.
+
+Qualcomm downstream stacks do have a full ICP functional device with CPAS,
+firmware and HFI lifecycle, but current Windows evidence does not show ICP
+firmware/HFI boot as part of the ownership-switch prerequisite. Porting the full
+functional ICP stack is therefore not justified for this experiment.
 
 ### CCI owners
 
-CCI0 and CCI1 must continue to own their own clock/runtime-PM transitions. The
-existing `i2c-qcom-cci` driver already owns all clocks attached to each CCI node
-and enables/disables them from its runtime-PM callbacks.
+CCI0 and CCI1 remain owned by `i2c-qcom-cci`; their clocks are not duplicated
+into CAMSS.
 
-Do not duplicate the CCI clock phandles into the CAMSS node.
+Stage B adds a small exported CCI platform-hold API:
 
-For the eventual transaction, add a small CCI-driver helper that can take a
-short platform hold at a requested CCI functional-clock rate while using the
-CCI device's own runtime-PM and clock handles. The helper must be reference
-counted/serialized and must restore the previous rate on the last release.
+```text
+qcom_cci_platform_hold_get(dev, rate)
+qcom_cci_platform_hold_put(dev)
+```
 
-The first implementation of that helper remains fail-closed and is compile-only;
-it must not yet be called by the AOS path.
+The API:
 
-## Transaction model
+- uses the CCI device's own runtime-PM reference;
+- uses the existing device-owned `cci` clock handle;
+- requires the requested rate to round exactly;
+- reference-counts same-rate users;
+- rejects a conflicting hold;
+- rejects a new hold while a normal I2C transfer is active;
+- rejects normal I2C transfers while a hold is active;
+- restores the exact pre-hold rate on final release.
 
-The intended final resource transaction, once every prerequisite has been
-separately validated, is:
+Because CCI timing programming assumes a particular source clock, transfer
+exclusion is not optional: normal transactions must not overlap a temporary
+37.5 MHz platform hold.
+
+Stage B hardening also latches the CCI owner fail-closed if exact restoration
+fails. A faulted owner rejects later holds and normal I2C transfers until an
+explicit unbind/reboot instead of operating with uncertain timing.
+
+There is still **no production CAMSS/AOS caller** for this API.
+
+## Intended final transaction
+
+If all prerequisite stages eventually pass, the resource portion of a future
+AOS transaction is expected to look like this:
 
 ```text
 qcom_camss_aon_acquire()
-    lock AP/AOS ownership state
+    serialize AP/AOS ownership state
     reject if an AP camera pipeline is active
 
-    acquire CCI0 platform hold @ 37.5 MHz
-    acquire CCI1 platform hold @ 37.5 MHz
+    acquire CCI0 owner hold @ 37.5 MHz
+    acquire CCI1 owner hold @ 37.5 MHz
 
     pm_runtime_resume_and_get(CAMSS)
         -> existing ICC votes
         -> existing Titan-top/genpd ownership
 
-    hold CAMSS AOS prerequisite rates
+    hold CAMSS F0 rates
         camnoc_rt_axi     300 MHz
         camnoc_nrt_axi    300 MHz
         cpas_ahb           80 MHz
         core_ahb           80 MHz
         cpas_fast_ahb     100 MHz
 
-    enable AOS-only platform clocks
+    enable CAMSS-owned AOS platform clocks
         icp_ahb            80 MHz
         icp               400 MHz
 
     [ownership mechanism remains BLOCKED]
 
-    unwind all temporary F0 resources in reverse order
+    unwind temporary resources in reverse order
 ```
 
-The actual ownership operation is deliberately absent from this design. The
-current provider must continue returning `-EOPNOTSUPP` before any CPAS mux
-access.
+The actual ownership mechanism is deliberately absent. The production provider
+continues to fail with `-EOPNOTSUPP` before any CPAS mux access.
 
-## Why not a CAMSS child device yet
+## Implementation status
 
-The current `qcom,x1e80100-camss` binding is a closed schema and does not model
-an AOS/CAMP child device. Introducing a child solely to own two clocks would
-require a new binding/device-model abstraction before it provides any additional
-resource correctness.
+### Stage A — ICP ownership plumbing: implemented
 
-Because these two clocks are evidenced as CAMP **platform F0 resources**, not
-as an ICP functional/firmware operation at the handoff boundary, attaching them
-as optional AOS-only resources to the existing CAMSS camera-platform owner is
-the smaller first step.
+Implemented by patch 0006:
 
-A dedicated child/auxiliary camera-platform device remains an option if later
-evidence shows that CAMSS cannot safely or cleanly coordinate the resource
-lifetime.
+- CAMSS binding grows from 29 to 31 clock consumers;
+- `icp_ahb` and `icp` are appended to the A14 CAMSS clock list;
+- CAMSS obtains managed optional handles at probe time;
+- production code contains no prepare/enable or rate-change call for the pair;
+- AOS acquisition remains fail-closed.
 
-## Implementation stages
+CI applies the production series to current Linux master and rejects production
+ICP activation in this stage.
 
-### Stage A — ownership plumbing only
+### Stage B — CCI hold API: implemented, no production caller
 
-Safe to implement next:
+Implemented by patches 0007 and 0008:
 
-- extend the X1E80100 CAMSS binding with `icp_ahb` and `icp` clock names;
-- add the two clock phandles to the X1E80100/Hamoa camera node used by this
-  platform;
-- have CAMSS acquire the clock handles at probe time;
-- add no `clk_prepare_enable()` or `clk_set_rate()` call for them;
-- keep `qcom_camss_aon_acquire()` fail-closed with `-EOPNOTSUPP`;
-- add CI checks that reject any ICP activation or CPAS MMIO in this stage.
-
-This stage proves that Linux can represent the missing resources with a proper
-consumer and that the binding/driver changes apply cleanly.
-
-### Stage B — CCI hold API plumbing only
-
-Then add a CCI-owned hold API with:
-
-- device-owned runtime-PM reference;
-- exact-rate validation for 37.5 MHz;
+- device-owned runtime-PM/rate hold API;
+- exact-rate validation;
 - serialization/refcounting;
+- normal-transfer exclusion;
 - exact restore bookkeeping;
-- no caller wired to it yet.
+- fail-closed restore-failure latch;
+- no production CAMSS/AOS caller.
 
-Compile and static-test only.
+The patched CCI object and CAMSS integration have been cross-compiled for ARM64
+against current upstream Linux.
 
-### Stage C — no-MMIO combined owner diagnostic
+### Stage C — full-F0 real-owner diagnostic: prepared, not hardware-run
 
-Only after A and B are reviewed:
+Stage C is the first permitted diagnostic that may actually enable the ICP
+clocks. It is intentionally separate from the production AOS path.
 
-- create a diagnostic-only path using the production owner APIs;
-- enable the ICP clocks at 80/400 MHz together with the already validated
-  CAMSS+CCI prerequisite state;
-- perform **no CPAS mux access and no SSC activation**;
-- hold briefly, unwind in reverse and verify normal cameras.
+The isolated diagnostic:
 
-This is the first stage that would touch the ICP clocks and therefore requires a
-separate explicit test boot and fail-safe recovery plan.
+1. verifies CAMSS is idle and runtime-suspended;
+2. obtains CCI0 and CCI1 through their production owner API at 37.5 MHz;
+3. resumes CAMSS through normal runtime PM;
+4. establishes the already-tested CAMSS 300/300/80/80/100 MHz F0 rates;
+5. saves the original ICP rates;
+6. sets CAMSS-owned ICP AHB / ICP to 80 / 400 MHz;
+7. enables the ICP pair;
+8. holds the complete state for 250 ms;
+9. disables ICP first and unwinds all owners in reverse;
+10. requires exact ICP and CCI restoration;
+11. checks normal camera enumeration after the test.
 
-### Stage D — ownership mechanism
+For additional failure safety, a clock is marked for restoration before every
+Stage C `clk_set_rate()` attempt. Even if CCF returns an error, cleanup still
+attempts to restore the saved rate rather than assuming the hardware was
+unchanged.
 
-Still blocked until Stage C succeeds and the CPAS access mechanism itself is
-re-evaluated. A successful F0 hold does not automatically authorize direct
-`CPAS + 0x1e0` access.
+The only non-exact CAMSS restore result accepted is the already-established
+CAMNOC public-RCG limitation: after explicit programming, its boot-time parked
+19.2 MHz state can return to 240 MHz instead. That limitation was already seen
+in the previous successful CAMSS prerequisite tests.
+
+Stage C performs:
+
+- no `CPAS + 0x1e0` access;
+- no raw CPAS `ioremap`;
+- no direct diagnostic `readl`/`writel`;
+- no `/dev/mem`;
+- no SSC load, INIT or activation.
+
+The builder and installer create a separate one-shot test boot. The runner
+writes and syncs a persistent `status=started` marker before the first ICP
+activation so an abrupt reset remains distinguishable from a returned test.
+
+The Stage C transformation, symbolic DT overlay and safety invariants are CI
+validated, and the injected CAMSS plus patched CCI objects cross-compile for
+ARM64 against current upstream Linux. **The actual 80/400 MHz ICP hardware hold
+has not been run yet.**
+
+### Stage D — ownership mechanism: blocked
+
+Stage D remains blocked even if Stage C succeeds.
+
+A successful full-F0 hold would show that the Windows-named platform resources
+can be represented and held through legitimate Linux owners. It would not prove
+that direct host access to the CPAS ownership register is safe. The known reset
+boundary remains controlling evidence until a supported ownership mechanism is
+identified or separately proven.
 
 ## Non-goals
 
-This design does not:
+This work does not:
 
 - boot ICP firmware;
 - initialize HFI;
@@ -216,13 +246,15 @@ This design does not:
 
 ## Safety invariants
 
-Until explicitly revised by later evidence:
+Until explicitly revised by new evidence:
 
 - `qcom_camss_aon_acquire()` returns `-EOPNOTSUPP` before ownership MMIO;
 - no `/dev/mem`;
-- no raw `ioremap` for CPAS;
+- no raw CPAS `ioremap`;
 - no diagnostic CPAS `readl`/`writel`;
 - no provider-global/deviceless ICP clock enable;
 - no raw ICC manipulation;
 - no SSC INIT/activation;
-- no full ICP firmware/HFI bring-up merely to test the ownership prerequisite.
+- no full ICP firmware/HFI bring-up merely to test the CAMP F0 prerequisite;
+- Stage C, if run, occurs only in its isolated one-shot boot and proves only the
+  resource prerequisite.
