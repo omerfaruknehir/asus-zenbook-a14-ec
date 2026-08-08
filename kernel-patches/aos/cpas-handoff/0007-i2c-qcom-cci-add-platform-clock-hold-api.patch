@@ -1,0 +1,318 @@
+From 0000000000000000000000000000000000000007 Mon Sep 17 00:00:00 2001
+From: Omer Faruk Nehir <omerfaruknehir@gmail.com>
+Date: Sun, 9 Aug 2026 00:42:00 +0300
+Subject: [PATCH 7/7] i2c: qcom-cci: add platform clock hold API
+
+The Windows CAMP component-0 F0 state holds both CCI controllers at 37.5 MHz
+while camera-platform ownership is active. The A14 diagnostic proved that each
+Linux CCI device can safely enter runtime PM, set its device-owned `cci` clock
+to 37.5 MHz, restore the original rate exactly and return to runtime suspend.
+
+Add a small device-owned API for a future camera-platform coordinator. The API
+uses the CCI driver's existing clock handles and runtime-PM lifecycle, requires
+an exactly roundable requested rate, reference-counts same-rate users and
+restores the exact pre-hold rate on the final put.
+
+Changing the shared CCI functional clock while normal I2C transfers are active
+would invalidate the controller timing assumptions established by cci_init().
+Track active transfers and reject a new platform hold while any transfer is in
+flight; conversely, reject normal transfers while a platform hold exists.
+
+This patch deliberately adds no caller. In particular CAMSS does not invoke the
+API yet, so this is compile-only ownership plumbing and causes no ICP or AOS
+hardware activation.
+
+Signed-off-by: Omer Faruk Nehir <omerfaruknehir@gmail.com>
+---
+ drivers/i2c/busses/i2c-qcom-cci.c | 166 ++++++++++++++++++++++++++++++
+ include/linux/i2c-qcom-cci.h       |  29 ++++++
+ 2 files changed, 195 insertions(+)
+ create mode 100644 include/linux/i2c-qcom-cci.h
+
+diff --git a/include/linux/i2c-qcom-cci.h b/include/linux/i2c-qcom-cci.h
+new file mode 100644
+index 000000000000..000000000001
+--- /dev/null
++++ b/include/linux/i2c-qcom-cci.h
+@@ -0,0 +1,29 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++#ifndef __LINUX_I2C_QCOM_CCI_H__
++#define __LINUX_I2C_QCOM_CCI_H__
++
++#include <linux/errno.h>
++#include <linux/kconfig.h>
++
++struct device;
++
++#if IS_REACHABLE(CONFIG_I2C_QCOM_CCI)
++int qcom_cci_platform_hold_get(struct device *dev, unsigned long rate);
++int qcom_cci_platform_hold_put(struct device *dev);
++#else
++static inline int qcom_cci_platform_hold_get(struct device *dev,
++					     unsigned long rate)
++{
++	return -EOPNOTSUPP;
++}
++
++static inline int qcom_cci_platform_hold_put(struct device *dev)
++{
++	return -EOPNOTSUPP;
++}
++#endif
++
++#endif /* __LINUX_I2C_QCOM_CCI_H__ */
++
+diff --git a/drivers/i2c/busses/i2c-qcom-cci.c b/drivers/i2c/busses/i2c-qcom-cci.c
+index bdeda3979c48..000000000001 100644
+--- a/drivers/i2c/busses/i2c-qcom-cci.c
++++ b/drivers/i2c/busses/i2c-qcom-cci.c
+@@ -4,11 +4,13 @@
+ 
+ #include <linux/clk.h>
+ #include <linux/completion.h>
+ #include <linux/i2c.h>
++#include <linux/i2c-qcom-cci.h>
+ #include <linux/io.h>
+ #include <linux/interrupt.h>
+ #include <linux/module.h>
++#include <linux/mutex.h>
+ #include <linux/of.h>
+ #include <linux/platform_device.h>
+ #include <linux/pm_runtime.h>
+@@ -144,6 +146,13 @@ struct cci {
+ 	struct clk_bulk_data *clocks;
+ 	int nclocks;
+ 	struct cci_master master[NUM_MASTERS];
++
++	struct mutex platform_hold_lock;
++	struct clk *platform_hold_clk;
++	unsigned long platform_hold_rate;
++	unsigned long platform_hold_restore_rate;
++	unsigned int platform_hold_count;
++	unsigned int platform_active_xfers;
+ };
+ 
+ static irqreturn_t cci_isr(int irq, void *dev)
+@@ -423,6 +432,149 @@ static int cci_i2c_write(struct cci *cci, u16 master,
+ 	return cci_run_queue(cci, master, queue);
+ }
+ 
++static int cci_platform_xfer_get(struct cci *cci)
++{
++	int ret = 0;
++
++	mutex_lock(&cci->platform_hold_lock);
++	if (cci->platform_hold_count)
++		ret = -EBUSY;
++	else
++		cci->platform_active_xfers++;
++	mutex_unlock(&cci->platform_hold_lock);
++
++	return ret;
++}
++
++static void cci_platform_xfer_put(struct cci *cci)
++{
++	mutex_lock(&cci->platform_hold_lock);
++	if (WARN_ON(!cci->platform_active_xfers)) {
++		mutex_unlock(&cci->platform_hold_lock);
++		return;
++	}
++
++	cci->platform_active_xfers--;
++	mutex_unlock(&cci->platform_hold_lock);
++}
++
++int qcom_cci_platform_hold_get(struct device *dev, unsigned long rate)
++{
++	struct cci *cci;
++	unsigned long actual_rate;
++	unsigned long restore_rate;
++	long rounded_rate;
++	int restore_ret;
++	int ret = 0;
++
++	if (!dev || !rate)
++		return -EINVAL;
++
++	cci = dev_get_drvdata(dev);
++	if (!cci)
++		return -EPROBE_DEFER;
++
++	mutex_lock(&cci->platform_hold_lock);
++
++	if (!cci->platform_hold_clk) {
++		ret = -ENODEV;
++		goto out_unlock;
++	}
++
++	if (cci->platform_hold_count) {
++		if (cci->platform_hold_rate != rate) {
++			ret = -EBUSY;
++			goto out_unlock;
++		}
++
++		cci->platform_hold_count++;
++		goto out_unlock;
++	}
++
++	if (cci->platform_active_xfers) {
++		ret = -EBUSY;
++		goto out_unlock;
++	}
++
++	rounded_rate = clk_round_rate(cci->platform_hold_clk, rate);
++	if (rounded_rate < 0) {
++		ret = rounded_rate;
++		goto out_unlock;
++	}
++	if ((unsigned long)rounded_rate != rate) {
++		ret = -ERANGE;
++		goto out_unlock;
++	}
++
++	ret = pm_runtime_resume_and_get(dev);
++	if (ret < 0)
++		goto out_unlock;
++
++	restore_rate = clk_get_rate(cci->platform_hold_clk);
++	if (!restore_rate) {
++		ret = -EIO;
++		goto err_pm_put;
++	}
++
++	ret = clk_set_rate(cci->platform_hold_clk, rate);
++	if (ret)
++		goto err_restore;
++
++	actual_rate = clk_get_rate(cci->platform_hold_clk);
++	if (actual_rate != rate) {
++		ret = -ERANGE;
++		goto err_restore;
++	}
++
++	cci->platform_hold_restore_rate = restore_rate;
++	cci->platform_hold_rate = rate;
++	cci->platform_hold_count = 1;
++	mutex_unlock(&cci->platform_hold_lock);
++
++	return 0;
++
++err_restore:
++	restore_ret = clk_set_rate(cci->platform_hold_clk, restore_rate);
++	actual_rate = clk_get_rate(cci->platform_hold_clk);
++	if (!restore_ret && actual_rate != restore_rate)
++		restore_ret = -ERANGE;
++	if (restore_ret)
++		dev_err(dev,
++			"failed to restore CCI clock after platform hold error: %d\n",
++			restore_ret);
++err_pm_put:
++	pm_runtime_mark_last_busy(dev);
++	pm_runtime_put_autosuspend(dev);
++out_unlock:
++	mutex_unlock(&cci->platform_hold_lock);
++	return ret;
++}
++EXPORT_SYMBOL_GPL(qcom_cci_platform_hold_get);
++
++int qcom_cci_platform_hold_put(struct device *dev)
++{
++	struct cci *cci;
++	unsigned long actual_rate;
++	unsigned long restore_rate;
++	int ret = 0;
++
++	if (!dev)
++		return -EINVAL;
++
++	cci = dev_get_drvdata(dev);
++	if (!cci)
++		return -ENODEV;
++
++	mutex_lock(&cci->platform_hold_lock);
++
++	if (!cci->platform_hold_count) {
++		ret = -EINVAL;
++		goto out_unlock;
++	}
++
++	if (--cci->platform_hold_count)
++		goto out_unlock;
++
++	restore_rate = cci->platform_hold_restore_rate;
++	ret = clk_set_rate(cci->platform_hold_clk, restore_rate);
++	actual_rate = clk_get_rate(cci->platform_hold_clk);
++	if (!ret && actual_rate != restore_rate)
++		ret = -ERANGE;
++	if (ret)
++		dev_err(dev, "failed to restore CCI platform-hold rate: %d\n", ret);
++
++	cci->platform_hold_rate = 0;
++	cci->platform_hold_restore_rate = 0;
++	pm_runtime_mark_last_busy(dev);
++	pm_runtime_put_autosuspend(dev);
++
++out_unlock:
++	mutex_unlock(&cci->platform_hold_lock);
++	return ret;
++}
++EXPORT_SYMBOL_GPL(qcom_cci_platform_hold_put);
++
+ static int cci_xfer(struct i2c_adapter *adap, struct i2c_msg msgs[], int num)
+ {
+ 	struct cci_master *cci_master = i2c_get_adapdata(adap);
+ 	struct cci *cci = cci_master->cci;
+ 	int i, ret;
+ 
++	ret = cci_platform_xfer_get(cci);
++	if (ret)
++		return ret;
++
+ 	ret = pm_runtime_get_sync(cci->dev);
+ 	if (ret < 0)
+ 		goto err;
+@@ -455,6 +607,7 @@ static int cci_xfer(struct i2c_adapter *adap, struct i2c_msg msgs[], int num)
+ 
+ err:
+ 	pm_runtime_put_autosuspend(cci->dev);
++	cci_platform_xfer_put(cci);
+ 
+ 	return ret;
+ }
+@@ -505,6 +658,7 @@ static int cci_probe(struct platform_device *pdev)
+ 	struct resource *r;
+ 	struct cci *cci;
+ 	int ret, i;
++	int clock_index;
+ 	u32 val;
+ 
+ 	cci = devm_kzalloc(dev, sizeof(*cci), GFP_KERNEL);
+@@ -516,6 +670,7 @@ static int cci_probe(struct platform_device *pdev)
+ 	cci->dev = dev;
+ 	platform_set_drvdata(pdev, cci);
+ 	cci->data = device_get_match_data(dev);
++	mutex_init(&cci->platform_hold_lock);
+ 	if (!cci->data)
+ 		return -ENOENT;
+ 
+@@ -567,6 +722,17 @@ static int cci_probe(struct platform_device *pdev)
+ 	else if (!ret)
+ 		return dev_err_probe(dev, -EINVAL, "not enough clocks in DT\n");
+ 	cci->nclocks = ret;
++	for (clock_index = 0; clock_index < cci->nclocks; clock_index++) {
++		if (!cci->clocks[clock_index].id)
++			continue;
++		if (!strcmp(cci->clocks[clock_index].id, "cci")) {
++			cci->platform_hold_clk = cci->clocks[clock_index].clk;
++			break;
++		}
++	}
++	if (!cci->platform_hold_clk)
++		dev_dbg(dev,
++			"platform clock hold unavailable: cci clock not found\n");
+ 
+ 	ret = cci_enable_clocks(cci);
+ 	if (ret < 0)
+-- 
+2.51.0
