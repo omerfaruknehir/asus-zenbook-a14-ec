@@ -105,10 +105,13 @@ camss_source=$(find "$source_root" -type f \
     -path '*/drivers/media/platform/qcom/camss/camss.c' -print -quit)
 if [ -z "$camss_source" ]; then
     printf 'Downloading exact source package %s=%s...\n' "$source_pkg" "$source_version"
-    if ! (cd "$source_root" && apt-get source "$source_pkg=$source_version"); then
+    printf '%s\n' 'source_resolution=apt-only-source'
+    if ! (cd "$source_root" && apt-get source --only-source "$source_pkg=$source_version"); then
         cat >&2 <<EOF
-The exact source package could not be downloaded. This usually means deb-src
-entries are disabled for the repository that supplied $source_pkg.
+The exact kernel source package $source_pkg=$source_version could not be downloaded.
+The installed kernel identifies that exact source package, but APT does not have
+its deb-src index available. Enable source entries for the repository that
+supplied linux-image-$release, run apt update, then retry.
 No source, module, DTB, boot file, or installed package was changed.
 EOF
         exit 1
@@ -116,7 +119,15 @@ EOF
     camss_source=$(find "$source_root" -type f \
         -path '*/drivers/media/platform/qcom/camss/camss.c' -print -quit)
 fi
-[ -n "$camss_source" ] || fail "CAMSS source was not found after apt-get source"
+if [ -z "$camss_source" ]; then
+    cat >&2 <<EOF
+APT returned successfully for $source_pkg=$source_version but no kernel CAMSS
+source tree was present. Refusing to accept a meta-package or unrelated source
+tree. Remove $source_root and retry after fixing the matching deb-src entry.
+No module, DTB, boot file, or installed package was changed.
+EOF
+    exit 1
+fi
 src=${camss_source%/drivers/media/platform/qcom/camss/camss.c}
 printf 'kernel_source=%s\n' "$src"
 [ -f "$src/arch/arm64/boot/dts/qcom/x1e80100-asus-zenbook-a14.dts" ] || \
