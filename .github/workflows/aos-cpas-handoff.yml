@@ -39,7 +39,7 @@ jobs:
           python3 kernel-patches/aos/cpas-handoff/normalize-patch.py --check \
             kernel-patches/aos/cpas-handoff/0*.patch
 
-      - name: Validate quarantine and stock-source diagnostic
+      - name: Validate quarantine and ownership plumbing
         shell: bash
         run: |
           set -euo pipefail
@@ -56,11 +56,13 @@ jobs:
           installer=scripts/a14-aos-power-diag-install-test.sh
           runner=scripts/a14-aos-power-diag-run.sh
           stage_a_patch=kernel-patches/aos/cpas-handoff/0006-media-qcom-camss-own-aos-icp-platform-clocks.patch
+          stage_b_patch=kernel-patches/aos/cpas-handoff/0007-i2c-qcom-cci-add-platform-clock-hold-api.patch
 
           test -s docs/aos/WINDOWS-AOS-PLATFORM-HANDOFF.md
           test -s docs/aos/LINUX-AOS-PLATFORM-OWNER-DESIGN.md
           test -s kernel-patches/aos/cpas-handoff/0005-media-qcom-camss-quarantine-direct-aon-mmio.patch
           test -s "$stage_a_patch"
+          test -s "$stage_b_patch"
           test -s "$injector"
           test -s "$builder"
           test -s "$installer"
@@ -69,6 +71,8 @@ jobs:
           grep -q '0005-media-qcom-camss-quarantine-direct-aon-mmio.patch' \
             kernel-patches/aos/cpas-handoff/apply.sh
           grep -q '0006-media-qcom-camss-own-aos-icp-platform-clocks.patch' \
+            kernel-patches/aos/cpas-handoff/apply.sh
+          grep -q '0007-i2c-qcom-cci-add-platform-clock-hold-api.patch' \
             kernel-patches/aos/cpas-handoff/apply.sh
           grep -q 'returns -EOPNOTSUPP before' \
             kernel-patches/aos/cpas-handoff/apply.sh
@@ -97,6 +101,16 @@ jobs:
           if grep -Eq '^\+.*\b(clk_prepare_enable|clk_bulk_prepare_enable|clk_set_rate)\b' \
               "$stage_a_patch"; then
             echo 'Stage A patch must not activate or rate-change ICP clocks' >&2
+            exit 1
+          fi
+
+          grep -q '^+int qcom_cci_platform_hold_get' "$stage_b_patch"
+          grep -q '^+int qcom_cci_platform_hold_put' "$stage_b_patch"
+          grep -q '^+.*pm_runtime_resume_and_get' "$stage_b_patch"
+          grep -q '^+.*clk_round_rate' "$stage_b_patch"
+          grep -q '^+.*platform_active_xfers' "$stage_b_patch"
+          if grep -q '^diff --git a/drivers/media/platform/qcom/camss/' "$stage_b_patch"; then
+            echo 'Stage B must not wire the CCI hold API into CAMSS' >&2
             exit 1
           fi
 
@@ -130,7 +144,7 @@ jobs:
             git apply --numstat "$patch" >/dev/null
           done
 
-      - name: Check quarantine and injector against Linux master
+      - name: Check ownership series against Linux master
         shell: bash
         run: |
           set -euo pipefail
@@ -139,7 +153,9 @@ jobs:
           git -C linux sparse-checkout set --no-cone \
             Documentation/devicetree/bindings/media/qcom,x1e80100-camss.yaml \
             drivers/media/platform/qcom/camss/ \
+            drivers/i2c/busses/i2c-qcom-cci.c \
             include/media/ \
+            include/linux/i2c-qcom-cci.h \
             arch/arm64/boot/dts/qcom/x1e80100-asus-zenbook-a14.dts
 
           for patch in "$GITHUB_WORKSPACE"/kernel-patches/aos/cpas-handoff/0*.patch; do
@@ -149,6 +165,8 @@ jobs:
 
           camss=linux/drivers/media/platform/qcom/camss/camss.c
           camss_h=linux/drivers/media/platform/qcom/camss/camss.h
+          cci=linux/drivers/i2c/busses/i2c-qcom-cci.c
+          cci_h=linux/include/linux/i2c-qcom-cci.h
           binding=linux/Documentation/devicetree/bindings/media/qcom,x1e80100-camss.yaml
           aos_dtsi=linux/arch/arm64/boot/dts/qcom/x1e80100-asus-zenbook-a14-aos.dtsi
 
@@ -167,6 +185,10 @@ jobs:
             echo 'Production AON provider must not activate Stage A ICP resources' >&2
             exit 1
           fi
+          if grep -q 'qcom_cci_platform_hold_get' "$camss"; then
+            echo 'Stage B CCI hold API is already wired into CAMSS' >&2
+            exit 1
+          fi
 
           grep -q 'aon_platform_clks\[2\]' "$camss_h"
           grep -q 'aon_platform_clks\[0\].id = "icp_ahb"' "$camss"
@@ -176,10 +198,23 @@ jobs:
 
           grep -A1 '^  clocks:' "$binding" | grep -q 'maxItems: 31'
           grep -q -- '- const: icp_ahb' "$binding"
-          grep -q -- '- const: icp' "$binding"
+          grep -q '^      - const: icp$' "$binding"
           grep -q 'CAM_CC_ICP_AHB_CLK' "$aos_dtsi"
           grep -q 'CAM_CC_ICP_CLK' "$aos_dtsi"
           grep -q '"icp_ahb", "icp"' "$aos_dtsi"
+
+          test -s "$cci_h"
+          grep -q 'qcom_cci_platform_hold_get' "$cci_h"
+          grep -q 'qcom_cci_platform_hold_put' "$cci_h"
+          grep -q 'EXPORT_SYMBOL_GPL(qcom_cci_platform_hold_get)' "$cci"
+          grep -q 'EXPORT_SYMBOL_GPL(qcom_cci_platform_hold_put)' "$cci"
+          grep -q 'pm_runtime_resume_and_get(dev)' "$cci"
+          grep -q 'clk_round_rate(cci->platform_hold_clk, rate)' "$cci"
+          grep -q 'platform_hold_restore_rate' "$cci"
+          grep -q 'platform_active_xfers' "$cci"
+          grep -q 'if (cci->platform_hold_count)' "$cci"
+
+          git -C linux diff --check
 
           git -C linux reset --hard
           python3 "$GITHUB_WORKSPACE/scripts/a14-aos-power-diag-inject.py" "$camss"
