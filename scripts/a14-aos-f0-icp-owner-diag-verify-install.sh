@@ -13,7 +13,7 @@ merged_dtb="$work/dtb-$release-f0-icp-owner-hm1092-test"
 tmp_initrd="$work/initrd.img-$release-f0-icp-owner-test.tmp"
 
 fail() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
-for tool in basename cat grep lsinitramfs sed sha256sum sudo uname; do
+for tool in awk basename cat grep lsinitramfs sed sha256sum sudo uname; do
     command -v "$tool" >/dev/null 2>&1 || fail "required command is missing: $tool"
 done
 [ "${EUID:-$(id -u)}" -ne 0 ] || fail "run this verifier as your normal user, not with sudo"
@@ -53,11 +53,19 @@ printf '\n%s\n' '===== VERIFY GENERATED GRUB ENTRY ====='
 grub_cfg_snapshot="$work/grub.cfg.installed"
 sudo cat /boot/grub/grub.cfg > "$grub_cfg_snapshot"
 [ -s "$grub_cfg_snapshot" ] || fail "could not snapshot generated GRUB configuration"
-grep -Fq "menuentry '$entry_title' --id '$entry_id'" "$grub_cfg_snapshot" || fail "test GRUB entry/id was not generated"
-grep -Fq "linux /boot/vmlinuz-$release" "$grub_cfg_snapshot" || fail "test GRUB entry lacks expected kernel"
-grep -Fq 'a14_aos_f0_icp_owner_test=1' "$grub_cfg_snapshot" || fail "test GRUB entry lacks isolated-boot marker"
-grep -Fq "initrd /boot/$(basename "$test_initrd")" "$grub_cfg_snapshot" || fail "test GRUB entry lacks test initramfs"
-grep -Fq "devicetree /boot/$(basename "$test_dtb")" "$grub_cfg_snapshot" || fail "test GRUB entry lacks test DTB"
+entry_block="$work/grub-entry.installed"
+entry_start="menuentry '$entry_title' --id '$entry_id'"
+awk -v start="$entry_start" '
+    index($0, start) { in_entry=1 }
+    in_entry { print }
+    in_entry && /^}/ { exit }
+' "$grub_cfg_snapshot" > "$entry_block"
+[ -s "$entry_block" ] || fail "test GRUB entry/id was not generated"
+grep -Fq "$entry_start" "$entry_block" || fail "test GRUB entry/id does not match"
+grep -Fq "linux /boot/vmlinuz-$release" "$entry_block" || fail "test GRUB entry lacks expected kernel"
+grep -Fq 'a14_aos_f0_icp_owner_test=1' "$entry_block" || fail "test GRUB entry lacks isolated-boot marker"
+grep -Fq "initrd /boot/$(basename "$test_initrd")" "$entry_block" || fail "test GRUB entry lacks test initramfs"
+grep -Fq "devicetree /boot/$(basename "$test_dtb")" "$entry_block" || fail "test GRUB entry lacks test DTB"
 printf '%s\n' 'grub_entry=validated-id-kernel-initrd-dtb-marker'
 
 printf '\n%s\n' '===== RESULT ====='
