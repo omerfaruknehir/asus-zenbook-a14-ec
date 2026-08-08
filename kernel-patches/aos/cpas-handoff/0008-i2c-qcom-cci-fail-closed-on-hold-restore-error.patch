@@ -53,7 +53,7 @@ index 000000000001..000000000002 100644
  	if (!cci->platform_hold_clk) {
  		ret = -ENODEV;
  		goto out_unlock;
-@@ -544,8 +550,10 @@ err_restore:
+@@ -544,10 +550,12 @@ err_restore:
  	actual_rate = clk_get_rate(cci->platform_hold_clk);
  	if (!restore_ret && actual_rate != restore_rate)
  		restore_ret = -ERANGE;
