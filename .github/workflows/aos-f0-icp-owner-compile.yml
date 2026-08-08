@@ -1,0 +1,69 @@
+name: Compile AOS F0 ICP owner diagnostic
+
+on:
+  push:
+    paths:
+      - 'kernel-patches/aos/cpas-handoff/**'
+      - 'scripts/a14-aos-f0-icp-owner-diag-inject.py'
+      - '.github/workflows/aos-f0-icp-owner-compile.yml'
+  pull_request:
+    paths:
+      - 'kernel-patches/aos/cpas-handoff/**'
+      - 'scripts/a14-aos-f0-icp-owner-diag-inject.py'
+      - '.github/workflows/aos-f0-icp-owner-compile.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compile-arm64:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ARM64 kernel build prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            bc bison flex gcc-aarch64-linux-gnu libelf-dev libssl-dev
+
+      - name: Compile patched CCI and injected CAMSS objects
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --filter=blob:none https://github.com/torvalds/linux.git linux-build
+
+          for patch in "$GITHUB_WORKSPACE"/kernel-patches/aos/cpas-handoff/0*.patch; do
+            git -C linux-build apply --check "$patch"
+            git -C linux-build apply "$patch"
+          done
+
+          python3 "$GITHUB_WORKSPACE/scripts/a14-aos-f0-icp-owner-diag-inject.py" \
+            linux-build/drivers/media/platform/qcom/camss/camss.c
+
+          make -C linux-build ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- defconfig
+          linux-build/scripts/config --file linux-build/.config \
+            --enable CONFIG_MODULES \
+            --module CONFIG_I2C_QCOM_CCI \
+            --module CONFIG_VIDEO_QCOM_CAMSS
+          make -C linux-build ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- olddefconfig
+
+          grep -q '^CONFIG_I2C_QCOM_CCI=m' linux-build/.config
+          grep -q '^CONFIG_VIDEO_QCOM_CAMSS=m' linux-build/.config
+
+          make -C linux-build ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j2 \
+            drivers/i2c/busses/i2c-qcom-cci.o
+          make -C linux-build ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j2 \
+            drivers/media/platform/qcom/camss/camss.o
+
+          test -s linux-build/drivers/i2c/busses/i2c-qcom-cci.o
+          test -s linux-build/drivers/media/platform/qcom/camss/camss.o
+          aarch64-linux-gnu-nm linux-build/drivers/i2c/busses/i2c-qcom-cci.o | \
+            grep -q ' T qcom_cci_platform_hold_get$'
+          aarch64-linux-gnu-nm linux-build/drivers/i2c/busses/i2c-qcom-cci.o | \
+            grep -q ' T qcom_cci_platform_hold_put$'
+          aarch64-linux-gnu-nm -u linux-build/drivers/media/platform/qcom/camss/camss.o | \
+            grep -q 'qcom_cci_platform_hold_get'
+          aarch64-linux-gnu-nm -u linux-build/drivers/media/platform/qcom/camss/camss.o | \
+            grep -q 'qcom_cci_platform_hold_put'
