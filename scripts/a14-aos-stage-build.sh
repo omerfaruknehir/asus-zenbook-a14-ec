@@ -212,9 +212,11 @@ case "$(modinfo -F vermagic "$ssc_ko")" in
 esac
 ssc_depends=$(modinfo -F depends "$ssc_ko")
 printf 'ssc_depends=%s\n' "$ssc_depends"
-case ",$ssc_depends," in
-    *,qcom_camss,*) ;;
-    *) fail "SSC module does not declare its qcom_camss dependency" ;;
+# modinfo canonicalizes module-name underscores to hyphens in dependency output.
+ssc_depends_normalized=${ssc_depends//_/-}
+case ",$ssc_depends_normalized," in
+    *,qcom-camss,*) ;;
+    *) fail "SSC module does not declare its qcom-camss dependency" ;;
 esac
 printf '%s\n' 'qcom_ssc_hpd_module=validated'
 
