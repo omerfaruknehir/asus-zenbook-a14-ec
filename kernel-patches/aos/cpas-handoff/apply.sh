@@ -12,6 +12,7 @@ src=$(CDPATH= cd -- "$1" 2>/dev/null && pwd) || {
     exit 2
 }
 series=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+binding='Documentation/devicetree/bindings/media/qcom,x1e80100-camss.yaml'
 
 [ -f "$src/Makefile" ] || {
     echo "Kernel top-level Makefile is missing from $src" >&2
@@ -32,11 +33,11 @@ series=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 
 if ! grep -Rqs 'camss:[[:space:]]*isp@acb7000' \
         "$src/arch/arm64/boot/dts/qcom"; then
-    cat >&2 <<'EOF'
+    cat >&2 <<'MSG'
 The source tree does not contain Ubuntu's camera-enabled X1E80100 CAMSS node.
 Do not apply the A14 resource override to a tree without the existing camera
 node and endpoints.
-EOF
+MSG
     exit 1
 fi
 
@@ -51,33 +52,110 @@ $series/0007-i2c-qcom-cci-add-platform-clock-hold-api.patch
 $series/0008-i2c-qcom-cci-fail-closed-on-hold-restore-error.patch
 "
 
-# The later patches intentionally depend on the earlier ownership plumbing, so
-# validate and apply the series in order. If a later patch stops applying,
-# unwind everything this invocation already changed.
+rollback() {
+    for entry in $applied; do
+        mode=${entry%%|*}
+        applied_patch=${entry#*|}
+        case "$mode" in
+            full)
+                git -C "$src" apply -R "$applied_patch" || true
+                ;;
+            no-binding)
+                git -C "$src" apply -R --exclude="$binding" "$applied_patch" || true
+                ;;
+        esac
+    done
+}
+
+# The production patch files remain complete and are validated against upstream
+# Linux in CI. Ubuntu's qcom-x1e source can carry downstream schema changes that
+# make only the DT-binding hunks context-incompatible. Those schema hunks are
+# not part of the runtime module/DTB result, so if and only if a full application
+# fails for patch 0001 or 0006, retry without the binding file. Code and DTS
+# hunks still must apply exactly, and runtime postconditions are checked below.
 applied=""
+schema_patch_state=full
 for patch in $patches; do
-    [ -s "$patch" ] || { echo "Missing patch: $patch" >&2; exit 1; }
+    [ -s "$patch" ] || { echo "Missing patch: $patch" >&2; rollback; exit 1; }
+    base=$(basename "$patch")
+    mode=full
 
-    if ! git -C "$src" apply --check "$patch"; then
-        echo "Patch does not apply cleanly: $patch" >&2
-        for applied_patch in $applied; do
-            git -C "$src" apply -R "$applied_patch" || true
-        done
-        exit 1
+    if git -C "$src" apply --check "$patch"; then
+        :
+    else
+        case "$base" in
+            0001-dt-bindings-media-qcom-x1e80100-camss-add-cpas-top.patch)
+                printf '%s\n' 'Binding patch does not match this downstream kernel; runtime build does not require schema modification.'
+                printf '%s\n' 'schema_patch_0001=skipped-runtime-only'
+                schema_patch_state=runtime-skipped
+                continue
+                ;;
+            0006-media-qcom-camss-own-aos-icp-platform-clocks.patch)
+                if git -C "$src" apply --check --exclude="$binding" "$patch"; then
+                    mode=no-binding
+                    schema_patch_state=runtime-skipped
+                    printf '%s\n' 'schema_patch_0006=skipped-runtime-only'
+                else
+                    echo "Patch does not apply cleanly even with only the schema hunk excluded: $patch" >&2
+                    rollback
+                    exit 1
+                fi
+                ;;
+            *)
+                echo "Patch does not apply cleanly: $patch" >&2
+                rollback
+                exit 1
+                ;;
+        esac
     fi
 
-    if ! git -C "$src" apply "$patch"; then
-        echo "Failed to apply patch: $patch" >&2
-        for applied_patch in $applied; do
-            git -C "$src" apply -R "$applied_patch" || true
-        done
-        exit 1
-    fi
+    case "$mode" in
+        full)
+            git -C "$src" apply "$patch" || {
+                echo "Failed to apply patch: $patch" >&2
+                rollback
+                exit 1
+            }
+            ;;
+        no-binding)
+            git -C "$src" apply --exclude="$binding" "$patch" || {
+                echo "Failed to apply runtime portions of patch: $patch" >&2
+                rollback
+                exit 1
+            }
+            ;;
+    esac
 
-    applied="$patch $applied"
+    applied="$mode|$patch
+$applied"
 done
 
-cat <<EOF
+camss="$src/drivers/media/platform/qcom/camss/camss.c"
+camss_h="$src/drivers/media/platform/qcom/camss/camss.h"
+cci="$src/drivers/i2c/busses/i2c-qcom-cci.c"
+aos_dtsi="$src/arch/arm64/boot/dts/qcom/x1e80100-asus-zenbook-a14-aos.dtsi"
+
+for required in "$camss" "$camss_h" "$cci" "$aos_dtsi"; do
+    [ -s "$required" ] || {
+        echo "Runtime ownership postcondition file is missing: $required" >&2
+        rollback
+        exit 1
+    }
+done
+
+grep -q 'cpas-top' "$aos_dtsi" || { echo 'Runtime DTS lacks cpas-top' >&2; rollback; exit 1; }
+grep -q 'CAM_CC_ICP_AHB_CLK' "$aos_dtsi" || { echo 'Runtime DTS lacks ICP AHB clock' >&2; rollback; exit 1; }
+grep -q 'CAM_CC_ICP_CLK' "$aos_dtsi" || { echo 'Runtime DTS lacks ICP clock' >&2; rollback; exit 1; }
+grep -q 'aon_platform_clks\[0\].id = "icp_ahb"' "$camss" || { echo 'CAMSS lacks ICP AHB ownership handle' >&2; rollback; exit 1; }
+grep -q 'aon_platform_clks\[1\].id = "icp"' "$camss" || { echo 'CAMSS lacks ICP ownership handle' >&2; rollback; exit 1; }
+grep -q 'return -EOPNOTSUPP' "$camss" || { echo 'CAMSS AON provider is not fail-closed' >&2; rollback; exit 1; }
+grep -q 'qcom_cci_platform_hold_get' "$cci" || { echo 'CCI owner API is missing' >&2; rollback; exit 1; }
+grep -q 'platform_hold_faulted' "$cci" || { echo 'CCI fail-closed restore state is missing' >&2; rollback; exit 1; }
+
+printf 'schema_patch_state=%s\n' "$schema_patch_state"
+printf '%s\n' 'runtime_ownership_postconditions=validated'
+
+cat <<MSG
 Applied the A14 CAMSS AOS handoff series to:
   $src
 
@@ -102,4 +180,4 @@ Next required validations:
   use the isolated no-MMIO/no-SSC Stage C diagnostic before any ICP activation
 
 No boot files or installed kernel packages were changed.
-EOF
+MSG
