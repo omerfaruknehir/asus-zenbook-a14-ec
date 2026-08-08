@@ -65,8 +65,71 @@ function Invoke-LogmanChecked {
     }
 }
 
+function Initialize-MonitorPowerApi {
+    if ('A14MonitorPower' -as [type]) { return }
+
+    Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+
+public static class A14MonitorPower
+{
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern IntPtr SendMessageTimeout(
+        IntPtr hWnd,
+        uint Msg,
+        IntPtr wParam,
+        IntPtr lParam,
+        uint fuFlags,
+        uint uTimeout,
+        out IntPtr lpdwResult);
+}
+'@
+}
+
+function Request-MonitorPowerOff {
+    # This is the normal Win32 monitor-power broadcast. It asks Windows to power
+    # the display off; it does not suspend/hibernate the machine or touch camera
+    # devices. A keyboard/mouse/touchpad action wakes the display normally.
+    Initialize-MonitorPowerApi
+
+    $HWND_BROADCAST = [IntPtr]0xffff
+    $WM_SYSCOMMAND = [uint32]0x0112
+    $SC_MONITORPOWER = [IntPtr]0xF170
+    $MONITOR_OFF = [IntPtr]2
+    $SMTO_ABORTIFHUNG = [uint32]0x0002
+    $nativeResult = [IntPtr]::Zero
+
+    $requestedAt = Get-Date
+    "display_off_requested=$($requestedAt.ToString('o'))" |
+        Add-Content -LiteralPath (Join-Path $output 'ACTION-MARKERS.txt') -Encoding utf8
+
+    $returnValue = [A14MonitorPower]::SendMessageTimeout(
+        $HWND_BROADCAST,
+        $WM_SYSCOMMAND,
+        $SC_MONITORPOWER,
+        $MONITOR_OFF,
+        $SMTO_ABORTIFHUNG,
+        2000,
+        [ref]$nativeResult
+    )
+    $lastError = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+    $returnedAt = Get-Date
+
+    @(
+        "display_off_returned=$($returnedAt.ToString('o'))"
+        "display_off_native_return=$returnValue"
+        "display_off_native_result=$nativeResult"
+        "display_off_win32_error=$lastError"
+    ) | Add-Content -LiteralPath (Join-Path $output 'ACTION-MARKERS.txt') -Encoding utf8
+
+    if ($returnValue -eq [IntPtr]::Zero) {
+        Write-Warning "Windows monitor-power broadcast returned zero (Win32 error $lastError). If the display did not turn off, stop and report this output."
+    }
+}
+
 if (-not (Test-Administrator)) {
-    throw 'Run this collector from an Administrator PowerShell window. It only controls ETW sessions; it does not send camera/device IOCTLs.'
+    throw 'Run this collector from an Administrator PowerShell window. It only controls ETW sessions and the normal Windows monitor-power state; it does not send camera/device IOCTLs.'
 }
 
 New-Item -ItemType Directory -Force -Path $output | Out-Null
@@ -80,7 +143,8 @@ New-Item -ItemType Directory -Force -Path $output | Out-Null
     "aos_wpp_message_guid=$AosMessageGuid"
     "kernel_power_provider=$KernelPowerProvider"
     'operation=targeted-etw-capture-only'
-    'display_transition=user_performed_supported_os_action'
+    'display_transition=collector_requests_monitor_power_off_via_wm_syscommand'
+    'machine_sleep_requested=false'
     'collector_sends_platform_ioctl=false'
     'devices_restarted=false'
     'pnp_state_modified=false'
@@ -151,7 +215,7 @@ try {
     $traceStarted = Get-Date
     @(
         "trace_started=$($traceStarted.ToString('o'))"
-        'action=perform exactly one normal Windows display OFF -> ON transition'
+        'action=collector requests exactly one Windows display OFF transition; user wakes display normally'
         'note=no camera IOCTL or PnP/device operation is performed by this collector'
     ) | Out-File -LiteralPath (Join-Path $output 'ACTION-MARKERS.txt') -Encoding utf8
 
@@ -165,27 +229,33 @@ try {
     Write-Host 'TRACE IS RUNNING.'
     Write-Host ''
     Write-Host 'Next:'
-    Write-Host '  1. Press Enter below immediately before the display transition.'
-    Write-Host '  2. Perform ONE normal Windows display OFF -> ON cycle.'
-    Write-Host '     Use your normal Windows/laptop method; do not restart any device.'
-    Write-Host '  3. When the display is back on and you are back at this terminal,'
-    Write-Host '     press Enter again to stop the trace.'
+    Write-Host '  1. Press Enter below.'
+    Write-Host '  2. The collector waits briefly, then asks Windows to turn the display OFF.'
+    Write-Host '  3. Leave it off for about 3-5 seconds, then wake it using the touchpad,'
+    Write-Host '     mouse, or keyboard. The machine itself does NOT sleep.'
+    Write-Host '  4. When this terminal is visible again, press Enter once more to stop.'
     Write-Host ''
 
-    [void](Read-Host 'Press Enter immediately BEFORE the display OFF -> ON cycle')
+    [void](Read-Host 'Press Enter to request display OFF')
     $beforeAction = Get-Date
-    "action_before=$($beforeAction.ToString('o'))" | Add-Content -LiteralPath (Join-Path $output 'ACTION-MARKERS.txt') -Encoding utf8
+    "action_before=$($beforeAction.ToString('o'))" |
+        Add-Content -LiteralPath (Join-Path $output 'ACTION-MARKERS.txt') -Encoding utf8
 
-    Write-Host 'Now perform ONE display OFF -> ON cycle.'
-    [void](Read-Host 'After the display is back ON, press Enter to stop')
+    # Avoid the Enter key-up event immediately waking the panel again.
+    Start-Sleep -Milliseconds 1000
+    Request-MonitorPowerOff
+
+    [void](Read-Host 'After waking the display and returning here, press Enter to stop')
     $afterAction = Get-Date
-    "action_after=$($afterAction.ToString('o'))" | Add-Content -LiteralPath (Join-Path $output 'ACTION-MARKERS.txt') -Encoding utf8
+    "action_after=$($afterAction.ToString('o'))" |
+        Add-Content -LiteralPath (Join-Path $output 'ACTION-MARKERS.txt') -Encoding utf8
 
     Invoke-LogmanChecked -Label 'stop' -Arguments @('stop', '-n', $session)
     $started = $false
 
     $traceStopped = Get-Date
-    "trace_stopped=$($traceStopped.ToString('o'))" | Add-Content -LiteralPath (Join-Path $output 'ACTION-MARKERS.txt') -Encoding utf8
+    "trace_stopped=$($traceStopped.ToString('o'))" |
+        Add-Content -LiteralPath (Join-Path $output 'ACTION-MARKERS.txt') -Encoding utf8
 
     Save-CommandOutput -Name 'aos-process-inventory-after.txt' -Command {
         Get-Process -Name WUDFHost -ErrorAction SilentlyContinue | ForEach-Object {
@@ -221,6 +291,8 @@ try {
         'expected_main_restore_ap_success_message=337'
         'teardown_restore_message_range=278-284'
         'operation=targeted-etw-capture-only'
+        'display_transition=collector_requests_monitor_power_off_via_wm_syscommand'
+        'machine_sleep_requested=false'
         'collector_sends_platform_ioctl=false'
         'direct_cpas_mmio=false'
         'ssc_contact=false'
