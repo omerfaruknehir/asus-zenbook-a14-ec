@@ -183,9 +183,14 @@ make -C "$headers" M="$camss_modsrc" clean
 make -C "$headers" M="$camss_modsrc" W=1 -j"$jobs" modules
 camss_ko="$camss_modsrc/qcom-camss.ko"
 [ -s "$camss_ko" ] || fail "patched qcom-camss.ko was not produced"
-modinfo -F vermagic "$camss_ko" | grep -q "^$release " || fail "CAMSS module vermagic does not match $release"
-readelf -Ws "$camss_ko" | grep -q 'qcom_camss_aon_acquire' || fail "CAMSS acquire symbol is missing"
-readelf -Ws "$camss_ko" | grep -q 'qcom_camss_aon_release' || fail "CAMSS release symbol is missing"
+case "$(modinfo -F vermagic "$camss_ko")" in
+    "$release "*) ;;
+    *) fail "CAMSS module vermagic does not match $release" ;;
+esac
+camss_symbols="$work/qcom-camss.symbols.txt"
+readelf -Ws "$camss_ko" > "$camss_symbols"
+grep -q 'qcom_camss_aon_acquire' "$camss_symbols" || fail "CAMSS acquire symbol is missing"
+grep -q 'qcom_camss_aon_release' "$camss_symbols" || fail "CAMSS release symbol is missing"
 grep -q 'qcom_camss_aon_acquire' "$camss_modsrc/Module.symvers" || fail "CAMSS acquire symbol CRC is missing"
 grep -q 'qcom_camss_aon_release' "$camss_modsrc/Module.symvers" || fail "CAMSS release symbol CRC is missing"
 printf '%s\n' 'qcom_camss_module=validated'
@@ -201,11 +206,16 @@ make -C "$repo/kernel/aos" \
     -j"$jobs"
 ssc_ko="$repo/kernel/aos/qcom_ssc_hpd.ko"
 [ -s "$ssc_ko" ] || fail "handoff-enabled qcom_ssc_hpd.ko was not produced"
-modinfo -F vermagic "$ssc_ko" | grep -q "^$release " || fail "SSC module vermagic does not match $release"
+case "$(modinfo -F vermagic "$ssc_ko")" in
+    "$release "*) ;;
+    *) fail "SSC module vermagic does not match $release" ;;
+esac
 ssc_depends=$(modinfo -F depends "$ssc_ko")
 printf 'ssc_depends=%s\n' "$ssc_depends"
-printf '%s' "$ssc_depends" | grep -Eq '(^|,)qcom_camss(,|$)' || \
-    fail "SSC module does not declare its qcom_camss dependency"
+case ",$ssc_depends," in
+    *,qcom_camss,*) ;;
+    *) fail "SSC module does not declare its qcom_camss dependency" ;;
+esac
 printf '%s\n' 'qcom_ssc_hpd_module=validated'
 
 printf '\n%s\n' '===== STAGED ARTIFACTS ====='
