@@ -1,0 +1,78 @@
+From 0000000000000000000000000000000000000004 Mon Sep 17 00:00:00 2001
+From: Omer Faruk Nehir <omerfaruknehir@gmail.com>
+Date: Thu, 6 Aug 2026 01:55:00 +0300
+Subject: [PATCH 4/4] media: qcom: camss: treat AON mux as write-only
+
+A read from MAIN_CAM_AON_CAM_SEL_CTRL on the Zenbook A14 causes an abrupt
+platform reset even when the CAMSS runtime-PM vote, interconnect votes, and
+CPAS AHB clocks are active. The Windows camera-platform driver only needs to
+program the state value; no hardware evidence supports reading this register.
+
+Remove all readback accesses. Keep the known state values as software-owned
+state and restore the AP value on every release path.
+
+Signed-off-by: Omer Faruk Nehir <omerfaruknehir@gmail.com>
+---
+ drivers/media/platform/qcom/camss/camss.c | 23 +++++------------------
+ 1 file changed, 5 insertions(+), 18 deletions(-)
+
+diff --git a/drivers/media/platform/qcom/camss/camss.c b/drivers/media/platform/qcom/camss/camss.c
+index 000000000003..000000000005 100644
+--- a/drivers/media/platform/qcom/camss/camss.c
++++ b/drivers/media/platform/qcom/camss/camss.c
+@@ -73,6 +73,5 @@ int qcom_camss_aon_acquire(struct device *camss_dev)
+ {
+ 	struct camss *camss;
+-	u32 value;
+ 	int ret;
+ 
+ 	if (!camss_dev)
+@@ -101,24 +99,14 @@ int qcom_camss_aon_acquire(struct device *camss_dev)
+ 	if (ret)
+ 		goto err_pm_put;
+ 
++	/* This register is write-only on the A14; reads reset the platform. */
+ 	writel(X1E_CPAS_AON_CAM_SEL_AON,
+ 	       camss->cpas_top_base + X1E_CPAS_AON_CAM_SEL_CTRL);
+-	value = readl(camss->cpas_top_base + X1E_CPAS_AON_CAM_SEL_CTRL);
+-	if (value != X1E_CPAS_AON_CAM_SEL_AON) {
+-		dev_err(camss_dev, "failed to select AON camera path: %#x\n",
+-			value);
+-		ret = -EIO;
+-		goto err_restore;
+-	}
+ 
+ 	camss->aon_owned = true;
+ 	mutex_unlock(&camss->aon_lock);
+ 	return 0;
+ 
+-err_restore:
+-	writel(X1E_CPAS_AON_CAM_SEL_AP,
+-	       camss->cpas_top_base + X1E_CPAS_AON_CAM_SEL_CTRL);
+-	clk_bulk_disable_unprepare(X1E_CPAS_AON_CLK_COUNT, camss->aon_clks);
+ err_pm_put:
+ 	pm_runtime_put(camss_dev);
+ out_unlock:
+@@ -128,6 +117,5 @@ void qcom_camss_aon_release(struct device *camss_dev)
+ {
+ 	struct camss *camss;
+-	u32 value;
+ 
+ 	if (!camss_dev)
+ 		return;
+@@ -143,12 +131,9 @@ void qcom_camss_aon_release(struct device *camss_dev)
+ 	if (!camss->aon_owned)
+ 		goto out_unlock;
+ 
++	/* The AP state is known from the value written here; do not read back. */
+ 	writel(X1E_CPAS_AON_CAM_SEL_AP,
+ 	       camss->cpas_top_base + X1E_CPAS_AON_CAM_SEL_CTRL);
+-	value = readl(camss->cpas_top_base + X1E_CPAS_AON_CAM_SEL_CTRL);
+-	if (value != X1E_CPAS_AON_CAM_SEL_AP)
+-		dev_err(camss_dev, "failed to restore AP camera path: %#x\n",
+-			value);
+ 
+ 	camss->aon_owned = false;
+ 	clk_bulk_disable_unprepare(X1E_CPAS_AON_CLK_COUNT, camss->aon_clks);
+-- 
+2.51.0

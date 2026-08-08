@@ -69,6 +69,10 @@ struct a14_ssc_hpd {
 	bool shutting_down;
 	struct sockaddr_qrtr service_addr;
 
+	struct device *camss_dev;
+	struct device_link *camss_link;
+	bool camss_aon_owned;
+
 	struct mutex lock;
 	struct mutex op_lock;
 	struct workqueue_struct *wq;
@@ -101,5 +105,10 @@ extern const struct qmi_msg_handler a14_ssc_handlers[];
 int a14_ssc_discover_suid(struct a14_ssc_hpd *hpd, const char *datatype,
 			  struct completion *done, struct a14_ssc_suid *suid);
 int a14_ssc_enable_hpd(struct a14_ssc_hpd *hpd);
+
+int a14_ssc_camss_init(struct a14_ssc_hpd *hpd);
+void a14_ssc_camss_cleanup(struct a14_ssc_hpd *hpd);
+int a14_ssc_camss_acquire(struct a14_ssc_hpd *hpd);
+void a14_ssc_camss_release(struct a14_ssc_hpd *hpd);
 
 #endif

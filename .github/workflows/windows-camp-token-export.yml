@@ -1,0 +1,68 @@
+name: Validate Windows CAMP token exporter
+
+on:
+  push:
+    paths:
+      - 'scripts/a14-windows-camera-platform-camp-token-export.ps1'
+      - '.github/workflows/windows-camp-token-export.yml'
+  pull_request:
+    paths:
+      - 'scripts/a14-windows-camera-platform-camp-token-export.ps1'
+      - '.github/workflows/windows-camp-token-export.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Parse PowerShell 5.1 exporter
+        shell: powershell
+        run: |
+          $path = 'scripts/a14-windows-camera-platform-camp-token-export.ps1'
+          $tokens = $null
+          $errors = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path $path),
+              [ref]$tokens,
+              [ref]$errors
+          )
+          if ($errors.Count -ne 0) {
+              $errors | Format-List *
+              throw "PowerShell parser reported $($errors.Count) error(s)."
+          }
+
+      - name: Enforce targeted offline-only boundary
+        shell: powershell
+        run: |
+          $path = 'scripts/a14-windows-camera-platform-camp-token-export.ps1'
+          $script = Get-Content $path -Raw
+
+          foreach ($required in @(
+              'Microsoft-Windows-Kernel-Power',
+              'QCOM0C32',
+              '\_SB\.CAMP',
+              "@('Token','DeviceNode')",
+              'camp-token-events.tsv',
+              'operation=offline-decode-only',
+              'collector_sends_platform_ioctl=false',
+              'devices_restarted=false',
+              'camera_register_access=false',
+              'direct_cpas_mmio=false'
+          )) {
+              if (-not $script.Contains($required)) {
+                  throw "Missing required targeted-export invariant: $required"
+              }
+          }
+
+          if ($script -match 'DeviceIoControl|CreateFileW|WriteFile|Set-PnpDevice|Disable-PnpDevice|Enable-PnpDevice|devcon(?:\.exe)?|MmMapIoSpace|\\dev\\mem|0x0ac191e0|ioremap|\breadl\s*\(|\bwritel\s*\(|HumanPresenceSensor\]::GetDefault|GetCurrentReading\(') {
+              throw 'Targeted CAMP exporter contains a prohibited hardware/PnP/sensor-control path.'
+          }
+
+      - name: Check repository whitespace
+        shell: bash
+        run: git diff --check HEAD^ HEAD || git diff --check

@@ -1,0 +1,298 @@
+From 0000000000000000000000000000000000000002 Mon Sep 17 00:00:00 2001
+From: Omer Faruk Nehir <omerfaruknehir@gmail.com>
+Date: Wed, 5 Aug 2026 06:01:00 +0300
+Subject: [PATCH 2/3] media: qcom: camss: add AON camera ownership handoff
+
+X1E80100 has a camera-platform mux in CPAS top which must be switched before
+SSC can acquire the always-on OV02C10 path. Add a CAMSS-owned provider API so
+sensor consumers do not map or write the register themselves.
+
+Keep the Titan-top runtime-PM vote and the two CPAS AHB clocks active for the
+complete AON ownership interval. Track prepared AP pipelines and reject either
+side when the other already owns the path.
+
+The resource is optional at probe time so a new kernel remains compatible with
+an older DTB. Only the AON provider is unavailable in that case.
+
+Signed-off-by: Omer Faruk Nehir <omerfaruknehir@gmail.com>
+---
+ drivers/media/platform/qcom/camss/camss-video.c |   7 ++
+ drivers/media/platform/qcom/camss/camss.c       | 138 ++++++++++++++++++++++++
+ drivers/media/platform/qcom/camss/camss.h       |  10 ++
+ include/media/qcom_camss.h                      |  24 +++++
+ 4 files changed, 179 insertions(+)
+ create mode 100644 include/media/qcom_camss.h
+
+diff --git a/include/media/qcom_camss.h b/include/media/qcom_camss.h
+new file mode 100644
+index 000000000000..000000000001
+--- /dev/null
++++ b/include/media/qcom_camss.h
+@@ -0,0 +1,24 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++#ifndef __MEDIA_QCOM_CAMSS_H__
++#define __MEDIA_QCOM_CAMSS_H__
++
++#include <linux/errno.h>
++#include <linux/kconfig.h>
++
++struct device;
++
++#if IS_REACHABLE(CONFIG_VIDEO_QCOM_CAMSS)
++int qcom_camss_aon_acquire(struct device *camss_dev);
++void qcom_camss_aon_release(struct device *camss_dev);
++#else
++static inline int qcom_camss_aon_acquire(struct device *camss_dev)
++{
++	return -EOPNOTSUPP;
++}
++
++static inline void qcom_camss_aon_release(struct device *camss_dev)
++{
++}
++#endif
++
++#endif /* __MEDIA_QCOM_CAMSS_H__ */
+
+diff --git a/drivers/media/platform/qcom/camss/camss.h b/drivers/media/platform/qcom/camss/camss.h
+index 93d691c8ac63..000000000002 100644
+--- a/drivers/media/platform/qcom/camss/camss.h
++++ b/drivers/media/platform/qcom/camss/camss.h
+@@ -8,7 +8,9 @@
+ #ifndef QC_MSM_CAMSS_H
+ #define QC_MSM_CAMSS_H
+ 
++#include <linux/clk.h>
+ #include <linux/device.h>
++#include <linux/mutex.h>
+ #include <linux/types.h>
+ #include <media/v4l2-async.h>
+ #include <media/v4l2-device.h>
+@@ -132,4 +134,10 @@ struct camss {
+ 	struct device_link *genpd_link;
+ 	struct icc_path *icc_path[ICC_SM8250_COUNT];
+ 	const struct camss_resources *res;
++
++	void __iomem *cpas_top_base;
++	struct clk_bulk_data aon_clks[2];
++	struct mutex aon_lock;
++	unsigned int ap_streams;
++	bool aon_owned;
+ };
+@@ -180,5 +189,7 @@ int camss_vfe_get(struct camss *camss, int id);
+ void camss_vfe_put(struct camss *camss, int id);
+ void camss_delete(struct camss *camss);
++int camss_ap_stream_get(struct camss *camss);
++void camss_ap_stream_put(struct camss *camss);
+ void camss_buf_done(struct camss *camss, int hw_id, int port_id);
+ void camss_reg_update(struct camss *camss, int hw_id,
+ 		      int port_id, bool is_clear);
+
+diff --git a/drivers/media/platform/qcom/camss/camss.c b/drivers/media/platform/qcom/camss/camss.c
+index 2123f6388e3d..000000000003 100644
+--- a/drivers/media/platform/qcom/camss/camss.c
++++ b/drivers/media/platform/qcom/camss/camss.c
+@@ -8,6 +8,7 @@
+  * Copyright (C) 2015-2018 Linaro Ltd.
+  */
+ #include <linux/clk.h>
++#include <linux/io.h>
+ #include <linux/interconnect.h>
+ #include <linux/media-bus-format.h>
+ #include <linux/media.h>
+@@ -24,6 +25,7 @@
+ #include <media/v4l2-device.h>
+ #include <media/v4l2-mc.h>
+ #include <media/v4l2-fwnode.h>
++#include <media/qcom_camss.h>
+ 
+ #include "camss.h"
+ 
+@@ -31,6 +33,123 @@
+ #define CAMSS_CLOCK_MARGIN_NUMERATOR 105
+ #define CAMSS_CLOCK_MARGIN_DENOMINATOR 100
+ 
++#define X1E_CPAS_AON_CAM_SEL_CTRL	0x1e0
++#define X1E_CPAS_AON_CAM_SEL_AP		0x000
++#define X1E_CPAS_AON_CAM_SEL_AON	0x101
++#define X1E_CPAS_AON_CLK_COUNT		2
++
+ static const struct parent_dev_ops vfe_parent_dev_ops;
++
++int camss_ap_stream_get(struct camss *camss)
++{
++	int ret = 0;
++
++	mutex_lock(&camss->aon_lock);
++	if (camss->aon_owned)
++		ret = -EBUSY;
++	else
++		camss->ap_streams++;
++	mutex_unlock(&camss->aon_lock);
++
++	return ret;
++}
++
++void camss_ap_stream_put(struct camss *camss)
++{
++	mutex_lock(&camss->aon_lock);
++	if (WARN_ON(!camss->ap_streams)) {
++		mutex_unlock(&camss->aon_lock);
++		return;
++	}
++	camss->ap_streams--;
++	mutex_unlock(&camss->aon_lock);
++}
++
++int qcom_camss_aon_acquire(struct device *camss_dev)
++{
++	struct camss *camss;
++	u32 value;
++	int ret;
++
++	if (!camss_dev)
++		return -EINVAL;
++	camss = dev_get_drvdata(camss_dev);
++	if (!camss)
++		return -EPROBE_DEFER;
++
++	mutex_lock(&camss->aon_lock);
++	if (!camss->cpas_top_base) {
++		ret = -ENODEV;
++		goto out_unlock;
++	}
++	if (camss->aon_owned || camss->ap_streams) {
++		ret = -EBUSY;
++		goto out_unlock;
++	}
++
++	ret = pm_runtime_resume_and_get(camss_dev);
++	if (ret < 0)
++		goto out_unlock;
++
++	ret = clk_bulk_prepare_enable(X1E_CPAS_AON_CLK_COUNT,
++				      camss->aon_clks);
++	if (ret)
++		goto err_pm_put;
++
++	writel(X1E_CPAS_AON_CAM_SEL_AON,
++	       camss->cpas_top_base + X1E_CPAS_AON_CAM_SEL_CTRL);
++	value = readl(camss->cpas_top_base + X1E_CPAS_AON_CAM_SEL_CTRL);
++	if (value != X1E_CPAS_AON_CAM_SEL_AON) {
++		dev_err(camss_dev, "failed to select AON camera path: %#x\n",
++			value);
++		ret = -EIO;
++		goto err_restore;
++	}
++
++	camss->aon_owned = true;
++	mutex_unlock(&camss->aon_lock);
++	return 0;
++
++err_restore:
++	writel(X1E_CPAS_AON_CAM_SEL_AP,
++	       camss->cpas_top_base + X1E_CPAS_AON_CAM_SEL_CTRL);
++	clk_bulk_disable_unprepare(X1E_CPAS_AON_CLK_COUNT, camss->aon_clks);
++err_pm_put:
++	pm_runtime_put(camss_dev);
++out_unlock:
++	mutex_unlock(&camss->aon_lock);
++	return ret;
++}
++EXPORT_SYMBOL_GPL(qcom_camss_aon_acquire);
++
++void qcom_camss_aon_release(struct device *camss_dev)
++{
++	struct camss *camss;
++	u32 value;
++
++	if (!camss_dev)
++		return;
++	camss = dev_get_drvdata(camss_dev);
++	if (!camss)
++		return;
++
++	mutex_lock(&camss->aon_lock);
++	if (!camss->aon_owned)
++		goto out_unlock;
++
++	writel(X1E_CPAS_AON_CAM_SEL_AP,
++	       camss->cpas_top_base + X1E_CPAS_AON_CAM_SEL_CTRL);
++	value = readl(camss->cpas_top_base + X1E_CPAS_AON_CAM_SEL_CTRL);
++	if (value != X1E_CPAS_AON_CAM_SEL_AP)
++		dev_err(camss_dev, "failed to restore AP camera path: %#x\n",
++			value);
++
++	camss->aon_owned = false;
++	clk_bulk_disable_unprepare(X1E_CPAS_AON_CLK_COUNT, camss->aon_clks);
++	pm_runtime_put(camss_dev);
++out_unlock:
++	mutex_unlock(&camss->aon_lock);
++}
++EXPORT_SYMBOL_GPL(qcom_camss_aon_release);
+ 
+ static const struct camss_subdev_resources csiphy_res_8x16[] = {
+@@ -5320,5 +5417,22 @@ static int camss_probe(struct platform_device *pdev)
+ 	atomic_set(&camss->ref_count, 0);
+ 	camss->dev = dev;
++	mutex_init(&camss->aon_lock);
+ 	platform_set_drvdata(pdev, camss);
++
++	if (camss->res->version == CAMSS_X1E80100 &&
++	    platform_get_resource_byname(pdev, IORESOURCE_MEM, "cpas-top")) {
++		camss->cpas_top_base =
++			devm_platform_ioremap_resource_byname(pdev, "cpas-top");
++		if (IS_ERR(camss->cpas_top_base))
++			return PTR_ERR(camss->cpas_top_base);
++
++		camss->aon_clks[0].id = "cpas_ahb";
++		camss->aon_clks[1].id = "cpas_fast_ahb";
++		ret = devm_clk_bulk_get(dev, X1E_CPAS_AON_CLK_COUNT,
++					camss->aon_clks);
++		if (ret)
++			return dev_err_probe(dev, ret,
++					     "failed to get CPAS AON clocks\n");
++	}
+ 
+ 	camss->csiphy = devm_kcalloc(dev, camss->res->csiphy_num,
+@@ -5517,6 +5630,8 @@ static void camss_remove(struct platform_device *pdev)
+ {
+ 	struct camss *camss = platform_get_drvdata(pdev);
+ 
++	qcom_camss_aon_release(camss->dev);
++
+ 	v4l2_async_nf_unregister(&camss->notifier);
+ 	v4l2_async_nf_cleanup(&camss->notifier);
+ 	camss_unregister_entities(camss);
+
+diff --git a/drivers/media/platform/qcom/camss/camss-video.c b/drivers/media/platform/qcom/camss/camss-video.c
+index 0852eb6f1315..000000000004 100644
+--- a/drivers/media/platform/qcom/camss/camss-video.c
++++ b/drivers/media/platform/qcom/camss/camss-video.c
+@@ -217,10 +217,15 @@ static int video_prepare_streaming(struct vb2_queue *q)
+ 	struct video_device *vdev = &video->vdev;
+ 	int ret;
+ 
++	ret = camss_ap_stream_get(video->camss);
++	if (ret)
++		return ret;
++
+ 	ret = v4l2_pipeline_pm_get(&vdev->entity);
+ 	if (ret < 0) {
+ 		dev_err(video->camss->dev, "Failed to power up pipeline: %d\n",
+ 			ret);
++		camss_ap_stream_put(video->camss);
+ 	}
+ 
+ 	return ret;
+@@ -298,6 +307,8 @@ static void video_unprepare_streaming(struct vb2_queue *q)
+ 	struct video_device *vdev = &video->vdev;
+ 
+ 	v4l2_pipeline_pm_put(&vdev->entity);
++
++	camss_ap_stream_put(video->camss);
+ }
+ 
+ static const struct vb2_ops msm_video_vb2_q_ops = {
+-- 
+2.51.0

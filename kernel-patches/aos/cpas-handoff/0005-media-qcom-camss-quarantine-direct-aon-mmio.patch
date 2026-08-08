@@ -1,0 +1,73 @@
+From 0000000000000000000000000000000000000005 Mon Sep 17 00:00:00 2001
+From: Omer Faruk Nehir <omerfaruknehir@gmail.com>
+Date: Thu, 6 Aug 2026 04:30:00 +0300
+Subject: [PATCH 5/5] media: qcom: camss: quarantine direct AON MMIO
+
+Both a read and a write to MAIN_CAM_AON_CAM_SEL_CTRL caused an abrupt platform
+reset on the ASUS Zenbook A14. Runtime PM and both CPAS AHB clocks were proven
+safe separately, so direct host MMIO access is not currently a valid handoff
+mechanism on this platform.
+
+Fail the provider API with -EOPNOTSUPP before touching the register. Keep the
+resource discovery and ownership plumbing available for future replacement by
+the correct firmware-mediated or platform-specific access path.
+
+Signed-off-by: Omer Faruk Nehir <omerfaruknehir@gmail.com>
+---
+ drivers/media/platform/qcom/camss/camss.c | 25 ++++++-------------------
+ 1 file changed, 6 insertions(+), 19 deletions(-)
+
+diff --git a/drivers/media/platform/qcom/camss/camss.c b/drivers/media/platform/qcom/camss/camss.c
+index 000000000005..000000000006 100644
+--- a/drivers/media/platform/qcom/camss/camss.c
++++ b/drivers/media/platform/qcom/camss/camss.c
+@@ -73,6 +73,6 @@ int qcom_camss_aon_acquire(struct device *camss_dev)
+ {
+ 	struct camss *camss;
++	int ret = -EOPNOTSUPP;
+-	int ret;
+ 
+ 	if (!camss_dev)
+ 		return -EINVAL;
+@@ -91,25 +92,8 @@ int qcom_camss_aon_acquire(struct device *camss_dev)
+ 		goto out_unlock;
+ 	}
+ 
+-	ret = pm_runtime_resume_and_get(camss_dev);
+-	if (ret < 0)
+-		goto out_unlock;
+-
+-	ret = clk_bulk_prepare_enable(X1E_CPAS_AON_CLK_COUNT,
+-				      camss->aon_clks);
+-	if (ret)
+-		goto err_pm_put;
+-
+-	/* This register is write-only on the A14; reads reset the platform. */
+-	writel(X1E_CPAS_AON_CAM_SEL_AON,
+-	       camss->cpas_top_base + X1E_CPAS_AON_CAM_SEL_CTRL);
+-
+-	camss->aon_owned = true;
+-	mutex_unlock(&camss->aon_lock);
+-	return 0;
+-
+-err_pm_put:
+-	pm_runtime_put(camss_dev);
++	dev_err_once(camss_dev,
++		     "AON handoff unavailable: direct CPAS MMIO resets this platform\n");
+ out_unlock:
+ 	mutex_unlock(&camss->aon_lock);
+ 	return ret;
+@@ -131,9 +118,8 @@ void qcom_camss_aon_release(struct device *camss_dev)
+ 	if (!camss->aon_owned)
+ 		goto out_unlock;
+ 
+-	/* The AP state is known from the value written here; do not read back. */
+-	writel(X1E_CPAS_AON_CAM_SEL_AP,
+-	       camss->cpas_top_base + X1E_CPAS_AON_CAM_SEL_CTRL);
++	dev_warn_once(camss_dev,
++		      "dropping stale AON ownership without direct CPAS MMIO\n");
+ 
+ 	camss->aon_owned = false;
+ 	clk_bulk_disable_unprepare(X1E_CPAS_AON_CLK_COUNT, camss->aon_clks);
+-- 
+2.51.0
