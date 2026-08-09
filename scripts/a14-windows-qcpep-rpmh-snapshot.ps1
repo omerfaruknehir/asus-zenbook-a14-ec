@@ -43,7 +43,7 @@ function Get-UInt32Property {
 }
 
 if (-not (Test-Administrator)) {
-    throw 'Run this script from an elevated PowerShell window.'
+    throw 'Run this script from an elevated Windows PowerShell window.'
 }
 
 Import-Module EventTracingManagement -ErrorAction Stop
@@ -127,31 +127,11 @@ Write-Host "Output:  $output"
 Write-Host 'Existing in-memory ETW session only; no stop/reconfigure/hardware operation.'
 Write-Host ''
 
-# Intentionally omit -Stop. Save-EtwTraceSession supports saving a buffering
-# session while leaving it running.
-$saved = Save-EtwTraceSession -Name $sessionName -OutputFile (Get-Item -LiteralPath $output).PSPath.Replace('Microsoft.PowerShell.Core\FileSystem::','')\qcpep-rpmh.etl -ErrorAction Stop
+# Intentionally omit -Stop. The supported buffering-session save path leaves
+# the existing session running.
+[IO.FileInfo]$outputFile = $etl
+$saved = Save-EtwTraceSession -Name $sessionName -OutputFile $outputFile -ErrorAction Stop
 
-# Resolve the actual output path from the returned object where possible, with
-# the requested path as the fallback.
-$savedPath = $etl
-if ($null -ne $saved) {
-    foreach ($propertyName in @('FullName','Name')) {
-        $prop = $saved.PSObject.Properties[$propertyName]
-        if ($null -ne $prop -and $null -ne $prop.Value) {
-            $candidate = [string]$prop.Value
-            if (Test-Path -LiteralPath $candidate -PathType Leaf) {
-                $savedPath = (Resolve-Path -LiteralPath $candidate).Path
-                break
-            }
-        }
-    }
-}
-
-if (-not (Test-Path -LiteralPath $etl -PathType Leaf)) {
-    if ($savedPath -ne $etl -and (Test-Path -LiteralPath $savedPath -PathType Leaf)) {
-        Copy-Item -LiteralPath $savedPath -Destination $etl -Force
-    }
-}
 if (-not (Test-Path -LiteralPath $etl -PathType Leaf)) {
     throw "Save-EtwTraceSession returned without producing the expected ETL: $etl"
 }
@@ -177,7 +157,6 @@ if ($null -ne $liveMode -and $null -ne $afterMode -and $liveMode -ne $afterMode)
     "etl=$etl"
     "etl_bytes=$($etlItem.Length)"
     "session_still_running=true"
-    "session_count_after=$($sessionAfter.Count)"
     "live_log_file_mode_after=$(if ($null -eq $afterMode) { 'not-exposed' } else { '0x{0:X}' -f $afterMode })"
     'session_started_by_collector=false'
     'session_stopped_by_collector=false'
