@@ -87,7 +87,11 @@ log "direct_cpas_mmio=false"
 log "ssc_contacted=false"
 
 section "DEBUGFS ACCESS"
-if [[ -d /sys/kernel/debug/pinctrl ]] && sudo_find /sys/kernel/debug/pinctrl -mindepth 1 -maxdepth 2 -type f -print -quit 2>/dev/null | grep -q .; then
+existing_debugfs_file=""
+if [[ -d /sys/kernel/debug/pinctrl ]]; then
+    existing_debugfs_file="$(sudo_find /sys/kernel/debug/pinctrl -mindepth 1 -maxdepth 2 -type f -print -quit 2>/dev/null || true)"
+fi
+if [[ -n "$existing_debugfs_file" ]]; then
     DBG_ROOT=/sys/kernel/debug
     log "debugfs_source=existing:/sys/kernel/debug"
     log "temporary_debugfs_mount=false"
