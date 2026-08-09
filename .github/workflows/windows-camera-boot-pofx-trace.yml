@@ -147,9 +147,6 @@ jobs:
               $script.Contains('EVENT_TRACE_CONTROL_UPDATE =')) {
               throw 'qcpep RPMh native helper must not define STOP or UPDATE control codes.'
           }
-          if ($script -match 'Save-EtwTraceSession|Send-EtwTraceSession|Start-EtwTraceSession|Stop-EtwTraceSession|Update-EtwTraceSession|New-EtwTraceSession|Remove-EtwTraceProvider|Add-EtwTraceProvider|Set-EtwTraceProvider|New-AutologgerConfig|Remove-AutologgerConfig|Update-AutologgerConfig') {
-              throw 'qcpep RPMh snapshot contains a prohibited ETW management command.'
-          }
 
           $tokens = $null
           $errors = $null
@@ -160,6 +157,9 @@ jobs:
           )
           if ($errors.Count -ne 0) { throw 'qcpep RPMh snapshot script did not parse.' }
 
+          # Check actual PowerShell command AST nodes rather than raw text so
+          # safety comments documenting rejected cmdlets do not cause false
+          # positives.
           $commands = @($ast.FindAll({
               param($node)
               $node -is [System.Management.Automation.Language.CommandAst]
