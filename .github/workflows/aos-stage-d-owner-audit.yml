@@ -3,12 +3,14 @@ name: Validate AOS Stage D owner audit
 on:
   push:
     paths:
-      - 'scripts/a14-aos-stage-d-owner-audit.sh'
+      - 'scripts/a14-aos-stage-d-*.sh'
+      - 'scripts/a14-aos-stage-d-*.py'
       - 'docs/aos/LINUX-AOS-STAGE-D-OWNERSHIP-DISCOVERY.md'
       - '.github/workflows/aos-stage-d-owner-audit.yml'
   pull_request:
     paths:
-      - 'scripts/a14-aos-stage-d-owner-audit.sh'
+      - 'scripts/a14-aos-stage-d-*.sh'
+      - 'scripts/a14-aos-stage-d-*.py'
       - 'docs/aos/LINUX-AOS-STAGE-D-OWNERSHIP-DISCOVERY.md'
       - '.github/workflows/aos-stage-d-owner-audit.yml'
   workflow_dispatch:
@@ -22,29 +24,52 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Validate read-only Stage D audit
+      - name: Validate read-only Stage D audits
         shell: bash
         run: |
           set -euo pipefail
-          script=scripts/a14-aos-stage-d-owner-audit.sh
-          test -s "$script"
-          bash -n "$script"
+          owner=scripts/a14-aos-stage-d-owner-audit.sh
+          gpio_audit=scripts/a14-aos-stage-d-gpio-audit.sh
+          gpio_map=scripts/a14-aos-stage-d-gpio-map.py
 
-          grep -Fq 'operation=read-only-discovery' "$script"
-          grep -Fq 'cpas_mmio_access=false' "$script"
-          grep -Fq 'scm_invocation=false' "$script"
-          grep -Fq 'ssc_contacted=false' "$script"
-          grep -Fq 'clock_state_change=false' "$script"
-          grep -Fq 'power_domain_state_change=false' "$script"
-          grep -Fq 'camera_stream_started=false' "$script"
-          grep -Fq '[ ! -e "$out" ] || fail' "$script"
+          test -s "$owner"
+          test -s "$gpio_audit"
+          test -s "$gpio_map"
+          bash -n "$owner"
+          bash -n "$gpio_audit"
+          python3 -m py_compile "$gpio_map"
 
-          python3 - "$script" <<'PY'
+          grep -Fq 'operation=read-only-discovery' "$owner"
+          grep -Fq 'cpas_mmio_access=false' "$owner"
+          grep -Fq 'scm_invocation=false' "$owner"
+          grep -Fq 'ssc_contacted=false' "$owner"
+          grep -Fq 'clock_state_change=false' "$owner"
+          grep -Fq 'power_domain_state_change=false' "$owner"
+          grep -Fq 'camera_stream_started=false' "$owner"
+          grep -Fq '[ ! -e "$out" ] || fail' "$owner"
+
+          grep -Fq 'hardware_write=false' "$gpio_audit"
+          grep -Fq 'direct_cpas_mmio=false' "$gpio_audit"
+          grep -Fq 'ssc_contacted=false' "$gpio_audit"
+          grep -Fq 'boot_scope=custom-diagnostic' "$gpio_audit"
+
+          grep -Fq 'operation=read-only-live-dt-map' "$gpio_map"
+          grep -Fq 'hardware_write=false' "$gpio_map"
+          grep -Fq 'gpio_write=false' "$gpio_map"
+          grep -Fq 'direct_cpas_mmio=false' "$gpio_map"
+          grep -Fq 'ssc_contacted=false' "$gpio_map"
+          grep -Fq '96: "cam_mclk"' "$gpio_map"
+          grep -Fq '100: "cam_aon"' "$gpio_map"
+          grep -Fq '101: "cci_i2c"' "$gpio_map"
+
+          python3 - "$owner" "$gpio_audit" "$gpio_map" <<'PY'
           import re
           import sys
 
-          text = open(sys.argv[1], encoding='utf-8').read()
-          forbidden = {
+          owner, gpio_audit, gpio_map = [open(p, encoding='utf-8').read() for p in sys.argv[1:]]
+
+          # The original owner audit keeps the strongest literal quarantine.
+          forbidden_owner = {
               '/dev/mem': 'userspace physical-memory access',
               'devmem ': 'devmem invocation',
               'ioremap(': 'kernel MMIO mapping helper',
@@ -61,9 +86,31 @@ jobs:
               'fuser ': 'media-node manipulation path',
               'cam -l': 'camera enumeration side effect',
           }
-          for needle, why in forbidden.items():
-              if needle in text:
-                  raise SystemExit(f'Stage D audit contains prohibited {why}: {needle}')
+          for needle, why in forbidden_owner.items():
+              if needle in owner:
+                  raise SystemExit(f'Stage D owner audit contains prohibited {why}: {needle}')
+
+          # Shell comments may document the safety boundary, so scan executable
+          # lines of the GPIO audit rather than rejecting documentation strings.
+          gpio_shell_code = '\n'.join(
+              line for line in gpio_audit.splitlines()
+              if not line.lstrip().startswith('#')
+          )
+          forbidden_gpio_shell = (
+              '/dev/mem', 'devmem ', 'modprobe ', 'insmod ', 'systemctl ',
+              'fuser ', 'cam -l', 'a14_f0_icp_owner_probe',
+          )
+          for needle in forbidden_gpio_shell:
+              if needle in gpio_shell_code:
+                  raise SystemExit(f'Stage D GPIO audit executable path contains prohibited token: {needle}')
+
+          forbidden_gpio_map = (
+              '/dev/mem', 'devmem ', 'modprobe ', 'insmod ', 'systemctl ',
+              'fuser ', 'cam -l', 'a14_f0_icp_owner_probe',
+          )
+          for needle in forbidden_gpio_map:
+              if needle in gpio_map:
+                  raise SystemExit(f'Stage D GPIO mapper contains prohibited token: {needle}')
 
           mutation_patterns = [
               r'>\s*/sys/',
@@ -71,9 +118,16 @@ jobs:
               r'\becho\s+[^\n]*>\s*/sys/',
               r'\bprintf\s+[^\n]*>\s*/sys/',
           ]
-          for pattern in mutation_patterns:
-              if re.search(pattern, text):
-                  raise SystemExit(f'Stage D audit contains possible sysfs mutation: {pattern}')
+          for text, label in ((owner, 'owner'), (gpio_shell_code, 'gpio-audit')):
+              for pattern in mutation_patterns:
+                  if re.search(pattern, text):
+                      raise SystemExit(f'Stage D {label} contains possible sysfs mutation: {pattern}')
+
+          # The Python mapper may execute only dtc. No privileged helper is needed.
+          if 'subprocess.run(' not in gpio_map or '["dtc", "-I", "fs", "-O", "dts"' not in gpio_map:
+              raise SystemExit('Stage D GPIO mapper does not have the expected dtc-only subprocess path')
+          if re.search(r'\bsudo\b', gpio_map):
+              raise SystemExit('Stage D GPIO mapper unexpectedly contains sudo')
           PY
 
           test -s docs/aos/LINUX-AOS-STAGE-D-OWNERSHIP-DISCOVERY.md
