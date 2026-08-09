@@ -16,6 +16,7 @@ MOUNTED_TEMP=0
 
 cleanup() {
     local rc=$?
+    trap - EXIT INT TERM
     if [[ "$MOUNTED_TEMP" -eq 1 && -n "$DBG_ROOT" ]]; then
         sudo umount "$DBG_ROOT" >/dev/null 2>&1 || true
     fi
@@ -31,10 +32,10 @@ need_cmd() {
     }
 }
 
-for cmd in awk cat date find grep id mktemp mkdir mount rm sed sort tee tr umount uname; do
+for cmd in awk cat date dirname grep id mktemp mkdir mount rm sed sort tee tr umount uname; do
     need_cmd "$cmd"
 done
-command -v sudo >/dev/null 2>&1 || { echo 'sudo is required for a temporary debugfs mount' >&2; exit 1; }
+command -v sudo >/dev/null 2>&1 || { echo 'sudo is required for debugfs access' >&2; exit 1; }
 
 mkdir -p "$(dirname "$OUT")"
 : >"$OUT"
@@ -45,6 +46,16 @@ log() {
 
 section() {
     printf '\n===== %s =====\n' "$*" | tee -a "$OUT"
+}
+
+sudo_find() {
+    sudo find "$@"
+}
+
+sudo_grep_file() {
+    local regex="$1"
+    local file="$2"
+    sudo cat "$file" 2>/dev/null | grep -E "$regex" || true
 }
 
 section "IDENTITY"
@@ -76,7 +87,7 @@ log "direct_cpas_mmio=false"
 log "ssc_contacted=false"
 
 section "DEBUGFS ACCESS"
-if [[ -d /sys/kernel/debug/pinctrl ]] && find /sys/kernel/debug/pinctrl -mindepth 1 -maxdepth 2 -type f -print -quit 2>/dev/null | grep -q .; then
+if [[ -d /sys/kernel/debug/pinctrl ]] && sudo_find /sys/kernel/debug/pinctrl -mindepth 1 -maxdepth 2 -type f -print -quit 2>/dev/null | grep -q .; then
     DBG_ROOT=/sys/kernel/debug
     log "debugfs_source=existing:/sys/kernel/debug"
     log "temporary_debugfs_mount=false"
@@ -89,51 +100,50 @@ else
     log "temporary_debugfs_mount=true"
 fi
 
-if [[ ! -d "$DBG_ROOT/pinctrl" ]]; then
+if ! sudo test -d "$DBG_ROOT/pinctrl"; then
     log "pinctrl_debugfs=unavailable"
     exit 1
 fi
 log "pinctrl_debugfs=available"
 
-# Exact target pins. Match both common Qualcomm forms:
-#   pin 96 (GPIO_96): ...
-#   pin 96 (gpio96): ...
+# Exact target pins. Match common Qualcomm debugfs forms.
 readonly PIN_RE='(^|[[:space:]])pin[[:space:]]+(96|97|98|99|100|101|102|103|104|105|106)([[:space:]]|$)|GPIO_(96|97|98|99|100|101|102|103|104|105|106)([^0-9]|$)|gpio(96|97|98|99|100|101|102|103|104|105|106)([^0-9]|$)'
+readonly NUMERIC_RE='(^|[^0-9])(96|97|98|99|100|101|102|103|104|105|106)([^0-9]|$)'
 
 section "PINCTRL PROVIDERS"
-find "$DBG_ROOT/pinctrl" -mindepth 1 -maxdepth 1 -type d -print | sort | while IFS= read -r d; do
+sudo_find "$DBG_ROOT/pinctrl" -mindepth 1 -maxdepth 1 -type d -print 2>/dev/null | sort | while IFS= read -r d; do
     log "provider=$d"
 done
 
 section "TARGET PIN MUX OWNERSHIP"
 mux_hits=0
 while IFS= read -r file; do
-    [[ -r "$file" ]] || continue
-    matches="$(grep -E "$PIN_RE" "$file" || true)"
+    [[ -n "$file" ]] || continue
+    matches="$(sudo_grep_file "$PIN_RE" "$file")"
     if [[ -n "$matches" ]]; then
         mux_hits=1
         log "source=$file"
         printf '%s\n' "$matches" | tee -a "$OUT"
     fi
-done < <(find "$DBG_ROOT/pinctrl" -maxdepth 2 -type f -name pinmux-pins -print | sort)
+done < <(sudo_find "$DBG_ROOT/pinctrl" -maxdepth 2 -type f -name pinmux-pins -print 2>/dev/null | sort)
 [[ "$mux_hits" -eq 1 ]] || log "target_pinmux_lines=none"
 
 section "TARGET PIN CONFIGURATION"
 conf_hits=0
 while IFS= read -r file; do
-    [[ -r "$file" ]] || continue
-    matches="$(grep -E "$PIN_RE" "$file" || true)"
+    [[ -n "$file" ]] || continue
+    matches="$(sudo_grep_file "$PIN_RE" "$file")"
     if [[ -n "$matches" ]]; then
         conf_hits=1
         log "source=$file"
         printf '%s\n' "$matches" | tee -a "$OUT"
     fi
-done < <(find "$DBG_ROOT/pinctrl" -maxdepth 2 -type f \( -name pinconf-pins -o -name pins \) -print | sort)
+done < <(sudo_find "$DBG_ROOT/pinctrl" -maxdepth 2 -type f \( -name pinconf-pins -o -name pins \) -print 2>/dev/null | sort)
 [[ "$conf_hits" -eq 1 ]] || log "target_pinconf_lines=none"
 
 section "GPIO DEBUG SNAPSHOT"
-if [[ -r "$DBG_ROOT/gpio" ]]; then
-    matches="$(grep -E '(^|[^0-9])(96|97|98|99|100|101|102|103|104|105|106)([^0-9]|$)' "$DBG_ROOT/gpio" || true)"
+if sudo test -f "$DBG_ROOT/gpio"; then
+    matches="$(sudo_grep_file "$NUMERIC_RE" "$DBG_ROOT/gpio")"
     if [[ -n "$matches" ]]; then
         printf '%s\n' "$matches" | tee -a "$OUT"
     else
