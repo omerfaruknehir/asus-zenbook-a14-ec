@@ -40,7 +40,7 @@ note 'power_domain_state_change=false'
 note 'camera_stream_started=false'
 
 cat /proc/cmdline > "$out/proc-cmdline.txt"
-cat /proc/iomem > "$out/proc-iomem.txt" 2>/dev/null || true
+sudo cat /proc/iomem > "$out/proc-iomem.txt" 2>/dev/null || true
 
 printf '\n%s\n' '===== CAMSS PLATFORM DEVICE ====='
 for link in /sys/bus/platform/drivers/qcom-camss/*; do
@@ -161,6 +161,36 @@ if [ -n "$icc_src" ] && snapshot_debugfs "$icc_src" "$out/debugfs/interconnect-s
     grep -Ei 'cam|mnoc|isp|cpas' "$out/debugfs/interconnect-summary.txt" || true
 else
     note 'interconnect_summary=unavailable'
+fi
+
+printf '\n%s\n' '===== GPIO / PMIC OWNERSHIP SNAPSHOTS ====='
+if snapshot_debugfs /sys/kernel/debug/gpio "$out/debugfs/gpio.txt"; then
+    note 'gpio_summary=available'
+    grep -Ei 'cam|camera|privacy|cci|isp|sensor|aon' "$out/debugfs/gpio.txt" || true
+else
+    note 'gpio_summary=unavailable'
+fi
+
+if snapshot_debugfs /sys/kernel/debug/regulator/regulator_summary "$out/debugfs/regulator-summary.txt"; then
+    note 'regulator_summary=available'
+    grep -Ei 'cam|camera|cci|isp|sensor|vreg|pmic' "$out/debugfs/regulator-summary.txt" | head -n 250 || true
+else
+    note 'regulator_summary=unavailable'
+fi
+
+# Keep pinctrl state as a file for later correlation with any ACPI/GPIO mapping.
+: > "$out/debugfs/pinctrl-files.txt"
+for p in /sys/kernel/debug/pinctrl/*/pinmux-pins /sys/kernel/debug/pinctrl/*/pins; do
+    if sudo test -r "$p"; then
+        safe=$(printf '%s' "$p" | tr '/ ' '__')
+        sudo cat "$p" > "$out/debugfs/$safe.txt" 2>/dev/null || true
+        printf '%s\n' "$p" >> "$out/debugfs/pinctrl-files.txt"
+    fi
+done
+if [ -s "$out/debugfs/pinctrl-files.txt" ]; then
+    note 'pinctrl_snapshots=available'
+else
+    note 'pinctrl_snapshots=unavailable'
 fi
 
 printf '\n%s\n' '===== KERNEL SECURITY / OWNERSHIP CLUES ====='
