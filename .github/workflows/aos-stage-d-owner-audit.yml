@@ -1,0 +1,80 @@
+name: Validate AOS Stage D owner audit
+
+on:
+  push:
+    paths:
+      - 'scripts/a14-aos-stage-d-owner-audit.sh'
+      - 'docs/aos/LINUX-AOS-STAGE-D-OWNERSHIP-DISCOVERY.md'
+      - '.github/workflows/aos-stage-d-owner-audit.yml'
+  pull_request:
+    paths:
+      - 'scripts/a14-aos-stage-d-owner-audit.sh'
+      - 'docs/aos/LINUX-AOS-STAGE-D-OWNERSHIP-DISCOVERY.md'
+      - '.github/workflows/aos-stage-d-owner-audit.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate read-only Stage D audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          script=scripts/a14-aos-stage-d-owner-audit.sh
+          test -s "$script"
+          bash -n "$script"
+
+          grep -Fq 'operation=read-only-discovery' "$script"
+          grep -Fq 'cpas_mmio_access=false' "$script"
+          grep -Fq 'scm_invocation=false' "$script"
+          grep -Fq 'ssc_contacted=false' "$script"
+          grep -Fq 'clock_state_change=false' "$script"
+          grep -Fq 'power_domain_state_change=false' "$script"
+          grep -Fq 'camera_stream_started=false' "$script"
+          grep -Fq '[ ! -e "$out" ] || fail' "$script"
+
+          python3 - "$script" <<'PY'
+          import re
+          import sys
+
+          text = open(sys.argv[1], encoding='utf-8').read()
+          forbidden = {
+              '/dev/mem': 'userspace physical-memory access',
+              'devmem ': 'devmem invocation',
+              'ioremap(': 'kernel MMIO mapping helper',
+              'readl(': 'kernel MMIO read helper',
+              'writel(': 'kernel MMIO write helper',
+              'qcom_scm_': 'Qualcomm SCM invocation',
+              'a14_f0_icp_owner_probe': 'Stage C writable probe path',
+              'camera.handshake': 'SSC camera-handshake activation',
+              'INIT 576': 'SSC INIT activation',
+              'modprobe ': 'module loading',
+              'insmod ': 'module loading',
+              'systemctl ': 'service-state mutation',
+              'fuser ': 'media-node manipulation path',
+              'cam -l': 'camera enumeration side effect',
+          }
+          for needle, why in forbidden.items():
+              if needle in text:
+                  raise SystemExit(f'Stage D audit contains prohibited {why}: {needle}')
+
+          mutation_patterns = [
+              r'>\s*/sys/',
+              r'\btee\s+[^\n]*/sys/',
+              r'\becho\s+[^\n]*>\s*/sys/',
+              r'\bprintf\s+[^\n]*>\s*/sys/',
+          ]
+          for pattern in mutation_patterns:
+              if re.search(pattern, text):
+                  raise SystemExit(f'Stage D audit contains possible sysfs mutation: {pattern}')
+          PY
+
+          test -s docs/aos/LINUX-AOS-STAGE-D-OWNERSHIP-DISCOVERY.md
+          grep -Fq 'Direct CPAS MMIO remains prohibited' \
+            docs/aos/LINUX-AOS-STAGE-D-OWNERSHIP-DISCOVERY.md
