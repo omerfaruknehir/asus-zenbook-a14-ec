@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-2.0-only
-# Recover/validate a Stage C attempt that returned from the hardware probe but
-# whose userspace post-processing failed. This script never writes the probe.
+# Recover/validate a Stage C attempt whose userspace post-processing failed.
+# This path is passive: no probe write, camera enumeration, media-service stop,
+# runtime-PM get/put, or clock/state-changing operation.
 set -Eeuo pipefail
 
 marker=${A14_AOS_F0_ICP_OWNER_MARKER:-"$HOME/Downloads/a14-aos-f0-icp-owner-last-run.txt"}
@@ -11,26 +12,18 @@ camss_status=
 camss_dev=
 cci0_dev=/sys/bus/platform/devices/ac15000.cci
 cci1_dev=/sys/bus/platform/devices/ac16000.cci
-media_stopped=false
-cam_tmp=
 journal_json=
 journal_meta=
 
 fail() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 cleanup() {
     set +e
-    [ -z "$cam_tmp" ] || rm -f "$cam_tmp"
     [ -z "$journal_json" ] || rm -f "$journal_json"
     [ -z "$journal_meta" ] || rm -f "$journal_meta"
-    if [ "$media_stopped" = true ]; then
-        systemctl --user start pipewire.socket pipewire-pulse.socket 2>/dev/null
-        systemctl --user start pipewire.service pipewire-pulse.service wireplumber.service 2>/dev/null
-    fi
 }
 trap cleanup EXIT INT TERM
 
-for tool in cam cat date fuser grep journalctl mktemp python3 readlink rm sleep sudo sync \
-            systemctl tee timeout; do
+for tool in cat date grep journalctl mktemp python3 readlink rm sleep sudo sync; do
     command -v "$tool" >/dev/null 2>&1 || fail "required command is missing: $tool"
 done
 [ "${EUID:-$(id -u)}" -ne 0 ] || fail "run this recovery as your normal user, not with sudo"
@@ -84,7 +77,7 @@ validate_status() {
     printf 'camss_status=%s\n' "$s"
 }
 
-wait_all_idle() {
+wait_all_idle_readonly() {
     label=$1
     attempt=0
     while [ "$attempt" -lt 20 ]; do
@@ -106,26 +99,15 @@ wait_all_idle() {
     fail "CAMSS and both CCI controllers did not all become runtime-suspended"
 }
 
-camera_list() {
-    label=$1
-    cam_tmp=$(mktemp)
-    set +e
-    sudo timeout 25 cam -l >"$cam_tmp" 2>&1
-    status=$?
-    set -e
-    cat "$cam_tmp"
-    [ "$status" -eq 0 ] || fail "$label camera enumeration failed with status $status"
-    grep -Eq '^[[:space:]]*[0-9]+:' "$cam_tmp" || \
-        fail "$label camera enumeration returned no accessible cameras"
-    rm -f "$cam_tmp"
-    cam_tmp=
-}
-
-printf '%s\n' 'A14 Stage C post-processing recovery'
-printf '%s\n' '===================================='
+printf '%s\n' 'A14 Stage C passive post-processing recovery'
+printf '%s\n' '============================================'
 printf 'boot_id=%s\n' "$boot_id"
 printf 'original_started=%s\n' "$started"
 printf '%s\n' 'hardware_probe_write=false'
+printf '%s\n' 'camera_enumeration=false'
+printf '%s\n' 'media_service_changes=false'
+printf '%s\n' 'runtime_pm_state_changes=false'
+printf '%s\n' 'clock_state_changes=false'
 printf '%s\n' 'direct_cpas_mmio=false'
 printf '%s\n' 'ssc_contacted=false'
 
@@ -219,28 +201,18 @@ grep -Fq 'AON-F0-ICP-OWNER-DIAG cci-put device=ac16000.cci ret=0' "$klog" || \
     fail "CCI1 owner did not restore/release exactly"
 grep -Eq 'AON-F0-ICP-OWNER-DIAG complete ret=0 camnoc-limited=[01]' "$klog" || \
     fail "Stage C cleanup did not complete successfully"
-if grep -Eq 'watchdog|panic|SError|Call trace|Internal error|Oops' "$klog"; then
+kernel_fault_regex='Kernel panic|panic - not syncing|Unable to handle kernel|Internal error:|SError Interrupt|Call trace:|Oops:|watchdog: BUG:|soft lockup|hard LOCKUP|rcu: INFO: rcu.*stall'
+if grep -Eiq "$kernel_fault_regex" "$klog"; then
     fail "kernel fault marker detected inside the marker-correlated Stage C attempt"
 fi
 printf '%s\n' 'kernel_result=validated-full-f0-hold-and-cleanup'
-printf '\n%s\n' '===== RELEVANT KERNEL LOG ====='
-grep -E 'AON-F0-ICP-OWNER-DIAG|watchdog|panic|SError|Call trace|Internal error|Oops' "$klog" || true
+printf '\n%s\n' '===== MARKER-CORRELATED KERNEL LOG ====='
+cat "$klog"
 
-printf '\n%s\n' '===== VERIFY POST-ATTEMPT OWNERS / CAMERA ====='
-sudo -v
-systemctl --user stop pipewire-pulse.socket pipewire.socket 2>/dev/null || true
-systemctl --user stop wireplumber.service pipewire-pulse.service pipewire.service 2>/dev/null || true
-media_stopped=true
-sleep 2
-users=$(sudo fuser /dev/video* /dev/media* /dev/v4l-subdev* 2>/dev/null || true)
-if [ -n "$users" ]; then
-    sudo fuser -v /dev/video* /dev/media* /dev/v4l-subdev* 2>&1 || true
-    fail "camera/media nodes remain busy during recovery verification"
-fi
-wait_all_idle post-recovery
+printf '\n%s\n' '===== READ-ONLY POST-ATTEMPT OWNER STATE ====='
+wait_all_idle_readonly post-recovery
 validate_status
-camera_list post-recovery
-printf '%s\n' 'camera_restore_status=0'
+printf '%s\n' 'post_camera_enumeration=not-attempted-passive-recovery'
 
 completed=$(date --iso-8601=ns)
 cat > "$marker" <<EOF_MARKER
@@ -256,33 +228,41 @@ shell_probe_write_status=not-persisted
 kernel_complete_ret=0
 cci_restore_exact=true
 icp_restore_exact=true
+post_owner_runtime_suspended=true
+post_camera_enumeration=not-attempted-passive-recovery
 direct_cpas_mmio=false
 ssc_contacted=false
 EOF_MARKER
 sync "$marker"; sync
 
 cat > "$report" <<EOF_REPORT
-A14 Stage C recovery result
-===========================
+A14 Stage C passive recovery result
+===================================
 boot_id=$boot_id
 started=$started
 completed=$completed
 hardware_probe_write_during_recovery=false
+camera_enumeration_during_recovery=false
+media_service_changes_during_recovery=false
+runtime_pm_state_changes_during_recovery=false
+clock_state_changes_during_recovery=false
 attempt_selection=marker-realtime-correlated
 kernel_result=validated-full-f0-hold-and-cleanup
-camera_restore_status=0
+post_owner_runtime_suspended=true
+post_camera_enumeration=not-attempted-passive-recovery
 cci_restore_exact=true
 icp_restore_exact=true
 direct_cpas_mmio=false
 ssc_contacted=false
-result=success-full-f0-icp-owner-hold-recovered
+result=success-full-f0-icp-owner-hold-recovered-passively
 kernel_log=$klog
 marker=$marker
 EOF_REPORT
 
 printf '\n%s\n' '===== RESULT ====='
-printf '%s\n' 'result=success-full-f0-icp-owner-hold-recovered'
+printf '%s\n' 'result=success-full-f0-icp-owner-hold-recovered-passively'
 printf '%s\n' 'hardware_probe_write_during_recovery=false'
+printf '%s\n' 'camera_enumeration_during_recovery=false'
 printf '%s\n' 'attempt_selection=marker-realtime-correlated'
 printf 'marker=%s\n' "$marker"
 printf 'report=%s\n' "$report"
