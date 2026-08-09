@@ -30,7 +30,7 @@ need_cmd() {
     }
 }
 
-for cmd in awk cat date find grep id mktemp od sed sort tr uname; do
+for cmd in awk cat date dirname find id mktemp od sed sort tee tr uname; do
     need_cmd "$cmd"
 done
 
@@ -176,7 +176,7 @@ if command -v dtc >/dev/null 2>&1 && [[ -d /sys/firmware/devicetree/base ]]; the
             log "named_gpio96_to_gpio106_references=none"
         fi
 
-        # Include camera reset GPIO properties verbatim from the decompiled tree.
+        # Include camera GPIO/pinctrl properties verbatim from the decompiled tree.
         awk '
             /camera@24[[:space:]]*\{/ { in_cam=1; depth=0; label="camera@24" }
             /camera@36[[:space:]]*\{/ { in_cam=1; depth=0; label="camera@36" }
@@ -208,7 +208,7 @@ for node in \
     for prop in reset-gpios enable-gpios pwdn-gpios powerdown-gpios; do
         if [[ -f "$node/$prop" ]]; then
             printf '%s=' "$prop" | tee -a "$OUT"
-            od -An -tx4 -v "$node/$prop" | tr -s ' ' | sed 's/^ //' | tee -a "$OUT"
+            od -An -tx1 -v "$node/$prop" | tr -s ' ' | sed 's/^ //' | tee -a "$OUT"
         fi
     done
 done
