@@ -60,7 +60,9 @@ jobs:
           grep -Fq 'This validates only the F0 resource prerequisite' "$runner"
           grep -Fq 'hardware_probe_write=false' "$recovery"
           grep -Fq 'status=started' "$recovery"
-          grep -Fq 'expected exactly one Stage C hardware attempt in this boot' "$recovery"
+          grep -Fq '__REALTIME_TIMESTAMP' "$recovery"
+          grep -Fq 'expected exactly one Stage C begin at/after the persistent marker' "$recovery"
+          grep -Fq 'attempt_selection=marker-realtime-correlated' "$recovery"
           grep -Fq 'kernel_result=validated-full-f0-hold-and-cleanup' "$recovery"
           grep -Fq 'result=success-full-f0-icp-owner-hold-recovered' "$recovery"
 
@@ -92,8 +94,14 @@ jobs:
               raise SystemExit('persistent status=started marker is not written before the hardware trigger')
           if trigger in recovery:
               raise SystemExit('recovery script contains the hardware probe trigger')
+          if 'a14_f0_icp_owner_probe' in recovery:
+              raise SystemExit('recovery script names the writable hardware probe path')
           if 'Stage C was already attempted in this boot' not in runner:
               raise SystemExit('runner lacks same-boot repeat protection')
+          if "entries[i][0] >= marker_us" not in recovery:
+              raise SystemExit('recovery does not correlate kernel begin time to the persistent marker')
+          if 'next_begin_i' not in recovery or 'complete_i' not in recovery:
+              raise SystemExit('recovery does not bound the selected attempt before another begin')
           PY
 
       - name: Apply ownership series and inject diagnostic on Linux master
