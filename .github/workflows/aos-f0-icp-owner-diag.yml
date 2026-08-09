@@ -31,12 +31,16 @@ jobs:
           injector=scripts/a14-aos-f0-icp-owner-diag-inject.py
           builder=scripts/a14-aos-f0-icp-owner-diag-build.sh
           installer=scripts/a14-aos-f0-icp-owner-diag-install-test.sh
+          verifier=scripts/a14-aos-f0-icp-owner-diag-verify-install.sh
           runner=scripts/a14-aos-f0-icp-owner-diag-run.sh
+          recovery=scripts/a14-aos-f0-icp-owner-diag-recover.sh
 
           python3 -m py_compile "$injector"
           bash -n "$builder"
           bash -n "$installer"
+          bash -n "$verifier"
           bash -n "$runner"
+          bash -n "$recovery"
 
           grep -Fq 'operation=build-and-stage-only' "$builder"
           grep -Fq 'icp_activation_during_build=false' "$builder"
@@ -46,32 +50,50 @@ jobs:
           grep -Fq '/__symbols__ camcc' "$installer"
           grep -Fq '/__symbols__ gcc' "$installer"
           grep -Fq 'a14_aos_f0_icp_owner_test=1' "$installer"
+          grep -Fq 'installed_initramfs=no-ssc-camss-cci-validated' "$verifier"
           grep -Fq 'a14_aos_f0_icp_owner_test=1' "$runner"
           grep -Fq 'status=started' "$runner"
+          grep -Fq 'Stage C was already attempted in this boot' "$runner"
+          grep -Fq 'expected exactly one Stage C hardware attempt in this boot' "$runner"
           grep -Fq 'AON-F0-ICP-OWNER-DIAG targets-ok hold-ms=250' "$runner"
           grep -Fq 'AON-F0-ICP-OWNER-DIAG icp-restore-ok' "$runner"
           grep -Fq 'This validates only the F0 resource prerequisite' "$runner"
+          grep -Fq 'hardware_probe_write=false' "$recovery"
+          grep -Fq 'status=started' "$recovery"
+          grep -Fq 'expected exactly one Stage C hardware attempt in this boot' "$recovery"
+          grep -Fq 'kernel_result=validated-full-f0-hold-and-cleanup' "$recovery"
+          grep -Fq 'result=success-full-f0-icp-owner-hold-recovered' "$recovery"
 
+          if grep -Fq -- '--since "$started"' "$runner" "$recovery"; then
+            echo 'Stage C journal collection must not parse locale-sensitive wall-clock timestamps' >&2
+            exit 1
+          fi
           if grep -Eq 'qcom_ssc_hpd\.ko|force_load qcom_ssc_hpd' "$builder" "$installer"; then
             echo 'Stage C must not stage or force-load SSC' >&2
             exit 1
           fi
           # The builder intentionally contains readl/writel/ioremap strings in
-          # the source-level rejection check below. Userspace scripts themselves
-          # must not expose a direct-access mechanism.
+          # its source-level rejection check. Userspace scripts themselves must
+          # not expose a direct-access mechanism.
           if grep -Eq '/dev/mem|confirm-aon-switch|confirm-mmio-write' \
-              "$builder" "$installer" "$runner"; then
+              "$builder" "$installer" "$verifier" "$runner" "$recovery"; then
             echo 'Stage C userspace path contains prohibited direct-access machinery' >&2
             exit 1
           fi
 
-          python3 - "$runner" <<'PY'
+          python3 - "$runner" "$recovery" <<'PY'
           import sys
-          text = open(sys.argv[1], encoding='utf-8').read()
-          marker = text.index('status=started')
-          trigger = text.index("printf \"1\\n\" > \"$1\"")
-          if marker >= trigger:
+          runner = open(sys.argv[1], encoding='utf-8').read()
+          recovery = open(sys.argv[2], encoding='utf-8').read()
+          trigger = 'printf "1\\n" > "$1"'
+          marker = runner.index('status=started')
+          trigger_at = runner.index(trigger)
+          if marker >= trigger_at:
               raise SystemExit('persistent status=started marker is not written before the hardware trigger')
+          if trigger in recovery:
+              raise SystemExit('recovery script contains the hardware probe trigger')
+          if 'Stage C was already attempted in this boot' not in runner:
+              raise SystemExit('runner lacks same-boot repeat protection')
           PY
 
       - name: Apply ownership series and inject diagnostic on Linux master
@@ -111,11 +133,11 @@ jobs:
           helper=$(sed -n \
             '/static int a14_camss_f0_icp_owner_probe/,/static DEVICE_ATTR_WO(a14_f0_icp_owner_probe)/p' \
             "$camss")
-          if printf '%s\n' "$helper" | grep -Eq '\<(readl|writel|ioread|iowrite|ioremap)\>'; then
+          if grep -Eq '\<(readl|writel|ioread|iowrite|ioremap)\>' <<< "$helper"; then
             echo 'Injected Stage C helper contains direct MMIO' >&2
             exit 1
           fi
-          if printf '%s\n' "$helper" | grep -Eq 'qcom_camss_aon_acquire|qcom_ssc_hpd|camera.handshake|INIT 576'; then
+          if grep -Eq 'qcom_camss_aon_acquire|qcom_ssc_hpd|camera.handshake|INIT 576' <<< "$helper"; then
             echo 'Injected Stage C helper enters an AON/SSC path' >&2
             exit 1
           fi
