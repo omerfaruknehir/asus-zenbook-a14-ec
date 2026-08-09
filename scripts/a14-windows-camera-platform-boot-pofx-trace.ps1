@@ -79,6 +79,19 @@ $stateFile = Join-Path $stateRoot 'ARMED.txt'
 
 if ($Mode -eq 'Arm') {
     New-Item -ItemType Directory -Force -Path $stateRoot | Out-Null
+
+    # Never overwrite provenance for an A14 trace that this helper already
+    # armed successfully. If this marker exists, the caller must either collect
+    # that trace after reboot or explicitly cancel it first.
+    if (Test-Path -LiteralPath $stateFile -PathType Leaf) {
+        Write-Host 'An existing A14 boot-trace marker is present:' -ForegroundColor Yellow
+        Write-Host "  $stateFile"
+        Write-Host 'Refusing to overwrite it.' -ForegroundColor Yellow
+        Write-Host 'If Windows has already rebooted since it was armed, run Collect.'
+        Write-Host 'If you intentionally want to discard it, run Cancel first.'
+        throw 'A14 boot trace is already marked as armed.'
+    }
+
     $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
     $armLog = Join-Path $stateRoot "wpr-addboot-$stamp.txt"
     $bootHelpLog = Join-Path $stateRoot "wpr-help-boottrace-$stamp.txt"
@@ -106,31 +119,44 @@ if ($Mode -eq 'Arm') {
     @(& wpr.exe -status 2>&1) |
         Out-File -LiteralPath $statusLog -Encoding utf8 -Width 8192
 
+    try {
+        Invoke-Wpr -Arguments @('-boottrace','-addboot','Power','-filemode') -LogPath $armLog | Out-Null
+    }
+    catch {
+        $message = [string]$_.Exception.Message
+        Write-Host ''
+        Write-Host 'Boot trace was NOT armed by this invocation. Do not reboot for this capture yet.' -ForegroundColor Yellow
+        Write-Host "Preflight boottrace help: $bootHelpLog"
+        Write-Host "Preflight profile list:   $profilesLog"
+        Write-Host "Preflight WPR status:     $statusLog"
+
+        if ($message -match '0xC558300E|Boottrace is already scheduled|boot recording is already enabled') {
+            Write-Host ''
+            Write-Host 'WPR already has a boot trace scheduled.' -ForegroundColor Yellow
+            Write-Host 'This helper will not cancel an existing boot trace automatically because it may belong to another diagnostic session.'
+            Write-Host 'If that scheduled trace is stale and you intentionally want to discard it, run:'
+            Write-Host '  .\scripts\a14-windows-camera-platform-boot-pofx-trace.ps1 Cancel'
+            Write-Host 'Then run Arm again.'
+        }
+        throw
+    }
+
+    # Only create provenance after WPR confirms that addboot succeeded. This is
+    # deliberately after Invoke-Wpr: a failed/rejected Arm must never create or
+    # delete an ARMED marker for some pre-existing boot trace.
     @(
         "armed_at=$((Get-Date).ToString('o'))"
         "computer_name=$env:COMPUTERNAME"
         'profile=Power'
         'logging_mode=filemode'
         'boot_autologger=true'
+        "wpr_addboot_log=$armLog"
         'collector_sends_platform_ioctl=false'
         'devices_restarted_by_collector=false'
         'pnp_state_changed_by_collector=false'
         'camera_register_access=false'
         'direct_cpas_mmio=false'
     ) | Out-File -LiteralPath $stateFile -Encoding utf8 -Width 8192
-
-    try {
-        Invoke-Wpr -Arguments @('-boottrace','-addboot','Power','-filemode') -LogPath $armLog | Out-Null
-    }
-    catch {
-        Remove-Item -LiteralPath $stateFile -Force -ErrorAction SilentlyContinue
-        Write-Host ''
-        Write-Host 'Boot trace was NOT armed. Do not reboot for this capture yet.' -ForegroundColor Yellow
-        Write-Host "Preflight boottrace help: $bootHelpLog"
-        Write-Host "Preflight profile list:   $profilesLog"
-        Write-Host "Preflight WPR status:     $statusLog"
-        throw
-    }
 
     Write-Host 'Boot trace armed successfully.' -ForegroundColor Green
     Write-Host 'Reboot Windows now.'
@@ -147,6 +173,7 @@ if ($Mode -eq 'Cancel') {
     Invoke-Wpr -Arguments @('-boottrace','-cancelboot') -LogPath $cancelLog | Out-Null
     Remove-Item -LiteralPath $stateFile -Force -ErrorAction SilentlyContinue
     Write-Host 'Boot trace configuration cancelled.'
+    Write-Host "WPR log: $cancelLog"
     exit 0
 }
 
