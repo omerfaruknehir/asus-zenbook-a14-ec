@@ -24,19 +24,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Validate read-only Stage D audits
+      - name: Validate Stage D discovery safety boundaries
         shell: bash
         run: |
           set -euo pipefail
           owner=scripts/a14-aos-stage-d-owner-audit.sh
           gpio_audit=scripts/a14-aos-stage-d-gpio-audit.sh
           gpio_map=scripts/a14-aos-stage-d-gpio-map.py
+          runtime_pinctrl=scripts/a14-aos-stage-d-pinctrl-runtime-audit.sh
 
-          test -s "$owner"
-          test -s "$gpio_audit"
-          test -s "$gpio_map"
+          for f in "$owner" "$gpio_audit" "$gpio_map" "$runtime_pinctrl"; do
+            test -s "$f"
+          done
           bash -n "$owner"
           bash -n "$gpio_audit"
+          bash -n "$runtime_pinctrl"
           python3 -m py_compile "$gpio_map"
 
           grep -Fq 'operation=read-only-discovery' "$owner"
@@ -58,17 +60,31 @@ jobs:
           grep -Fq 'gpio_write=false' "$gpio_map"
           grep -Fq 'direct_cpas_mmio=false' "$gpio_map"
           grep -Fq 'ssc_contacted=false' "$gpio_map"
-          grep -Fq '96: "cam_mclk"' "$gpio_map"
+          grep -Fq '99: "gpio"' "$gpio_map"
           grep -Fq '100: "cam_aon"' "$gpio_map"
           grep -Fq '101: "cci_i2c"' "$gpio_map"
+          grep -Fq 'pinctrl_consumers' "$gpio_map"
 
-          python3 - "$owner" "$gpio_audit" "$gpio_map" <<'PY'
+          grep -Fq 'operation=read-only-runtime-pinctrl-audit' "$runtime_pinctrl"
+          grep -Fq 'hardware_write=false' "$runtime_pinctrl"
+          grep -Fq 'gpio_write=false' "$runtime_pinctrl"
+          grep -Fq 'pinctrl_write=false' "$runtime_pinctrl"
+          grep -Fq 'camera_state_change=false' "$runtime_pinctrl"
+          grep -Fq 'clock_state_change=false' "$runtime_pinctrl"
+          grep -Fq 'power_domain_state_change=false' "$runtime_pinctrl"
+          grep -Fq 'direct_cpas_mmio=false' "$runtime_pinctrl"
+          grep -Fq 'ssc_contacted=false' "$runtime_pinctrl"
+          grep -Fq 'mount -t debugfs debugfs "$DBG_ROOT"' "$runtime_pinctrl"
+          grep -Fq 'sudo umount "$DBG_ROOT"' "$runtime_pinctrl"
+
+          python3 - "$owner" "$gpio_audit" "$gpio_map" "$runtime_pinctrl" <<'PY'
           import re
           import sys
 
-          owner, gpio_audit, gpio_map = [open(p, encoding='utf-8').read() for p in sys.argv[1:]]
+          owner, gpio_audit, gpio_map, runtime_pinctrl = [
+              open(p, encoding='utf-8').read() for p in sys.argv[1:]
+          ]
 
-          # The original owner audit keeps the strongest literal quarantine.
           forbidden_owner = {
               '/dev/mem': 'userspace physical-memory access',
               'devmem ': 'devmem invocation',
@@ -90,40 +106,48 @@ jobs:
               if needle in owner:
                   raise SystemExit(f'Stage D owner audit contains prohibited {why}: {needle}')
 
-          # Shell comments may document the safety boundary, so scan executable
-          # lines of the GPIO audit rather than rejecting documentation strings.
-          gpio_shell_code = '\n'.join(
-              line for line in gpio_audit.splitlines()
-              if not line.lstrip().startswith('#')
-          )
-          forbidden_gpio_shell = (
+          def executable_shell(text):
+              return '\n'.join(
+                  line for line in text.splitlines()
+                  if not line.lstrip().startswith('#')
+              )
+
+          forbidden_shell = (
               '/dev/mem', 'devmem ', 'modprobe ', 'insmod ', 'systemctl ',
-              'fuser ', 'cam -l', 'a14_f0_icp_owner_probe',
+              'fuser ', 'cam -l', 'a14_f0_icp_owner_probe', 'camera.handshake',
           )
-          for needle in forbidden_gpio_shell:
-              if needle in gpio_shell_code:
-                  raise SystemExit(f'Stage D GPIO audit executable path contains prohibited token: {needle}')
+          for text, label in (
+              (executable_shell(gpio_audit), 'gpio-audit'),
+              (executable_shell(runtime_pinctrl), 'runtime-pinctrl'),
+          ):
+              for needle in forbidden_shell:
+                  if needle in text:
+                      raise SystemExit(f'Stage D {label} executable path contains prohibited token: {needle}')
+              for pattern in (
+                  r'>\s*/sys/',
+                  r'\btee\s+[^\n]*/sys/',
+                  r'\becho\s+[^\n]*>\s*/sys/',
+                  r'\bprintf\s+[^\n]*>\s*/sys/',
+              ):
+                  if re.search(pattern, text):
+                      raise SystemExit(f'Stage D {label} contains possible sysfs mutation: {pattern}')
+
+          # Runtime audit may mount only debugfs and must always carry an unmount path.
+          runtime_code = executable_shell(runtime_pinctrl)
+          mount_lines = [line.strip() for line in runtime_code.splitlines() if re.search(r'\bmount\b', line)]
+          real_mounts = [line for line in mount_lines if 'umount' not in line and 'temporary_debugfs_mount=' not in line]
+          if real_mounts != ['sudo mount -t debugfs debugfs "$DBG_ROOT"']:
+              raise SystemExit(f'unexpected runtime-pinctrl mount path: {real_mounts}')
+          if 'sudo umount "$DBG_ROOT"' not in runtime_code:
+              raise SystemExit('runtime-pinctrl audit lacks cleanup unmount')
 
           forbidden_gpio_map = (
               '/dev/mem', 'devmem ', 'modprobe ', 'insmod ', 'systemctl ',
-              'fuser ', 'cam -l', 'a14_f0_icp_owner_probe',
+              'fuser ', 'cam -l', 'a14_f0_icp_owner_probe', 'camera.handshake',
           )
           for needle in forbidden_gpio_map:
               if needle in gpio_map:
                   raise SystemExit(f'Stage D GPIO mapper contains prohibited token: {needle}')
-
-          mutation_patterns = [
-              r'>\s*/sys/',
-              r'\btee\s+[^\n]*/sys/',
-              r'\becho\s+[^\n]*>\s*/sys/',
-              r'\bprintf\s+[^\n]*>\s*/sys/',
-          ]
-          for text, label in ((owner, 'owner'), (gpio_shell_code, 'gpio-audit')):
-              for pattern in mutation_patterns:
-                  if re.search(pattern, text):
-                      raise SystemExit(f'Stage D {label} contains possible sysfs mutation: {pattern}')
-
-          # The Python mapper may execute only dtc. No privileged helper is needed.
           if 'subprocess.run(' not in gpio_map or '["dtc", "-I", "fs", "-O", "dts"' not in gpio_map:
               raise SystemExit('Stage D GPIO mapper does not have the expected dtc-only subprocess path')
           if re.search(r'\bsudo\b', gpio_map):
