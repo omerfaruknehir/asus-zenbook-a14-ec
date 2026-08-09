@@ -14,11 +14,13 @@ cci0_dev=/sys/bus/platform/devices/ac15000.cci
 cci1_dev=/sys/bus/platform/devices/ac16000.cci
 media_stopped=false
 cam_tmp=
+all_klog=
 
 fail() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 cleanup() {
     set +e
     [ -z "$cam_tmp" ] || rm -f "$cam_tmp"
+    [ -z "$all_klog" ] || rm -f "$all_klog"
     if [ "$media_stopped" = true ]; then
         systemctl --user start pipewire.socket pipewire-pulse.socket 2>/dev/null
         systemctl --user start pipewire.service pipewire-pulse.service wireplumber.service 2>/dev/null
@@ -26,7 +28,7 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-for tool in cam cat date fuser grep journalctl mktemp readlink rm sleep sudo sync \
+for tool in awk cam cat date fuser grep journalctl mktemp readlink rm sleep sudo sync \
             systemctl tee timeout uname; do
     command -v "$tool" >/dev/null 2>&1 || fail "required command is missing: $tool"
 done
@@ -122,6 +124,13 @@ printf '%s\n' 'direct_cpas_mmio=false'
 printf '%s\n' 'ssc_contacted=false'
 validate_status
 
+boot_id=$(cat /proc/sys/kernel/random/boot_id)
+if [ -s "$marker" ] && \
+   grep -Fqx 'operation=platform-power-f0-icp-real-owners-no-mmio-v1' "$marker" && \
+   grep -Fqx "boot_id=$boot_id" "$marker"; then
+    fail "Stage C was already attempted in this boot; use a14-aos-f0-icp-owner-diag-recover.sh and do not repeat the hardware write"
+fi
+
 sudo -v
 systemctl --user stop pipewire-pulse.socket pipewire.socket 2>/dev/null || true
 systemctl --user stop wireplumber.service pipewire-pulse.service pipewire.service 2>/dev/null || true
@@ -143,7 +152,6 @@ printf '\n%s\n' '===== WAIT FOR OWNERS TO IDLE ====='
 wait_all_idle pre
 validate_status
 
-boot_id=$(cat /proc/sys/kernel/random/boot_id)
 started=$(date --iso-8601=ns)
 cat > "$marker" <<EOF_MARKER
 operation=platform-power-f0-icp-real-owners-no-mmio-v1
@@ -176,7 +184,19 @@ set -e
 completed=$(date --iso-8601=ns)
 printf 'probe_write_status=%s\n' "$probe_rc"
 
-sudo journalctl -k -b --since "$started" --no-pager -o short-monotonic > "$klog"
+# Do not feed a locale-sensitive wall-clock timestamp back into journalctl.
+# This boot is single-attempt by construction, so snapshot the current boot and
+# isolate the log from the unique hardware-attempt begin marker onward.
+all_klog=$(mktemp)
+sudo journalctl -k -b --no-pager -o short-monotonic > "$all_klog"
+begin_count=$(grep -Fc 'AON-F0-ICP-OWNER-DIAG begin direct-mmio=false ssc=false' "$all_klog" || true)
+[ "$begin_count" -eq 1 ] || fail "expected exactly one Stage C hardware attempt in this boot, found $begin_count"
+awk 'found || /AON-F0-ICP-OWNER-DIAG begin direct-mmio=false ssc=false/ { found=1; print }' \
+    "$all_klog" > "$klog"
+rm -f "$all_klog"
+all_klog=
+[ -s "$klog" ] || fail "could not isolate the Stage C kernel log"
+
 printf '\n%s\n' '===== RELEVANT KERNEL LOG ====='
 grep -E 'AON-F0-ICP-OWNER-DIAG|A14 isolated F0 ICP owner diagnostic|qcom-camss|i2c-qcom-cci|watchdog|panic|SError|Call trace|Internal error|Oops' "$klog" || true
 
