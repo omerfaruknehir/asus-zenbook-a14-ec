@@ -5,19 +5,22 @@
 # contact SSC, or invoke Qualcomm SCM services.
 set -Eeuo pipefail
 
-out=${A14_AOS_STAGE_D_AUDIT_DIR:-"$HOME/Downloads/a14-aos-stage-d-owner-audit"}
+stamp=$(date +%Y%m%d-%H%M%S)
+out=${A14_AOS_STAGE_D_AUDIT_DIR:-"$HOME/Downloads/a14-aos-stage-d-owner-audit-$stamp"}
 camss_dev=
 camss_of=/sys/firmware/devicetree/base/soc@0/isp@acb7000
 
 fail() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 note() { printf '%s\n' "$*"; }
 
-for tool in awk cat cp date find grep head mkdir mktemp python3 readlink sed strings sudo tail tr uname; do
+for tool in basename cat cp date dmesg find grep head id mkdir python3 readlink sed strings sudo tail tee tr uname; do
     command -v "$tool" >/dev/null 2>&1 || fail "required command is missing: $tool"
 done
 [ "${EUID:-$(id -u)}" -ne 0 ] || fail "run this audit as your normal user, not with sudo"
-
-rm -rf "$out"
+case "$out" in
+    ''|/|"$HOME"|"$HOME/Downloads") fail "unsafe output directory: $out" ;;
+esac
+[ ! -e "$out" ] || fail "output directory already exists: $out"
 mkdir -p "$out/acpi" "$out/debugfs" "$out/sysfs"
 
 exec > >(tee "$out/summary.txt") 2>&1
@@ -214,7 +217,6 @@ if [ -d "$acpi_tables" ]; then
             [ -s "$aml" ] || continue
             base=$(basename "$aml" .aml)
             (cd "$out/acpi/dsl" && iasl -d "../$(basename "$aml")" >/dev/null 2>&1) || true
-            # ACPICA names the output after the AML input; normalize when present.
             [ -e "$out/acpi/dsl/$base.dsl" ] || true
         done
         grep -RniE 'CAMP|AONC|QCOM0C32|QCOM0D06|QCOM0C17|CPAS|CAM_AON|OperationRegion|_DEP|_PR0|_PR3|_PS0|_PS3|_DSM' \
