@@ -4,10 +4,12 @@ on:
   push:
     paths:
       - 'scripts/a14-windows-camera-platform-boot-pofx-trace.ps1'
+      - 'scripts/a14-windows-qcom0c17-pep-export.ps1'
       - '.github/workflows/windows-camera-boot-pofx-trace.yml'
   pull_request:
     paths:
       - 'scripts/a14-windows-camera-platform-boot-pofx-trace.ps1'
+      - 'scripts/a14-windows-qcom0c17-pep-export.ps1'
       - '.github/workflows/windows-camera-boot-pofx-trace.yml'
   workflow_dispatch:
 
@@ -20,23 +22,27 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Parse PowerShell 5.1 script
+      - name: Parse PowerShell 5.1 scripts
         shell: powershell
         run: |
-          $path = 'scripts/a14-windows-camera-platform-boot-pofx-trace.ps1'
-          $tokens = $null
-          $errors = $null
-          [void][System.Management.Automation.Language.Parser]::ParseFile(
-              (Resolve-Path $path),
-              [ref]$tokens,
-              [ref]$errors
-          )
-          if ($errors.Count -ne 0) {
-              $errors | Format-List *
-              throw "PowerShell parser reported $($errors.Count) error(s)."
+          foreach ($path in @(
+              'scripts/a14-windows-camera-platform-boot-pofx-trace.ps1',
+              'scripts/a14-windows-qcom0c17-pep-export.ps1'
+          )) {
+              $tokens = $null
+              $errors = $null
+              [void][System.Management.Automation.Language.Parser]::ParseFile(
+                  (Resolve-Path $path),
+                  [ref]$tokens,
+                  [ref]$errors
+              )
+              if ($errors.Count -ne 0) {
+                  $errors | Format-List *
+                  throw "$path: PowerShell parser reported $($errors.Count) error(s)."
+              }
           }
 
-      - name: Enforce supported boot-trace safety boundary
+      - name: Enforce boot-trace safety boundary
         shell: powershell
         run: |
           $path = 'scripts/a14-windows-camera-platform-boot-pofx-trace.ps1'
@@ -55,7 +61,8 @@ jobs:
               'qcAlwaysOnSensing.dll',
               'QCOM0C32',
               'QCOM0D06',
-              'QCOM06D9'
+              'QCOM06D9',
+              'QCOM0C17'
           )) {
               if (-not $script.Contains($required)) {
                   throw "Missing required boot-trace invariant: $required"
@@ -64,6 +71,41 @@ jobs:
 
           if ($script -match 'DeviceIoControl|CreateFileW|WriteFile|Set-PnpDevice|Disable-PnpDevice|Enable-PnpDevice|devcon(?:\.exe)?|MmMapIoSpace|\\dev\\mem|0x0ac191e0|ioremap|readl|writel|HumanPresenceSensor\]::GetDefault|GetCurrentReading\(') {
               throw 'Boot trace helper contains a prohibited direct hardware/PnP/sensor-control path.'
+          }
+
+      - name: Enforce QCOM0C17 static-export safety boundary
+        shell: powershell
+        run: |
+          $path = 'scripts/a14-windows-qcom0c17-pep-export.ps1'
+          $script = Get-Content $path -Raw
+
+          foreach ($required in @(
+              "'target=ACPI\VEN_QCOM&DEV_0C17*'",
+              "'operation=static-read-only-driver-export'",
+              "'pnp_state_changed=false'",
+              "'device_restarted=false'",
+              "'power_state_changed=false'",
+              "'camera_state_changed=false'",
+              "'platform_ioctl_sent=false'",
+              "'hardware_register_access=false'",
+              "'direct_cpas_mmio=false'",
+              "'ssc_contacted=false'",
+              'DEVPKEY_Device_DriverInfPath',
+              'pnputil.exe /export-driver',
+              'Get-AuthenticodeSignature',
+              'Get-FileHash'
+          )) {
+              if (-not $script.Contains($required)) {
+                  throw "Missing QCOM0C17 exporter invariant: $required"
+              }
+          }
+
+          if ($script -match 'DeviceIoControl|CreateFileW|WriteFile|Set-PnpDevice|Disable-PnpDevice|Enable-PnpDevice|Restart-PnpDevice|devcon(?:\.exe)?|MmMapIoSpace|\\dev\\mem|0x0ac191e0|ioremap|readl|writel|PoFxActivateComponent|PoFxIdleComponent|GetCurrentReading\(') {
+              throw 'QCOM0C17 exporter contains a prohibited hardware/PnP/power-control path.'
+          }
+
+          if ($script -match 'pnputil\.exe\s+/(add-driver|delete-driver|disable-device|enable-device|restart-device|remove-device)') {
+              throw 'QCOM0C17 exporter contains a mutating pnputil operation.'
           }
 
       - name: Check repository whitespace
