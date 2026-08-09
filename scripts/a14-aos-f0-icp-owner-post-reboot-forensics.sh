@@ -23,7 +23,17 @@ marker_boot_id=$(sed -n 's/^boot_id=//p' "$marker" | head -n 1)
 marker_status=$(sed -n 's/^status=//p' "$marker" | head -n 1)
 marker_started=$(sed -n 's/^started=//p' "$marker" | head -n 1)
 [ -n "$marker_boot_id" ] || fail "marker has no boot_id"
+marker_boot_id_compact=${marker_boot_id//-/}
+case "$marker_boot_id_compact" in
+    ''|*[!0-9a-fA-F]*) fail "marker boot_id is not hexadecimal: $marker_boot_id" ;;
+esac
+[ "${#marker_boot_id_compact}" -eq 32 ] || \
+    fail "marker boot_id does not normalize to 32 hex digits: $marker_boot_id"
+marker_boot_id_compact=${marker_boot_id_compact,,}
+
 current_boot_id=$(cat /proc/sys/kernel/random/boot_id)
+current_boot_id_compact=${current_boot_id//-/}
+current_boot_id_compact=${current_boot_id_compact,,}
 
 printf '%s\n' 'A14 Stage C post-reboot forensics'
 printf '%s\n' '================================='
@@ -32,26 +42,33 @@ printf '%s\n' 'hardware_probe_write=false'
 printf '%s\n' 'camera_state_change=false'
 printf '%s\n' 'clock_state_change=false'
 printf 'marker_boot_id=%s\n' "$marker_boot_id"
+printf 'marker_boot_id_journal=%s\n' "$marker_boot_id_compact"
 printf 'current_boot_id=%s\n' "$current_boot_id"
 printf 'marker_status=%s\n' "${marker_status:-missing}"
 printf 'marker_started=%s\n' "${marker_started:-missing}"
-if [ "$marker_boot_id" = "$current_boot_id" ]; then
+if [ "$marker_boot_id_compact" = "$current_boot_id_compact" ]; then
     fail "marker belongs to current boot; this collector is only for a completed/rebooted boot"
 fi
 
 printf '\n%s\n' '===== AVAILABLE BOOTS ====='
-sudo journalctl --list-boots --no-pager || true
+boots=$(sudo journalctl --list-boots --no-pager)
+printf '%s\n' "$boots"
+if ! grep -Eq "(^|[[:space:]])${marker_boot_id_compact}([[:space:]]|$)" <<< "$boots"; then
+    fail "marker boot $marker_boot_id_compact is not present in journalctl --list-boots"
+fi
+printf 'marker_boot_listing=validated:%s\n' "$marker_boot_id_compact"
 
 printf '\n%s\n' '===== READ MARKER BOOT ====='
-# Use the exact boot ID recorded before the Stage C write rather than assuming -1.
+# /proc/sys/kernel/random/boot_id uses UUID punctuation; journalctl --list-boots
+# exposes the selector as 32 hex digits. Use the validated compact form.
 set +e
-sudo journalctl -k -b "$marker_boot_id" --no-pager -o short-monotonic > "$prev_klog"
+sudo journalctl -k -b "$marker_boot_id_compact" --no-pager -o short-monotonic > "$prev_klog"
 krc=$?
-sudo journalctl -b "$marker_boot_id" --no-pager -o short-monotonic > "$prev_journal"
+sudo journalctl -b "$marker_boot_id_compact" --no-pager -o short-monotonic > "$prev_journal"
 jrc=$?
 set -e
-[ "$krc" -eq 0 ] || fail "kernel journal for marker boot $marker_boot_id is unavailable"
-[ "$jrc" -eq 0 ] || fail "full journal for marker boot $marker_boot_id is unavailable"
+[ "$krc" -eq 0 ] || fail "kernel journal for marker boot $marker_boot_id_compact is unavailable"
+[ "$jrc" -eq 0 ] || fail "full journal for marker boot $marker_boot_id_compact is unavailable"
 [ -s "$prev_klog" ] || fail "marker-boot kernel journal is empty"
 [ -s "$prev_journal" ] || fail "marker-boot full journal is empty"
 printf '%s\n' 'marker_boot_journal=available'
@@ -110,6 +127,7 @@ fi
 {
     printf '%s\n' 'A14 Stage C post-reboot forensic summary'
     printf 'marker_boot_id=%s\n' "$marker_boot_id"
+    printf 'marker_boot_id_journal=%s\n' "$marker_boot_id_compact"
     printf 'current_boot_id=%s\n' "$current_boot_id"
     printf 'marker_status=%s\n' "${marker_status:-missing}"
     printf 'marker_started=%s\n' "${marker_started:-missing}"
