@@ -82,11 +82,12 @@ if ($sessionGuid -eq [Guid]::Empty) {
     throw 'Refusing snapshot: qcpep-rpmh autologger session Guid could not be resolved.'
 }
 
-$sessionBefore = @(Get-EtwTraceSession -Name $sessionName -ErrorAction Stop)
-if ($sessionBefore.Count -ne 1) {
-    throw "Expected exactly one running ETW session named $sessionName; found $($sessionBefore.Count)."
+$sessionBeforeObjects = @(Get-EtwTraceSession -Name $sessionName -ErrorAction Stop)
+$sessionBeforeCount = @($sessionBeforeObjects).Count
+if ($sessionBeforeCount -ne 1) {
+    throw "Expected exactly one running ETW session named $sessionName; found $sessionBeforeCount."
 }
-$sessionBefore = $sessionBefore[0]
+$sessionBefore = $sessionBeforeObjects[0]
 
 $liveMode = Get-UInt32Property -Object $sessionBefore -Name 'LogFileMode'
 if ($null -ne $liveMode -and (($liveMode -band $bufferingModeBit) -eq 0)) {
@@ -363,11 +364,12 @@ if ($etlItem.Length -le 0) {
     throw "qcpep-rpmh snapshot ETL is empty: $etl"
 }
 
-$sessionAfter = @(Get-EtwTraceSession -Name $sessionName -ErrorAction Stop)
-if ($sessionAfter.Count -ne 1) {
-    throw "qcpep-rpmh session is not still running after FLUSH; found $($sessionAfter.Count)."
+$sessionAfterObjects = @(Get-EtwTraceSession -Name $sessionName -ErrorAction Stop)
+$sessionAfterCount = @($sessionAfterObjects).Count
+if ($sessionAfterCount -ne 1) {
+    throw "qcpep-rpmh session is not still running after FLUSH; found $sessionAfterCount."
 }
-$sessionAfter = $sessionAfter[0]
+$sessionAfter = $sessionAfterObjects[0]
 Save-ObjectText -InputObject $sessionAfter -Path (Join-Path $output 'session-after.txt')
 
 $afterMode = Get-UInt32Property -Object $sessionAfter -Name 'LogFileMode'
@@ -389,7 +391,7 @@ if ($null -ne $liveMode -and $null -ne $afterMode -and $liveMode -ne $afterMode)
     "native_buffers_written_before=$($nativeResult.BuffersWrittenBefore)"
     "native_buffers_written_after=$($nativeResult.BuffersWrittenAfter)"
     'session_still_running=true'
-    "session_count_after=$($sessionAfter.Count)"
+    "session_count_after=$sessionAfterCount"
     "live_log_file_mode_after=$(if ($null -eq $afterMode) { 'not-exposed' } else { '0x{0:X}' -f $afterMode })"
     'etw_control_update=false'
     'etw_control_stop=false'
