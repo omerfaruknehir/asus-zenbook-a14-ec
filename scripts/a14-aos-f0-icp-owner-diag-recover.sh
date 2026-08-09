@@ -13,13 +13,15 @@ cci0_dev=/sys/bus/platform/devices/ac15000.cci
 cci1_dev=/sys/bus/platform/devices/ac16000.cci
 media_stopped=false
 cam_tmp=
-all_klog=
+journal_json=
+journal_meta=
 
 fail() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 cleanup() {
     set +e
     [ -z "$cam_tmp" ] || rm -f "$cam_tmp"
-    [ -z "$all_klog" ] || rm -f "$all_klog"
+    [ -z "$journal_json" ] || rm -f "$journal_json"
+    [ -z "$journal_meta" ] || rm -f "$journal_meta"
     if [ "$media_stopped" = true ]; then
         systemctl --user start pipewire.socket pipewire-pulse.socket 2>/dev/null
         systemctl --user start pipewire.service pipewire-pulse.service wireplumber.service 2>/dev/null
@@ -27,7 +29,7 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-for tool in awk cam cat date fuser grep journalctl mktemp readlink rm sleep sudo sync \
+for tool in cam cat date fuser grep journalctl mktemp python3 readlink rm sleep sudo sync \
             systemctl tee timeout; do
     command -v "$tool" >/dev/null 2>&1 || fail "required command is missing: $tool"
 done
@@ -127,15 +129,85 @@ printf '%s\n' 'hardware_probe_write=false'
 printf '%s\n' 'direct_cpas_mmio=false'
 printf '%s\n' 'ssc_contacted=false'
 
-printf '\n%s\n' '===== RECOVER THIS BOOT KERNEL LOG ====='
-all_klog=$(mktemp)
-sudo journalctl -k -b --no-pager -o short-monotonic > "$all_klog"
-begin_count=$(grep -Fc 'AON-F0-ICP-OWNER-DIAG begin direct-mmio=false ssc=false' "$all_klog" || true)
-[ "$begin_count" -eq 1 ] || \
-    fail "expected exactly one Stage C hardware attempt in this boot, found $begin_count"
-awk 'found || /AON-F0-ICP-OWNER-DIAG begin direct-mmio=false ssc=false/ { found=1; print }' \
-    "$all_klog" > "$klog"
-[ -s "$klog" ] || fail "could not isolate the Stage C kernel log"
+printf '\n%s\n' '===== RECOVER MARKER-CORRELATED KERNEL ATTEMPT ====='
+journal_json=$(mktemp)
+journal_meta=$(mktemp)
+sudo journalctl -k -b --no-pager -o json > "$journal_json"
+python3 - "$journal_json" "$started" "$klog" "$journal_meta" <<'PY'
+import datetime as dt
+import json
+import sys
+
+journal_path, started_text, out_path, meta_path = sys.argv[1:]
+begin_marker = 'AON-F0-ICP-OWNER-DIAG begin direct-mmio=false ssc=false'
+complete_marker = 'AON-F0-ICP-OWNER-DIAG complete '
+
+try:
+    marker_dt = dt.datetime.fromisoformat(started_text.replace(',', '.'))
+except ValueError as exc:
+    raise SystemExit(f'ERROR: could not parse persistent marker timestamp: {started_text}: {exc}')
+if marker_dt.tzinfo is None:
+    raise SystemExit('ERROR: persistent marker timestamp lacks timezone')
+marker_us = int(marker_dt.timestamp() * 1_000_000)
+
+entries = []
+with open(journal_path, encoding='utf-8') as fh:
+    for lineno, line in enumerate(fh, 1):
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise SystemExit(f'ERROR: invalid journal JSON at line {lineno}: {exc}')
+        msg = obj.get('MESSAGE', '')
+        ts = obj.get('__REALTIME_TIMESTAMP')
+        if isinstance(msg, list):
+            msg = ''.join(chr(x) for x in msg)
+        if not isinstance(msg, str) or ts is None:
+            continue
+        try:
+            ts_us = int(ts)
+        except (TypeError, ValueError):
+            continue
+        entries.append((ts_us, msg))
+
+begin_indices = [i for i, (_, msg) in enumerate(entries) if begin_marker in msg]
+candidate_indices = [i for i in begin_indices if entries[i][0] >= marker_us]
+
+with open(meta_path, 'w', encoding='utf-8') as meta:
+    meta.write(f'marker_realtime_us={marker_us}\n')
+    meta.write(f'boot_begin_count={len(begin_indices)}\n')
+    for n, i in enumerate(begin_indices, 1):
+        meta.write(f'begin_{n}_realtime_us={entries[i][0]}\n')
+        meta.write(f'begin_{n}_delta_us={entries[i][0] - marker_us}\n')
+    meta.write(f'begin_at_or_after_marker_count={len(candidate_indices)}\n')
+
+if len(candidate_indices) != 1:
+    raise SystemExit(
+        'ERROR: expected exactly one Stage C begin at/after the persistent marker; '
+        f'found {len(candidate_indices)} (boot total {len(begin_indices)})'
+    )
+
+begin_i = candidate_indices[0]
+next_begin_i = next((i for i in begin_indices if i > begin_i), None)
+limit = next_begin_i if next_begin_i is not None else len(entries)
+complete_i = next(
+    (i for i in range(begin_i, limit) if complete_marker in entries[i][1]),
+    None,
+)
+if complete_i is None:
+    raise SystemExit('ERROR: marker-correlated Stage C attempt has no complete marker before the next attempt/end of journal')
+
+with open(out_path, 'w', encoding='utf-8') as out:
+    for ts_us, msg in entries[begin_i:complete_i + 1]:
+        out.write(f'{ts_us} {msg}\n')
+
+with open(meta_path, 'a', encoding='utf-8') as meta:
+    meta.write(f'selected_begin_realtime_us={entries[begin_i][0]}\n')
+    meta.write(f'selected_begin_delta_us={entries[begin_i][0] - marker_us}\n')
+    meta.write(f'selected_complete_realtime_us={entries[complete_i][0]}\n')
+    meta.write(f'selected_duration_us={entries[complete_i][0] - entries[begin_i][0]}\n')
+PY
+cat "$journal_meta"
+[ -s "$klog" ] || fail "could not isolate the marker-correlated Stage C kernel log"
 
 grep -Fq 'AON-F0-ICP-OWNER-DIAG targets-ok hold-ms=250' "$klog" || \
     fail "full F0 target hold was not reached"
@@ -148,7 +220,7 @@ grep -Fq 'AON-F0-ICP-OWNER-DIAG cci-put device=ac16000.cci ret=0' "$klog" || \
 grep -Eq 'AON-F0-ICP-OWNER-DIAG complete ret=0 camnoc-limited=[01]' "$klog" || \
     fail "Stage C cleanup did not complete successfully"
 if grep -Eq 'watchdog|panic|SError|Call trace|Internal error|Oops' "$klog"; then
-    fail "kernel fault marker detected after the Stage C attempt began"
+    fail "kernel fault marker detected inside the marker-correlated Stage C attempt"
 fi
 printf '%s\n' 'kernel_result=validated-full-f0-hold-and-cleanup'
 printf '\n%s\n' '===== RELEVANT KERNEL LOG ====='
@@ -179,6 +251,7 @@ completed=$completed
 status=returned
 result=success
 result_recovered_from_kernel_log=true
+attempt_selection=marker-realtime-correlated
 shell_probe_write_status=not-persisted
 kernel_complete_ret=0
 cci_restore_exact=true
@@ -195,6 +268,7 @@ boot_id=$boot_id
 started=$started
 completed=$completed
 hardware_probe_write_during_recovery=false
+attempt_selection=marker-realtime-correlated
 kernel_result=validated-full-f0-hold-and-cleanup
 camera_restore_status=0
 cci_restore_exact=true
@@ -209,6 +283,7 @@ EOF_REPORT
 printf '\n%s\n' '===== RESULT ====='
 printf '%s\n' 'result=success-full-f0-icp-owner-hold-recovered'
 printf '%s\n' 'hardware_probe_write_during_recovery=false'
+printf '%s\n' 'attempt_selection=marker-realtime-correlated'
 printf 'marker=%s\n' "$marker"
 printf 'report=%s\n' "$report"
 printf 'kernel_log=%s\n' "$klog"
