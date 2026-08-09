@@ -20,19 +20,36 @@ function Test-Administrator {
     return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 }
 
+function Format-NativeExitCode {
+    param([Parameter(Mandatory = $true)][int]$Status)
+
+    # Native Windows tools often return HRESULT/NTSTATUS values through the
+    # signed 32-bit $LASTEXITCODE. Casting a negative value directly to UInt32
+    # throws in PowerShell. Reinterpret the same 32 bits instead.
+    $bytes = [BitConverter]::GetBytes([int32]$Status)
+    $unsigned = [BitConverter]::ToUInt32($bytes, 0)
+    return ('0x{0:X8}' -f $unsigned)
+}
+
 function Invoke-Wpr {
     param(
         [Parameter(Mandatory = $true)][string[]]$Arguments,
         [Parameter(Mandatory = $true)][string]$LogPath
     )
 
-    $output = & wpr.exe @Arguments 2>&1
-    $status = $LASTEXITCODE
+    $output = @(& wpr.exe @Arguments 2>&1)
+    $status = [int]$LASTEXITCODE
     $output | Out-File -LiteralPath $LogPath -Encoding utf8 -Width 8192
     if ($status -ne 0) {
-        $hex = ('0x{0:X8}' -f ([uint32]$status))
-        throw "wpr.exe failed with exit code $status ($hex). See $LogPath"
+        $hex = Format-NativeExitCode -Status $status
+        $diagnostic = (($output | ForEach-Object { [string]$_ }) -join [Environment]::NewLine).Trim()
+        if ([string]::IsNullOrWhiteSpace($diagnostic)) {
+            $diagnostic = '<wpr.exe produced no diagnostic text>'
+        }
+        throw "wpr.exe failed with exit code $status ($hex).`nWPR output:`n$diagnostic`nFull log: $LogPath"
     }
+
+    return $output
 }
 
 function Save-Text {
@@ -64,6 +81,9 @@ if ($Mode -eq 'Arm') {
     New-Item -ItemType Directory -Force -Path $stateRoot | Out-Null
     $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
     $armLog = Join-Path $stateRoot "wpr-addboot-$stamp.txt"
+    $bootHelpLog = Join-Path $stateRoot "wpr-help-boottrace-$stamp.txt"
+    $profilesLog = Join-Path $stateRoot "wpr-profiles-$stamp.txt"
+    $statusLog = Join-Path $stateRoot "wpr-status-prearm-$stamp.txt"
 
     Write-Host ('=' * 76)
     Write-Host 'ASUS Zenbook A14 camera-platform boot PoFx trace - ARM'
@@ -75,6 +95,16 @@ if ($Mode -eq 'Arm') {
     Write-Host 'After arming, reboot Windows normally. Do not boot Linux between Arm and Collect.'
     Write-Host 'After logging back into Windows, wait for the desktop to settle, then run this script with Collect.'
     Write-Host ''
+
+    # Read-only preflight. Preserve WPR's own help/profile/status output so a
+    # machine-specific profile/syntax/session failure can be diagnosed without
+    # another reboot attempt.
+    @(& wpr.exe -help boottrace 2>&1) |
+        Out-File -LiteralPath $bootHelpLog -Encoding utf8 -Width 8192
+    @(& wpr.exe -profiles 2>&1) |
+        Out-File -LiteralPath $profilesLog -Encoding utf8 -Width 8192
+    @(& wpr.exe -status 2>&1) |
+        Out-File -LiteralPath $statusLog -Encoding utf8 -Width 8192
 
     @(
         "armed_at=$((Get-Date).ToString('o'))"
@@ -90,10 +120,15 @@ if ($Mode -eq 'Arm') {
     ) | Out-File -LiteralPath $stateFile -Encoding utf8 -Width 8192
 
     try {
-        Invoke-Wpr -Arguments @('-boottrace','-addboot','Power','-filemode') -LogPath $armLog
+        Invoke-Wpr -Arguments @('-boottrace','-addboot','Power','-filemode') -LogPath $armLog | Out-Null
     }
     catch {
         Remove-Item -LiteralPath $stateFile -Force -ErrorAction SilentlyContinue
+        Write-Host ''
+        Write-Host 'Boot trace was NOT armed. Do not reboot for this capture yet.' -ForegroundColor Yellow
+        Write-Host "Preflight boottrace help: $bootHelpLog"
+        Write-Host "Preflight profile list:   $profilesLog"
+        Write-Host "Preflight WPR status:     $statusLog"
         throw
     }
 
@@ -109,7 +144,7 @@ if ($Mode -eq 'Cancel') {
     New-Item -ItemType Directory -Force -Path $stateRoot | Out-Null
     $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
     $cancelLog = Join-Path $stateRoot "wpr-cancelboot-$stamp.txt"
-    Invoke-Wpr -Arguments @('-boottrace','-cancelboot') -LogPath $cancelLog
+    Invoke-Wpr -Arguments @('-boottrace','-cancelboot') -LogPath $cancelLog | Out-Null
     Remove-Item -LiteralPath $stateFile -Force -ErrorAction SilentlyContinue
     Write-Host 'Boot trace configuration cancelled.'
     exit 0
@@ -166,7 +201,7 @@ Save-Text -Path (Join-Path $output 'wpr-status-before-stop.txt') -Command {
 
 $stopLog = Join-Path $output 'wpr-stopboot.txt'
 try {
-    Invoke-Wpr -Arguments @('-boottrace','-stopboot',$etl,'ASUS Zenbook A14 camera platform PoFx boot trace') -LogPath $stopLog
+    Invoke-Wpr -Arguments @('-boottrace','-stopboot',$etl,'ASUS Zenbook A14 camera platform PoFx boot trace') -LogPath $stopLog | Out-Null
 }
 catch {
     Write-Host ''
