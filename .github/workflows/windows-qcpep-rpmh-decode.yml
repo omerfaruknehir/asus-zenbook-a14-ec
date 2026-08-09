@@ -1,0 +1,99 @@
+name: Validate Windows qcpep RPMh decoder
+
+on:
+  push:
+    paths:
+      - 'scripts/a14-windows-qcpep-rpmh-decode.ps1'
+      - '.github/workflows/windows-qcpep-rpmh-decode.yml'
+  pull_request:
+    paths:
+      - 'scripts/a14-windows-qcpep-rpmh-decode.ps1'
+      - '.github/workflows/windows-qcpep-rpmh-decode.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Parse PowerShell 5.1 decoder
+        shell: powershell
+        run: |
+          $path = 'scripts/a14-windows-qcpep-rpmh-decode.ps1'
+          $tokens = $null
+          $errors = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path $path),
+              [ref]$tokens,
+              [ref]$errors
+          )
+          if ($errors.Count -ne 0) {
+              $errors | Format-List *
+              throw "${path}: PowerShell parser reported $($errors.Count) error(s)."
+          }
+
+      - name: Enforce offline-only decoder boundary
+        shell: powershell
+        run: |
+          $path = 'scripts/a14-windows-qcpep-rpmh-decode.ps1'
+          $script = Get-Content $path -Raw
+
+          foreach ($required in @(
+              "[Guid]'2C89C855-6301-41F9-BF56-63416DFE9CA9'",
+              'operation=offline-decode-only',
+              'etw_control_query=false',
+              'etw_control_flush=false',
+              'etw_control_update=false',
+              'etw_control_stop=false',
+              'camera_ioctls_sent=false',
+              'devices_restarted=false',
+              'pnp_state_changed=false',
+              'power_state_changed=false',
+              'camera_register_writes=false',
+              'direct_cpas_mmio=false',
+              'ssc_contacted=false',
+              'Get-WinEvent',
+              'tracerpt.exe'
+          )) {
+              if (-not $script.Contains($required)) {
+                  throw "Missing offline decoder invariant: $required"
+              }
+          }
+
+          $tokens = $null
+          $errors = $null
+          $ast = [System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path $path),
+              [ref]$tokens,
+              [ref]$errors
+          )
+          if ($errors.Count -ne 0) { throw 'Decoder did not parse.' }
+
+          $commands = @($ast.FindAll({
+              param($node)
+              $node -is [System.Management.Automation.Language.CommandAst]
+          }, $true))
+          $commandNames = @($commands | ForEach-Object { $_.GetCommandName() } | Where-Object { $_ })
+          foreach ($prohibited in @(
+              'Start-EtwTraceSession','Stop-EtwTraceSession','Update-EtwTraceSession',
+              'New-EtwTraceSession','Save-EtwTraceSession','Send-EtwTraceSession',
+              'Remove-EtwTraceProvider','Add-EtwTraceProvider','Set-EtwTraceProvider',
+              'New-AutologgerConfig','Remove-AutologgerConfig','Update-AutologgerConfig',
+              'Set-PnpDevice','Disable-PnpDevice','Enable-PnpDevice','Restart-PnpDevice'
+          )) {
+              if ($commandNames -contains $prohibited) {
+                  throw "Offline decoder contains prohibited command: $prohibited"
+              }
+          }
+
+          if ($script -match 'ControlTrace|DeviceIoControl|CreateFileW|WriteFile|MmMapIoSpace|\\dev\\mem|0x0ac191e0|ioremap|readl|writel|PoFxActivateComponent|PoFxIdleComponent|GetCurrentReading\(') {
+              throw 'Offline decoder contains a prohibited ETW-control/hardware/power path.'
+          }
+
+      - name: Check repository whitespace
+        shell: bash
+        run: git diff --check HEAD^ HEAD || git diff --check
