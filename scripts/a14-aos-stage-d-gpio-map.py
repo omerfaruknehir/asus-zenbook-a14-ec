@@ -1,16 +1,5 @@
 #!/usr/bin/env python3
-"""Read-only Stage D mapper for Windows CAMP F0 TLMM GPIOs 96..106.
-
-This script decompiles the *live* Linux device tree and maps every pinctrl node
-that contains the Windows CAMP F0 TLMM pins to its phandle consumers.
-
-Safety boundary:
-- no GPIO writes or direction changes
-- no sysfs/debugfs writes or mounts
-- no driver bind/unbind or module operations
-- no CPAS MMIO, /dev/mem, ioremap/readl/writel
-- no SSC/AOS activation
-"""
+"""Read-only Stage D mapper for Windows CAMP F0 TLMM GPIOs 96..106."""
 
 from __future__ import annotations
 
@@ -25,19 +14,11 @@ import tempfile
 
 TARGET_PINS = tuple(range(96, 107))
 EXPECTED_FUNCTION = {
-    96: "cam_mclk",
-    97: "cam_mclk",
-    98: "cam_mclk",
-    99: "cam_mclk",
+    96: "cam_mclk", 97: "cam_mclk", 98: "cam_mclk", 99: "cam_mclk",
     100: "cam_aon",
-    101: "cci_i2c",
-    102: "cci_i2c",
-    103: "cci_i2c",
-    104: "cci_i2c",
-    105: "cci_i2c",
-    106: "cci_i2c",
+    101: "cci_i2c", 102: "cci_i2c", 103: "cci_i2c",
+    104: "cci_i2c", 105: "cci_i2c", 106: "cci_i2c",
 }
-
 OUT = Path(sys.argv[1]).expanduser() if len(sys.argv) > 1 else Path.home() / "Downloads" / "a14-aos-stage-d-gpio-map.txt"
 
 
@@ -60,24 +41,26 @@ def node_start(line: str) -> str | None:
     s = line.strip()
     if not s.endswith("{"):
         return None
-    # Exclude property values containing braces; DT node declarations end in '{'.
     head = s[:-1].strip()
     if not head or "=" in head:
         return None
     return head
 
 
-def exact_pin_hits(text: str) -> list[int]:
-    hits = []
-    for pin in TARGET_PINS:
-        if re.search(rf'"gpio{pin}"(?:\s*[,;]|\s*$)', text, flags=re.M):
-            hits.append(pin)
-    return hits
-
-
 def extract_prop(block: str, name: str) -> str | None:
     m = re.search(rf'^\s*{re.escape(name)}\s*=\s*(.+?);\s*$', block, flags=re.M)
     return m.group(1).strip() if m else None
+
+
+def direct_properties(lines: list[str], start: int, end: int) -> list[str]:
+    props: list[str] = []
+    depth = 0
+    for line in lines[start + 1:end]:
+        s = line.strip()
+        if depth == 0 and "=" in s and s.endswith(";"):
+            props.append(s)
+        depth += line.count("{") - line.count("}")
+    return props
 
 
 def flag_props(block: str) -> list[str]:
@@ -86,11 +69,11 @@ def flag_props(block: str) -> list[str]:
         "input-enable", "input-disable", "output-enable",
         "output-high", "output-low", "qcom,apps", "qcom,remote",
     )
-    present = []
-    for name in names:
-        if re.search(rf'^\s*{re.escape(name)}\s*;\s*$', block, flags=re.M):
-            present.append(name)
-    return present
+    return [name for name in names if re.search(rf'^\s*{re.escape(name)}\s*;\s*$', block, flags=re.M)]
+
+
+def target_hits(block: str) -> list[int]:
+    return [pin for pin in TARGET_PINS if re.search(rf'"gpio{pin}"(?:\s*[,;]|\s*$)', block, flags=re.M)]
 
 
 def main() -> int:
@@ -102,13 +85,12 @@ def main() -> int:
     OUT.write_text("", encoding="utf-8")
 
     cmdline = read_text("/proc/cmdline")
-    boot_id = read_text("/proc/sys/kernel/random/boot_id")
     markers = sorted(set(re.findall(r'\ba14_aos_[^\s]*_test=[^\s]+', cmdline)))
 
     section("IDENTITY")
     log(f"collected_at={dt.datetime.now().astimezone().isoformat(timespec='microseconds')}")
     log(f"kernel={os.uname().release}")
-    log(f"boot_id={boot_id}")
+    log(f"boot_id={read_text('/proc/sys/kernel/random/boot_id')}")
     log(f"cmdline={cmdline}")
     log(f"boot_scope={'custom-diagnostic' if markers else 'normal-no-a14-test-marker'}")
     for marker in markers:
@@ -132,10 +114,7 @@ def main() -> int:
         with dts_path.open("w", encoding="utf-8") as out, err_path.open("w", encoding="utf-8") as err:
             proc = subprocess.run(
                 ["dtc", "-I", "fs", "-O", "dts", "/sys/firmware/devicetree/base"],
-                stdout=out,
-                stderr=err,
-                check=False,
-                text=True,
+                stdout=out, stderr=err, check=False, text=True,
             )
         if proc.returncode != 0:
             section("DTC")
@@ -143,113 +122,97 @@ def main() -> int:
             log(err_path.read_text(encoding="utf-8", errors="replace"))
             return 1
 
-        text = dts_path.read_text(encoding="utf-8", errors="replace")
-        lines = text.splitlines()
-
-        # Build brace-delimited DT node ranges and paths.
+        lines = dts_path.read_text(encoding="utf-8", errors="replace").splitlines()
         stack: list[tuple[str, int, str]] = []
         nodes: list[dict[str, object]] = []
         for idx, line in enumerate(lines):
-            start = node_start(line)
-            if start is not None:
+            start_name = node_start(line)
+            if start_name is not None:
                 parent_path = stack[-1][2] if stack else ""
-                component = start.split(":", 1)[-1].strip()
+                component = start_name.split(":", 1)[-1].strip()
                 path = (parent_path.rstrip("/") + "/" + component).replace("//", "/")
-                stack.append((start, idx, path))
-
-            # DT output places node-closing braces on their own lines (possibly with ';').
-            stripped = line.strip()
-            if stripped in ("};", "}") and stack:
-                name, start_idx, path = stack.pop()
+                stack.append((start_name, idx, path))
+            if line.strip() in ("};", "}") and stack:
+                name, start, path = stack.pop()
                 nodes.append({
                     "name": name,
-                    "start": start_idx,
+                    "start": start,
                     "end": idx,
                     "path": path,
-                    "text": "\n".join(lines[start_idx:idx + 1]),
+                    "text": "\n".join(lines[start:idx + 1]),
                 })
 
+        # Only leaf/config nodes with a direct pins property are target pin blocks.
         pin_nodes: list[dict[str, object]] = []
         for node in nodes:
-            block = str(node["text"])
-            if "pins" not in block:
+            props = direct_properties(lines, int(node["start"]), int(node["end"]))
+            pins_lines = [p for p in props if p.startswith("pins =")]
+            if not pins_lines:
                 continue
-            hits = exact_pin_hits(block)
-            if not hits:
-                continue
-            # Prefer the narrowest node that directly has a pins property. Parent states
-            # may contain child pin nodes; only keep nodes whose own top-level text has
-            # a pins property before another child node opens.
-            start_i = int(node["start"])
-            end_i = int(node["end"])
-            depth = 0
-            owns_pins = False
-            for line in lines[start_i + 1:end_i]:
-                s = line.strip()
-                if depth == 0 and re.match(r'^pins\s*=', s):
-                    owns_pins = True
-                    break
-                depth += line.count("{") - line.count("}")
-            if owns_pins:
-                node = dict(node)
-                node["hits"] = hits
-                pin_nodes.append(node)
-
-        # Deduplicate exact ranges.
-        uniq = {(int(n["start"]), int(n["end"])): n for n in pin_nodes}
-        pin_nodes = sorted(uniq.values(), key=lambda n: int(n["start"]))
+            hits = target_hits("\n".join(pins_lines))
+            if hits:
+                copy = dict(node)
+                copy["hits"] = hits
+                pin_nodes.append(copy)
+        pin_nodes.sort(key=lambda n: int(n["start"]))
 
         section("LIVE PINCTRL BLOCKS")
         if not pin_nodes:
             log("target_pinctrl_blocks=none")
-        else:
-            for i, node in enumerate(pin_nodes, 1):
-                block = str(node["text"])
-                hits = list(node["hits"])
-                phandle = extract_prop(block, "phandle")
-                function = extract_prop(block, "function")
-                drive = extract_prop(block, "drive-strength")
-                pins_prop = extract_prop(block, "pins")
-                flags = flag_props(block)
-                log(f"block_{i}_path={node['path']}")
-                log(f"block_{i}_pins={','.join('gpio'+str(p) for p in hits)}")
-                log(f"block_{i}_pins_property={pins_prop or 'unparsed'}")
-                log(f"block_{i}_function={function or 'unspecified'}")
-                log(f"block_{i}_expected_functions={','.join(sorted(set(EXPECTED_FUNCTION[p] for p in hits)))}")
-                log(f"block_{i}_drive_strength={drive or 'unspecified'}")
-                log(f"block_{i}_flags={','.join(flags) if flags else 'none'}")
-                log(f"block_{i}_phandle={phandle or 'none'}")
 
-                if phandle:
-                    token = phandle.strip()
-                    # Resolve references in every node outside this definition.
-                    refs: list[tuple[str, str]] = []
-                    for other in nodes:
-                        if other["start"] == node["start"] and other["end"] == node["end"]:
-                            continue
-                        other_text = str(other["text"])
-                        # Only direct property lines containing this phandle; skip nested
-                        # child content by checking lines individually.
-                        for raw in other_text.splitlines()[1:-1]:
-                            s = raw.strip()
-                            if token in s and "=" in s and not s.startswith("phandle"):
-                                refs.append((str(other["path"]), s))
-                    # Deduplicate while preserving order.
-                    seen = set()
-                    dedup = []
-                    for ref in refs:
-                        if ref not in seen:
-                            seen.add(ref)
-                            dedup.append(ref)
-                    if dedup:
-                        for j, (path, prop) in enumerate(dedup, 1):
-                            log(f"block_{i}_consumer_{j}_path={path}")
-                            log(f"block_{i}_consumer_{j}_property={prop}")
-                    else:
-                        log(f"block_{i}_consumers=none-found")
+        for i, node in enumerate(pin_nodes, 1):
+            block = str(node["text"])
+            hits = list(node["hits"])
+
+            # Pinctrl phandles commonly live on the enclosing state rather than
+            # the child config node. Select the smallest enclosing phandled node.
+            ancestors = []
+            for candidate in nodes:
+                if int(candidate["start"]) <= int(node["start"]) and int(candidate["end"]) >= int(node["end"]):
+                    ph = extract_prop(str(candidate["text"]), "phandle")
+                    if ph:
+                        span = int(candidate["end"]) - int(candidate["start"])
+                        ancestors.append((span, candidate, ph))
+            ancestors.sort(key=lambda item: item[0])
+            state_node = ancestors[0][1] if ancestors else None
+            state_phandle = ancestors[0][2] if ancestors else None
+
+            function = extract_prop(block, "function")
+            drive = extract_prop(block, "drive-strength")
+            pins_prop = extract_prop(block, "pins")
+            flags = flag_props(block)
+
+            log(f"block_{i}_path={node['path']}")
+            log(f"block_{i}_pins={','.join('gpio'+str(p) for p in hits)}")
+            log(f"block_{i}_pins_property={pins_prop or 'unparsed'}")
+            log(f"block_{i}_function={function or 'unspecified'}")
+            log(f"block_{i}_expected_functions={','.join(sorted(set(EXPECTED_FUNCTION[p] for p in hits)))}")
+            log(f"block_{i}_drive_strength={drive or 'unspecified'}")
+            log(f"block_{i}_flags={','.join(flags) if flags else 'none'}")
+            log(f"block_{i}_state_path={state_node['path'] if state_node else 'none'}")
+            log(f"block_{i}_state_phandle={state_phandle or 'none'}")
+
+            if state_phandle:
+                refs: list[tuple[str, str]] = []
+                for other in nodes:
+                    for prop in direct_properties(lines, int(other["start"]), int(other["end"])):
+                        if state_phandle in prop and not prop.startswith("phandle ="):
+                            refs.append((str(other["path"]), prop))
+                seen = set()
+                dedup = []
+                for ref in refs:
+                    if ref not in seen:
+                        seen.add(ref)
+                        dedup.append(ref)
+                if dedup:
+                    for j, (path, prop) in enumerate(dedup, 1):
+                        log(f"block_{i}_consumer_{j}_path={path}")
+                        log(f"block_{i}_consumer_{j}_property={prop}")
                 else:
-                    log(f"block_{i}_consumers=unresolvable-no-phandle")
-                log("---")
+                    log(f"block_{i}_consumers=none-found")
+            else:
+                log(f"block_{i}_consumers=unresolvable-no-enclosing-phandle")
+            log("---")
 
         section("PER-PIN SUMMARY")
         for pin in TARGET_PINS:
