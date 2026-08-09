@@ -131,7 +131,10 @@ initrd_list="$work/initramfs-contents.txt"
 lsinitramfs "$tmp_initrd" > "$initrd_list"
 grep -Fq 'qcom-camss.ko' "$initrd_list" || fail "custom initramfs lacks qcom-camss"
 grep -Fq 'i2c-qcom-cci.ko' "$initrd_list" || fail "custom initramfs lacks i2c-qcom-cci"
-printf '%s\n' 'custom_initramfs=validated'
+if grep -Fq 'qcom_ssc_hpd' "$initrd_list" || grep -Fq 'qcom-ssc-hpd' "$initrd_list"; then
+    fail "custom initramfs contains qcom_ssc_hpd; refusing Stage C install"
+fi
+printf '%s\n' 'custom_initramfs=validated-no-ssc'
 
 printf '\n%s\n' '===== INSTALL TEST-ONLY BOOT FILES ====='
 sudo install -m 0644 "$merged_dtb" "$test_dtb"
@@ -148,11 +151,12 @@ printf '%s\n' 'installed_boot_payload=validated-exact-hashes'
 
 root_uuid=$(findmnt -no UUID /)
 [ -n "$root_uuid" ] || fail "could not resolve root filesystem UUID"
-cmdline=$(sed -E 's/(^| )BOOT_IMAGE=[^ ]+//; s/^ +//; s/ +$//' /proc/cmdline)
-case " $cmdline " in
-    *' a14_aos_f0_icp_owner_test=1 '*) ;;
-    *) cmdline="$cmdline a14_aos_f0_icp_owner_test=1" ;;
-esac
+# Never inherit an older A14 diagnostic marker from the currently running boot.
+# The Stage C entry must carry exactly its own test marker.
+cmdline=$(sed -E \
+    's/(^| )BOOT_IMAGE=[^ ]+//g; s/(^| )a14_aos_[^ ]*_test=[^ ]+//g; s/^ +//; s/ +$//; s/  +/ /g' \
+    /proc/cmdline)
+cmdline="$cmdline a14_aos_f0_icp_owner_test=1"
 
 grub_tmp="$work/41_a14_f0_icp_owner_test"
 cat > "$grub_tmp" <<EOF_GRUB
@@ -179,6 +183,7 @@ sudo cat /boot/grub/grub.cfg > "$grub_cfg_snapshot"
 grep -Fq "menuentry '$entry_title'" "$grub_cfg_snapshot" || fail "test GRUB entry was not generated"
 grep -Fq "devicetree /boot/$(basename "$test_dtb")" "$grub_cfg_snapshot" || fail "GRUB entry lacks test DTB"
 grep -Fq "initrd /boot/$(basename "$test_initrd")" "$grub_cfg_snapshot" || fail "GRUB entry lacks test initramfs"
+grep -Fq 'a14_aos_f0_icp_owner_test=1' "$grub_cfg_snapshot" || fail "GRUB entry lacks Stage C test marker"
 printf '%s\n' 'grub_entry=validated-from-privileged-snapshot'
 
 printf '\n%s\n' '===== INSTALLED TEST ENTRY ====='
