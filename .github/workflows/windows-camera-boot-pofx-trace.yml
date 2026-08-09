@@ -38,7 +38,7 @@ jobs:
               )
               if ($errors.Count -ne 0) {
                   $errors | Format-List *
-                  throw "$path: PowerShell parser reported $($errors.Count) error(s)."
+                  throw "${path}: PowerShell parser reported $($errors.Count) error(s)."
               }
           }
 
@@ -58,6 +58,8 @@ jobs:
               'camera_register_access=false',
               'direct_cpas_mmio=false',
               'boot_autologger_removed=true',
+              'Boottrace is already scheduled',
+              'Only create provenance after WPR confirms that addboot succeeded',
               'qcAlwaysOnSensing.dll',
               'QCOM0C32',
               'QCOM0D06',
