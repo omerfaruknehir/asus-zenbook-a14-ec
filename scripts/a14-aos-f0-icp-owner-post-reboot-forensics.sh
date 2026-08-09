@@ -59,8 +59,6 @@ fi
 printf 'marker_boot_listing=validated:%s\n' "$marker_boot_id_compact"
 
 printf '\n%s\n' '===== READ MARKER BOOT ====='
-# /proc/sys/kernel/random/boot_id uses UUID punctuation; journalctl --list-boots
-# exposes the selector as 32 hex digits. Use the validated compact form.
 set +e
 sudo journalctl -k -b "$marker_boot_id_compact" --no-pager -o short-monotonic > "$prev_klog"
 krc=$?
@@ -79,8 +77,16 @@ icp_restore_count=$(grep -Fc 'AON-F0-ICP-OWNER-DIAG icp-restore-ok' "$prev_klog"
 cci0_restore_count=$(grep -Fc 'AON-F0-ICP-OWNER-DIAG cci-put device=ac15000.cci ret=0' "$prev_klog" || true)
 cci1_restore_count=$(grep -Fc 'AON-F0-ICP-OWNER-DIAG cci-put device=ac16000.cci ret=0' "$prev_klog" || true)
 complete_ok_count=$(grep -Ec 'AON-F0-ICP-OWNER-DIAG complete ret=0 camnoc-limited=[01]' "$prev_klog" || true)
-fault_count=$(grep -Eic 'watchdog|panic|SError|Call trace|Internal error|Oops|BUG:|Kernel panic' "$prev_klog" || true)
-shutdown_count=$(grep -Eic 'systemd-shutdown|reboot: Restarting system|Power down|Reached target.*Reboot|Shutting down' "$prev_journal" || true)
+
+# Match only actual kernel-fault forms. Do not count normal watchdog drivers,
+# DRM panic-plane support, or userspace WATCHDOG=1 keepalives as faults.
+kernel_fault_regex='Kernel panic|panic - not syncing|Unable to handle kernel|Internal error:|SError Interrupt|Call trace:|Oops:|watchdog: BUG:|soft lockup|hard LOCKUP|rcu: INFO: rcu.*stall'
+fault_count=$(grep -Eic "$kernel_fault_regex" "$prev_klog" || true)
+
+# Count only system-level shutdown/reboot evidence. Generic "Shutting down"
+# messages from individual services are not an orderly-boot termination.
+orderly_regex='systemd-shutdown|systemd\[1\]: Rebooting\.|systemd\[1\]: Shutting down\.|systemd\[1\]: Reached target .*Reboot|systemd\[1\]: Reached target .*Power-Off|reboot: Restarting system|Power down'
+shutdown_count=$(grep -Eic "$orderly_regex" "$prev_journal" || true)
 
 printf '\n%s\n' '===== STAGE C COUNTS ====='
 printf 'begin_count=%s\n' "$begin_count"
@@ -89,19 +95,23 @@ printf 'icp_restore_ok_count=%s\n' "$icp_restore_count"
 printf 'cci0_restore_ok_count=%s\n' "$cci0_restore_count"
 printf 'cci1_restore_ok_count=%s\n' "$cci1_restore_count"
 printf 'complete_ret0_count=%s\n' "$complete_ok_count"
+
+printf '\n%s\n' '===== STAGE C KERNEL LINES ====='
+grep -E 'AON-F0-ICP-OWNER-DIAG|A14 isolated F0 ICP owner diagnostic' "$prev_klog" || true
+
+printf '\n%s\n' '===== BOOT TERMINATION COUNTS ====='
 printf 'kernel_fault_marker_count=%s\n' "$fault_count"
 printf 'orderly_shutdown_marker_count=%s\n' "$shutdown_count"
 
-printf '\n%s\n' '===== STAGE C KERNEL LINES ====='
-grep -E 'AON-F0-ICP-OWNER-DIAG|A14 isolated F0 ICP owner diagnostic|watchdog|panic|SError|Call trace|Internal error|Oops|BUG:' "$prev_klog" || true
+printf '\n%s\n' '===== EXPLICIT BOOT TERMINATION EVIDENCE ====='
+grep -Ei "$kernel_fault_regex|$orderly_regex" "$prev_journal" | tail -n 120 || true
 
-printf '\n%s\n' '===== BOOT TERMINATION EVIDENCE ====='
-grep -Ei 'systemd-shutdown|reboot: Restarting system|Power down|Reached target.*Reboot|Shutting down|watchdog|panic|SError|Call trace|Internal error|Oops|BUG:' "$prev_journal" | tail -n 120 || true
+printf '\n%s\n' '===== FINAL 120 JOURNAL LINES ====='
+tail -n 120 "$prev_journal" || true
 
 printf '\n%s\n' '===== PSTORE ====='
 : > "$pstore_out"
 if sudo test -d /sys/fs/pstore; then
-    # Never remove pstore records; snapshot them only.
     while IFS= read -r f; do
         [ -n "$f" ] || continue
         printf '%s\n' "--- $f ---" | tee -a "$pstore_out"
@@ -110,18 +120,28 @@ if sudo test -d /sys/fs/pstore; then
 fi
 if [ -s "$pstore_out" ]; then
     printf '%s\n' 'pstore_records=present'
+    pstore_present=true
 else
     printf '%s\n' 'pstore_records=none'
+    pstore_present=false
 fi
 
-classification=indeterminate
+stage_c_classification=indeterminate
 if [ "$complete_ok_count" -ge 1 ] && [ "$icp_restore_count" -ge 1 ] && \
-   [ "$cci0_restore_count" -ge 1 ] && [ "$cci1_restore_count" -ge 1 ]; then
-    classification=stage-c-kernel-cleanup-completed-before-reboot
+   [ "$cci0_restore_count" -ge 1 ] && [ "$cci1_restore_count" -ge 1 ] && \
+   [ "$targets_count" -ge 1 ]; then
+    stage_c_classification=full-f0-hold-and-cleanup-completed
 elif [ "$targets_count" -ge 1 ] && [ "$complete_ok_count" -eq 0 ]; then
-    classification=stage-c-target-hold-reached-without-recorded-cleanup-completion
+    stage_c_classification=target-hold-reached-without-recorded-cleanup-completion
 elif [ "$begin_count" -ge 1 ] && [ "$targets_count" -eq 0 ]; then
-    classification=stage-c-began-without-recorded-target-hold
+    stage_c_classification=began-without-recorded-target-hold
+fi
+
+boot_termination_classification=abrupt-or-unrecorded-termination
+if [ "$fault_count" -ge 1 ] || [ "$pstore_present" = true ]; then
+    boot_termination_classification=kernel-fault-evidence-present
+elif [ "$shutdown_count" -ge 1 ]; then
+    boot_termination_classification=orderly-shutdown-evidence-present
 fi
 
 {
@@ -137,9 +157,11 @@ fi
     printf 'cci0_restore_ok_count=%s\n' "$cci0_restore_count"
     printf 'cci1_restore_ok_count=%s\n' "$cci1_restore_count"
     printf 'complete_ret0_count=%s\n' "$complete_ok_count"
+    printf 'stage_c_classification=%s\n' "$stage_c_classification"
     printf 'kernel_fault_marker_count=%s\n' "$fault_count"
     printf 'orderly_shutdown_marker_count=%s\n' "$shutdown_count"
-    printf 'classification=%s\n' "$classification"
+    printf 'pstore_records=%s\n' "$pstore_present"
+    printf 'boot_termination_classification=%s\n' "$boot_termination_classification"
     printf 'previous_boot_kernel_log=%s\n' "$prev_klog"
     printf 'previous_boot_journal=%s\n' "$prev_journal"
     printf 'pstore=%s\n' "$pstore_out"
