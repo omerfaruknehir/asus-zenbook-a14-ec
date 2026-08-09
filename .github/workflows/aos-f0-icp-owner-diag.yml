@@ -34,6 +34,7 @@ jobs:
           verifier=scripts/a14-aos-f0-icp-owner-diag-verify-install.sh
           runner=scripts/a14-aos-f0-icp-owner-diag-run.sh
           recovery=scripts/a14-aos-f0-icp-owner-diag-recover.sh
+          forensics=scripts/a14-aos-f0-icp-owner-post-reboot-forensics.sh
 
           python3 -m py_compile "$injector"
           bash -n "$builder"
@@ -41,6 +42,7 @@ jobs:
           bash -n "$verifier"
           bash -n "$runner"
           bash -n "$recovery"
+          bash -n "$forensics"
 
           grep -Fq 'operation=build-and-stage-only' "$builder"
           grep -Fq 'icp_activation_during_build=false' "$builder"
@@ -65,6 +67,10 @@ jobs:
           grep -Fq 'attempt_selection=marker-realtime-correlated' "$recovery"
           grep -Fq 'kernel_result=validated-full-f0-hold-and-cleanup' "$recovery"
           grep -Fq 'result=success-full-f0-icp-owner-hold-recovered' "$recovery"
+          grep -Fq 'operation=read-only-forensics' "$forensics"
+          grep -Fq 'hardware_probe_write=false' "$forensics"
+          grep -Fq 'journalctl -k -b "$marker_boot_id"' "$forensics"
+          grep -Fq 'classification=' "$forensics"
 
           if grep -Fq -- '--since "$started"' "$runner" "$recovery"; then
             echo 'Stage C journal collection must not parse locale-sensitive wall-clock timestamps' >&2
@@ -78,15 +84,16 @@ jobs:
           # its source-level rejection check. Userspace scripts themselves must
           # not expose a direct-access mechanism.
           if grep -Eq '/dev/mem|confirm-aon-switch|confirm-mmio-write' \
-              "$builder" "$installer" "$verifier" "$runner" "$recovery"; then
+              "$builder" "$installer" "$verifier" "$runner" "$recovery" "$forensics"; then
             echo 'Stage C userspace path contains prohibited direct-access machinery' >&2
             exit 1
           fi
 
-          python3 - "$runner" "$recovery" <<'PY'
+          python3 - "$runner" "$recovery" "$forensics" <<'PY'
           import sys
           runner = open(sys.argv[1], encoding='utf-8').read()
           recovery = open(sys.argv[2], encoding='utf-8').read()
+          forensics = open(sys.argv[3], encoding='utf-8').read()
           trigger = 'printf "1\\n" > "$1"'
           marker = runner.index('status=started')
           trigger_at = runner.index(trigger)
@@ -96,6 +103,8 @@ jobs:
               raise SystemExit('recovery script contains the hardware probe trigger')
           if 'a14_f0_icp_owner_probe' in recovery:
               raise SystemExit('recovery script names the writable hardware probe path')
+          if trigger in forensics or 'a14_f0_icp_owner_probe' in forensics:
+              raise SystemExit('post-reboot forensics contains a Stage C hardware probe path')
           if 'Stage C was already attempted in this boot' not in runner:
               raise SystemExit('runner lacks same-boot repeat protection')
           if "entries[i][0] >= marker_us" not in recovery:
