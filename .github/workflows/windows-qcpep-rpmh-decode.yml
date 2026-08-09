@@ -90,7 +90,9 @@ jobs:
               }
           }
 
-          if ($script -match 'ControlTrace|DeviceIoControl|CreateFileW|WriteFile|MmMapIoSpace|\\dev\\mem|0x0ac191e0|ioremap|readl|writel|PoFxActivateComponent|PoFxIdleComponent|GetCurrentReading\(') {
+          # Match actual low-level function-call shapes. A plain case-insensitive
+          # 'writel' substring would incorrectly match StreamWriter.WriteLine().
+          if ($script -match 'ControlTrace|DeviceIoControl|CreateFileW|WriteFile|MmMapIoSpace|\\dev\\mem|0x0ac191e0|ioremap|\breadl\s*\(|\bwritel\s*\(|PoFxActivateComponent|PoFxIdleComponent|GetCurrentReading\(') {
               throw 'Offline decoder contains a prohibited ETW-control/hardware/power path.'
           }
 
