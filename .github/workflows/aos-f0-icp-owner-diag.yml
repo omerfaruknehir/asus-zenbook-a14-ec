@@ -69,7 +69,9 @@ jobs:
           grep -Fq 'result=success-full-f0-icp-owner-hold-recovered' "$recovery"
           grep -Fq 'operation=read-only-forensics' "$forensics"
           grep -Fq 'hardware_probe_write=false' "$forensics"
-          grep -Fq 'journalctl -k -b "$marker_boot_id"' "$forensics"
+          grep -Fq 'marker_boot_id_compact=${marker_boot_id//-/}' "$forensics"
+          grep -Fq 'marker_boot_listing=validated:' "$forensics"
+          grep -Fq 'journalctl -k -b "$marker_boot_id_compact"' "$forensics"
           grep -Fq 'classification=' "$forensics"
 
           if grep -Fq -- '--since "$started"' "$runner" "$recovery"; then
@@ -111,6 +113,10 @@ jobs:
               raise SystemExit('recovery does not correlate kernel begin time to the persistent marker')
           if 'next_begin_i' not in recovery or 'complete_i' not in recovery:
               raise SystemExit('recovery does not bound the selected attempt before another begin')
+          if 'marker_boot_id_compact=${marker_boot_id//-/}' not in forensics:
+              raise SystemExit('post-reboot forensics does not normalize UUID-form boot IDs')
+          if '-b "$marker_boot_id_compact"' not in forensics:
+              raise SystemExit('post-reboot forensics does not query journalctl with the compact boot ID')
           PY
 
       - name: Apply ownership series and inject diagnostic on Linux master
