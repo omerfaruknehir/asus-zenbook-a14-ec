@@ -5,11 +5,13 @@ on:
     paths:
       - 'scripts/a14-windows-camera-platform-boot-pofx-trace.ps1'
       - 'scripts/a14-windows-qcom0c17-pep-export.ps1'
+      - 'scripts/a14-windows-qcpep-rpmh-snapshot.ps1'
       - '.github/workflows/windows-camera-boot-pofx-trace.yml'
   pull_request:
     paths:
       - 'scripts/a14-windows-camera-platform-boot-pofx-trace.ps1'
       - 'scripts/a14-windows-qcom0c17-pep-export.ps1'
+      - 'scripts/a14-windows-qcpep-rpmh-snapshot.ps1'
       - '.github/workflows/windows-camera-boot-pofx-trace.yml'
   workflow_dispatch:
 
@@ -27,7 +29,8 @@ jobs:
         run: |
           foreach ($path in @(
               'scripts/a14-windows-camera-platform-boot-pofx-trace.ps1',
-              'scripts/a14-windows-qcom0c17-pep-export.ps1'
+              'scripts/a14-windows-qcom0c17-pep-export.ps1',
+              'scripts/a14-windows-qcpep-rpmh-snapshot.ps1'
           )) {
               $tokens = $null
               $errors = $null
@@ -108,6 +111,70 @@ jobs:
 
           if ($script -match 'pnputil\.exe\s+/(add-driver|delete-driver|disable-device|enable-device|restart-device|remove-device)') {
               throw 'QCOM0C17 exporter contains a mutating pnputil operation.'
+          }
+
+      - name: Enforce qcpep RPMh snapshot safety boundary
+        shell: powershell
+        run: |
+          $path = 'scripts/a14-windows-qcpep-rpmh-snapshot.ps1'
+          $script = Get-Content $path -Raw
+
+          foreach ($required in @(
+              "`$sessionName = 'qcpep-rpmh'",
+              "`$providerGuid = '{2C89C855-6301-41F9-BF56-63416DFE9CA9}'",
+              "`$bufferingModeBit = [uint32]0x400",
+              'Save-EtwTraceSession -Name $sessionName -OutputFile $outputFile -ErrorAction Stop',
+              'session_still_running=true',
+              'session_stopped_by_collector=false',
+              'session_reconfigured_by_collector=false',
+              'provider_reconfigured_by_collector=false',
+              'direct_cpas_mmio=false',
+              'ssc_contacted=false'
+          )) {
+              if (-not $script.Contains($required)) {
+                  throw "Missing qcpep RPMh snapshot invariant: $required"
+              }
+          }
+
+          $tokens = $null
+          $errors = $null
+          $ast = [System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path $path),
+              [ref]$tokens,
+              [ref]$errors
+          )
+          if ($errors.Count -ne 0) { throw 'qcpep RPMh snapshot script did not parse.' }
+
+          $commands = @($ast.FindAll({
+              param($node)
+              $node -is [System.Management.Automation.Language.CommandAst]
+          }, $true))
+          $commandNames = @($commands | ForEach-Object { $_.GetCommandName() } | Where-Object { $_ })
+          foreach ($prohibited in @(
+              'Start-EtwTraceSession','Stop-EtwTraceSession','Update-EtwTraceSession',
+              'New-EtwTraceSession','Remove-EtwTraceProvider','Add-EtwTraceProvider',
+              'Set-EtwTraceProvider','New-AutologgerConfig','Remove-AutologgerConfig',
+              'Update-AutologgerConfig','Send-EtwTraceSession',
+              'Set-PnpDevice','Disable-PnpDevice','Enable-PnpDevice','Restart-PnpDevice'
+          )) {
+              if ($commandNames -contains $prohibited) {
+                  throw "qcpep RPMh snapshot contains prohibited command: $prohibited"
+              }
+          }
+
+          $saveCalls = @($commands | Where-Object { $_.GetCommandName() -eq 'Save-EtwTraceSession' })
+          if ($saveCalls.Count -ne 1) {
+              throw "Expected exactly one Save-EtwTraceSession invocation; found $($saveCalls.Count)."
+          }
+          $stopParameters = @($saveCalls[0].CommandElements | Where-Object {
+              $_ -is [System.Management.Automation.Language.CommandParameterAst] -and $_.ParameterName -eq 'Stop'
+          })
+          if ($stopParameters.Count -ne 0) {
+              throw 'qcpep RPMh snapshot must never pass -Stop to Save-EtwTraceSession.'
+          }
+
+          if ($script -match 'DeviceIoControl|CreateFileW|WriteFile|MmMapIoSpace|\\dev\\mem|0x0ac191e0|ioremap|readl|writel|PoFxActivateComponent|PoFxIdleComponent|GetCurrentReading\(') {
+              throw 'qcpep RPMh snapshot contains a prohibited hardware/power-control path.'
           }
 
       - name: Check repository whitespace
