@@ -11,7 +11,7 @@ prev_journal=${A14_AOS_F0_ICP_OWNER_PREV_JOURNAL:-"$HOME/Downloads/a14-aos-f0-ic
 pstore_out=${A14_AOS_F0_ICP_OWNER_PSTORE:-"$HOME/Downloads/a14-aos-f0-icp-owner-pstore.txt"}
 
 fail() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
-for tool in cat grep journalctl sed sudo tee; do
+for tool in cat find grep head journalctl sed sudo tail tee; do
     command -v "$tool" >/dev/null 2>&1 || fail "required command is missing: $tool"
 done
 [ "${EUID:-$(id -u)}" -ne 0 ] || fail "run this collector as your normal user, not with sudo"
