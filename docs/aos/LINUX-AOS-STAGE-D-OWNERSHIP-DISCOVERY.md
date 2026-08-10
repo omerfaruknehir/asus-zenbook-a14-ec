@@ -95,6 +95,48 @@ hardware state:
 The script explicitly performs no camera enumeration, module loading, service
 changes, clock changes, power-domain changes, SSC operation or CPAS access.
 
+## Windows PEP correlation evidence
+
+The Windows boot Power trace proves that CAMP component 0 can transition through
+`PowerRequired=true` to `Active=true`, and identifies the same CAMP token and
+seven performance sets used by the camera-platform driver. However, the WPR
+Power profile did not enable Qualcomm's private qcpep WPP providers, so that
+boot ETL cannot expose the internal PEP/RPMh resource execution.
+
+The installed `qcpep` package has an already-running `qcpep-rpmh` buffering
+session. A safe native QUERY+FLUSH snapshot recovered its private WPP traffic.
+The records use two provider GUIDs embedded in `qcpep8380.sys`, and raw
+`EVENT_RECORD.UserData` decoding shows structured Qualcomm RPMh/interconnect
+traffic including `ICB` payloads.
+
+A correlation run on 2026-08-10 tested whether public Windows Presence Sensing
+configuration could reproduce the CAMP activation while the qcpep buffer was
+available. It did not:
+
+- `HumanPresenceSettings` disabled Wake on Approach, Lock on Leave and Adaptive
+  Dimming, then restored the exact original values successfully;
+- the complete settings transition ran from approximately 07:52:47.509 to
+  07:53:03.732 local time;
+- CAMP appeared only in the WPR rundown immediately afterward, with component 0
+  explicitly `Active=false`, `IdleState=1`;
+- no CAMP `PowerRequired=true` or component-active transition occurred during
+  the settings cycle;
+- the private qcpep WPP stream contains a 278.649-second no-event interval from
+  approximately 07:49:27.812 to 07:54:06.461, which fully contains the settings
+  cycle.
+
+Therefore neither changing Presence Sensing settings nor simply reading the
+public HumanPresenceSensor data path is a valid CAMP activation trigger for this
+Stage D question. Those tests should not be repeated for this purpose.
+
+The next Windows evidence path is a normal user-driven camera preview. The
+collector records WPR Power events while the user manually opens and closes a
+standard Windows camera application, then snapshots the existing `qcpep-rpmh`
+buffer **before** WPR stop. The collector does not launch/control the camera,
+send camera-platform IOCTLs, restart devices or access CPAS. This should provide
+a narrow timestamp window around an ordinary CAMP component-0 activation while
+preserving the private Qualcomm PEP/RPMh traffic from the same interval.
+
 ## Gate for a future hardware experiment
 
 A future Stage D hardware action is permitted only after the read-only evidence
