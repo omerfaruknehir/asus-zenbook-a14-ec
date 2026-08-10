@@ -1,0 +1,76 @@
+name: Validate Windows presence qcpep correlation
+
+on:
+  push:
+    paths:
+      - 'scripts/a14-windows-presence-qcpep-correlation.ps1'
+      - '.github/workflows/windows-presence-qcpep-correlation.yml'
+  pull_request:
+    paths:
+      - 'scripts/a14-windows-presence-qcpep-correlation.ps1'
+      - '.github/workflows/windows-presence-qcpep-correlation.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Parse PowerShell 5.1 wrapper
+        shell: powershell
+        run: |
+          $path = 'scripts/a14-windows-presence-qcpep-correlation.ps1'
+          $tokens = $null
+          $errors = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path $path),
+              [ref]$tokens,
+              [ref]$errors
+          )
+          if ($errors.Count -ne 0) {
+              $errors | Format-List *
+              throw "${path}: PowerShell parser reported $($errors.Count) error(s)."
+          }
+
+      - name: Enforce delegated correlation boundary
+        shell: powershell
+        run: |
+          $path = 'scripts/a14-windows-presence-qcpep-correlation.ps1'
+          $script = Get-Content $path -Raw
+
+          foreach ($required in @(
+              'a14-windows-human-presence-settings-cycle-trace.ps1',
+              'a14-windows-qcpep-rpmh-snapshot.ps1',
+              'a14-windows-camera-platform-kernel-power-export.ps1',
+              'a14-windows-qcpep-rpmh-raw-dump.ps1',
+              'correlation_trigger=public-HumanPresenceSettings-child',
+              'presence_settings_restored_by_child=true',
+              'qcpep_source=existing-qcpep-rpmh-buffering-session',
+              'qcpep_snapshot_helper=native-query-flush-no-stop-no-update',
+              'collector_sends_platform_ioctl=false',
+              'collector_acquires_human_presence_sensor=false',
+              'devices_restarted=false',
+              'pnp_state_changed=false',
+              'direct_cpas_mmio=false',
+              'camera_register_access=false',
+              'ssc_contacted=false'
+          )) {
+              if (-not $script.Contains($required)) {
+                  throw "Missing correlation invariant: $required"
+              }
+          }
+
+          # The wrapper must delegate both the reversible settings transition
+          # and qcpep ETW flush to their separately validated child scripts.
+          # It must not contain either implementation directly.
+          if ($script -match 'HumanPresenceSettings\]::UpdateSettings|ControlTraceW|EVENT_TRACE_CONTROL_(?:QUERY|FLUSH|STOP|UPDATE)|DeviceIoControl|CreateFileW|WriteFile|Set-PnpDevice|Disable-PnpDevice|Enable-PnpDevice|Restart-PnpDevice|devcon(?:\.exe)?|MmMapIoSpace|\\dev\\mem|0x0ac191e0|ioremap|\breadl\s*\(|\bwritel\s*\(|PoFxActivateComponent|PoFxIdleComponent|GetCurrentReading\(') {
+              throw 'Correlation wrapper contains a prohibited direct settings/ETW-control/hardware path.'
+          }
+
+      - name: Check repository whitespace
+        shell: bash
+        run: git diff --check HEAD^ HEAD || git diff --check
