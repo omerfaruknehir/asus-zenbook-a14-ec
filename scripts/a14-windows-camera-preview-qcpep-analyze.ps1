@@ -84,6 +84,10 @@ function Add-SegmentSummary {
     $icbRows = @($segmentRows | Where-Object { $_.UserDataHex -like '49434200*' })
     $rpmh = @($segmentRows | Where-Object { $_.ProviderGuid -ieq '4e3aeace-0120-3f12-a3b8-b0f231c22453' })
     $aux = @($segmentRows | Where-Object { $_.ProviderGuid -ieq 'b844d345-3584-316e-f5dd-a946e820b3eb' })
+    [long]$userDataBytes = 0
+    foreach ($segmentRow in $segmentRows) {
+        $userDataBytes += [long]$segmentRow.UserDataLength
+    }
 
     $Output.Add([pscustomobject]@{
         Segment = $Name
@@ -95,7 +99,7 @@ function Add-SegmentSummary {
         IcbEvents = $icbRows.Count
         RpmhProviderEvents = $rpmh.Count
         AuxProviderEvents = $aux.Count
-        UserDataBytes = [long](($segmentRows | Measure-Object -Property UserDataLength -Sum).Sum)
+        UserDataBytes = $userDataBytes
     })
 }
 
