@@ -50,9 +50,14 @@ The answer must be established before any new mux access is considered.
 The focused Windows correlation now proves that Qualcomm PEP executes an
 HLOS ARC/voltage resource transaction and an ICB transaction set inside the
 blocking CAMP component-0 activation. The exact CAMP resource payload also
-contains an MMCX ARC client vote. The open question is no longer whether a
-PEP-side dependency exists, but whether Linux already expresses equivalent
-per-client semantics through the CAMCC/genpd hierarchy.
+contains an MMCX ARC client vote.
+
+The Linux DT now resolves the matching rail dependency explicitly, but the
+v7.0 Qualcomm common-clock multi-domain attach path does not request the
+`PD_FLAG_REQUIRED_OPP` handling that would register the per-domain
+`required-opps` relationship through `dev_pm_domain_attach_list()`. The next
+read-only discriminator is therefore whether an ordinary Linux camera preview
+nevertheless produces a 64-level CAMCC client vote through some other path.
 
 A positive Linux mapping is preferred because it can be represented through an
 existing framework owner without introducing raw hardware access.
@@ -203,25 +208,76 @@ Linux also has a legitimate hierarchy for the camera dependency:
 - CAMSS names `ife0`, `ife1` and `top` as its three power domains;
 - the live CAMSS `top` phandle is CAMCC power-domain index 5,
   `CAM_CC_TITAN_TOP_GDSC`;
-- the CAMCC provider has two parent genpd links under its external power-domain
-  list;
-- Qualcomm common-clock code attaches that provider power-domain list and GDSC
-  registration adds parentless CAMCC GDSCs, including Titan-top, beneath the
-  provider parents.
+- Qualcomm common-clock code attaches the CAMCC provider's external power
+  domains and GDSC registration adds parentless CAMCC GDSCs, including
+  Titan-top, beneath those parents;
+- preparing an RPM-enabled CAMCC clock runtime-resumes the CAMCC provider for
+  the duration of the clock prepare reference.
 
-Stage C's framework-managed CAMSS runtime resume therefore exercised the
-Titan-top/CAMCC parent-domain topology rather than bypassing it.
+Stage C's framework-managed CAMSS runtime resume and clock preparation therefore
+exercised the Titan-top/CAMCC parent-domain topology rather than bypassing it.
 
-However, the old audit did **not** capture CAMCC's live DT `required-opps` or
-resolve the parent-domain phandles/OPP nodes. It is therefore not yet proven
-that Stage C established the same **camera-owned MMCX LOW_SVS performance vote**
-as Windows CAMP. An aggregate `mmcx=192` cannot answer that question because a
-different consumer may mask a missing camera vote.
+### Live CAMCC parent/OPP resolution
 
-The next evidence step is read-only: resolve CAMCC's actual live
-`power-domains`, `required-opps`, OPP targets and current genpd performance
-states. Only after that mapping is known should another state-changing Linux
-diagnostic be considered.
+The 2026-08-10 read-only audit resolves the CAMCC provider exactly:
+
+```text
+power-domains = <&rpmhpd 10>, <&rpmhpd 6>
+required-opps = <&rpmhpd_opp_low_svs>, <&rpmhpd_opp_low_svs>
+```
+
+The generic X1E RPMh indexes map:
+
+- index 10 -> `RPMHPD_MXC`;
+- index 6 -> `RPMHPD_MMCX`.
+
+Both `required-opps` resolve to `opp-level = 64` (`0x40`, LOW_SVS). Thus the
+Linux DT explicitly describes **MXC=LOW_SVS + MMCX=LOW_SVS** as the CAMCC
+provider's required parent performance state. The Windows CAMP payload's
+`/arc/client/rail_mmcx = 0x40` requirement therefore has a direct Linux DT
+counterpart, and Linux additionally describes the matching MXC LOW_SVS parent
+requirement.
+
+At idle the same audit showed:
+
+```text
+CAMCC runtime_status=suspended
+CAMSS runtime_status=suspended
+mxc = off, performance=0
+  genpd:0:ade0000.clock-controller = suspended, performance=0
+mmcx = on, performance=192
+  genpd:1:ade0000.clock-controller = suspended, performance=0
+```
+
+The `mmcx=192` aggregate is supplied by display/DisplayPort clients and does not
+prove that CAMCC itself cast its required LOW_SVS vote.
+
+### v7.0 required-OPP attachment gap
+
+The exact v7.0 Qualcomm common clock path calls:
+
+```c
+devm_pm_domain_attach_list(dev, NULL, &cc->pd_list);
+```
+
+The v7.0 PM-domain core derives `pd_flags = 0` when the attach-data pointer is
+NULL. Its per-domain OPP configuration is created only under:
+
+```c
+if (pd_flags & PD_FLAG_REQUIRED_OPP)
+```
+
+Therefore this `qcom_cc_really_probe()` call does not request the generic
+multi-domain `required-opps` handling for CAMCC. This is a concrete difference
+between the live DT description and the Qualcomm common-clock attach path.
+
+This is not yet sufficient by itself to claim that the required performance
+vote is absent at runtime, because another subsystem path could still set a
+CAMCC client performance state. The next discriminator is deliberately
+read-only: while a normal Linux camera preview is visibly streaming, rerun the
+CAMCC/MMCX audit and inspect the two CAMCC virtual genpd clients. If CAMCC is
+runtime-active but both remain at performance `0`, the missing LOW_SVS client
+vote is proven directly without modifying any power state for the experiment.
 
 ## Gate for a future hardware experiment
 
@@ -229,13 +285,15 @@ A future Stage D hardware action is permitted only after the read-only evidence
 identifies a concrete additional owner/dependency transition and that transition
 can itself be represented through a legitimate Linux framework owner.
 
-The order remains:
+The order is now:
 
-1. prove whether the Windows MMCX ARC client vote already has an equivalent
-   Linux CAMCC/genpd representation;
-2. if it does not, validate only that newly identified framework-owned
-   dependency/state transition by itself;
-3. validate it concurrently with the already-proven Stage C full-F0 owner hold;
+1. observe CAMCC's MXC/MMCX client performance states during an ordinary Linux
+   camera preview;
+2. if CAMCC remains at client state 0, validate only the existing DT-defined
+   MXC/MMCX LOW_SVS dependency through a narrowly scoped framework-owned
+   diagnostic;
+3. validate that dependency concurrently with the already-proven Stage C
+   full-F0 owner hold;
 4. confirm normal cleanup and camera operation;
 5. only then reassess whether the Windows ownership store has been reproduced
    faithfully enough to justify a separate, explicitly reviewed mux experiment.
