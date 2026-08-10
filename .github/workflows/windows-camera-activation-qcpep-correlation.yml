@@ -1,0 +1,97 @@
+name: Validate Windows camera activation qcpep correlation
+
+on:
+  push:
+    paths:
+      - 'scripts/a14-windows-camera-activation-qcpep-correlation.ps1'
+      - '.github/workflows/windows-camera-activation-qcpep-correlation.yml'
+  pull_request:
+    paths:
+      - 'scripts/a14-windows-camera-activation-qcpep-correlation.ps1'
+      - '.github/workflows/windows-camera-activation-qcpep-correlation.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Parse PowerShell 5.1 collector
+        shell: powershell
+        run: |
+          $path = 'scripts/a14-windows-camera-activation-qcpep-correlation.ps1'
+          $tokens = $null
+          $errors = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path $path), [ref]$tokens, [ref]$errors)
+          if ($errors.Count -ne 0) {
+              $errors | Format-List *
+              throw "PowerShell parser reported $($errors.Count) error(s)."
+          }
+
+      - name: Enforce focused activation safety and ordering
+        shell: powershell
+        run: |
+          $path = 'scripts/a14-windows-camera-activation-qcpep-correlation.ps1'
+          $script = Get-Content $path -Raw
+
+          foreach ($required in @(
+              'scope=camera-bring-up-only',
+              'trigger=user-manual-standard-windows-camera-preview',
+              'camera_opened_by_collector=false',
+              'camera_ioctls_sent_by_collector=false',
+              'camera_platform_ioctl_sent_by_collector=false',
+              'qcpep_snapshot_while_preview_active=true',
+              'qcpep_snapshot_order=before-wpr-stop',
+              'camera_open_window_started',
+              'camera_preview_visible',
+              'activation_hold_complete',
+              'qcpep_snapshot_requested',
+              'wpr_stop_requested',
+              'direct_cpas_mmio=false',
+              'camera_register_access=false',
+              'ssc_contacted=false'
+          )) {
+              if (-not $script.Contains($required)) {
+                  throw "Missing focused-activation invariant: $required"
+              }
+          }
+
+          $snapshotCall = $script.IndexOf('& $snapshotScript -OutputRoot $bundle')
+          $stopMarker = $script.IndexOf("Add-Marker -Path `$markers -Name 'wpr_stop_requested'")
+          if ($snapshotCall -lt 0 -or $stopMarker -lt 0 -or $snapshotCall -gt $stopMarker) {
+              throw 'qcpep snapshot invocation must occur before WPR stop.'
+          }
+
+          $visibleMarker = $script.IndexOf("Add-Marker -Path `$markers -Name 'camera_preview_visible'")
+          if ($visibleMarker -lt 0 -or $visibleMarker -gt $snapshotCall) {
+              throw 'Preview-visible marker must precede qcpep snapshot.'
+          }
+
+          $tokens = $null
+          $errors = $null
+          $ast = [System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path $path), [ref]$tokens, [ref]$errors)
+          $commands = @($ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true))
+          $names = @($commands | ForEach-Object { $_.GetCommandName() } | Where-Object { $_ })
+          foreach ($prohibited in @(
+              'Start-Process','Set-PnpDevice','Disable-PnpDevice','Enable-PnpDevice','Restart-PnpDevice',
+              'Start-EtwTraceSession','Stop-EtwTraceSession','Update-EtwTraceSession','Save-EtwTraceSession',
+              'Send-EtwTraceSession','Add-EtwTraceProvider','Set-EtwTraceProvider','Remove-EtwTraceProvider'
+          )) {
+              if ($names -contains $prohibited) {
+                  throw "Collector contains prohibited command: $prohibited"
+              }
+          }
+
+          if ($script -match 'DeviceIoControl|CreateFileW|WriteFile|ControlTraceW|OpenTraceW|ProcessTrace|MmMapIoSpace|\\dev\\mem|0x0ac191e0|ioremap|\breadl\s*\(|\bwritel\s*\(|PoFxActivateComponent|PoFxIdleComponent|HumanPresenceSensor|HumanPresenceSettings') {
+              throw 'Collector contains prohibited direct ETW-control/hardware/power/sensor path.'
+          }
+
+      - name: Check repository whitespace
+        shell: bash
+        run: git diff --check HEAD^ HEAD || git diff --check
