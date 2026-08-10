@@ -71,7 +71,9 @@ function Get-RowsInWindow {
 
 function Add-SegmentSummary {
     param(
-        [Parameter(Mandatory = $true)][Collections.Generic.List[object]]$Output,
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyCollection()]
+        [Collections.Generic.List[object]]$Output,
         [Parameter(Mandatory = $true)][string]$Name,
         [Parameter(Mandatory = $true)][DateTimeOffset]$Start,
         [Parameter(Mandatory = $true)][DateTimeOffset]$End,
