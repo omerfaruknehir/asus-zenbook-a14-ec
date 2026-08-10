@@ -36,13 +36,50 @@ function Invoke-Wpr {
         [Parameter(Mandatory = $true)][string]$LogPath
     )
 
-    $output = & wpr.exe @Arguments 2>&1
-    $status = $LASTEXITCODE
-    $output | Out-File -LiteralPath $LogPath -Encoding utf8 -Width 8192
+    # Windows PowerShell 5.1 can surface native stderr as NativeCommandError.
+    # Do not let the script-wide ErrorActionPreference=Stop terminate before we
+    # inspect the actual native process exit code.
+    $savedPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        $output = & wpr.exe @Arguments 2>&1
+        $status = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $savedPreference
+    }
+
+    @($output | ForEach-Object { [string]$_ }) |
+        Out-File -LiteralPath $LogPath -Encoding utf8 -Width 8192
     if ($status -ne 0) {
         $hex = ('0x{0:X8}' -f ([uint32]$status))
         throw "wpr.exe failed with exit code $status ($hex). See $LogPath"
     }
+}
+
+function Invoke-WprBestEffort {
+    param(
+        [Parameter(Mandatory = $true)][string[]]$Arguments,
+        [Parameter(Mandatory = $true)][string]$LogPath
+    )
+
+    $savedPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        $output = & wpr.exe @Arguments 2>&1
+        $status = $LASTEXITCODE
+    }
+    catch {
+        $output = @($_.Exception.Message)
+        $status = -1
+    }
+    finally {
+        $ErrorActionPreference = $savedPreference
+    }
+
+    @($output | ForEach-Object { [string]$_ }) |
+        Out-File -LiteralPath $LogPath -Encoding utf8 -Width 8192
+    return $status
 }
 
 function Get-NewestDirectory {
@@ -204,8 +241,9 @@ finally {
         catch {
             "recovery_stop_failed=$($_.Exception.Message)" |
                 Add-Content -LiteralPath $failurePath -Encoding utf8
-            & $wpr.Source -cancel 2>&1 |
-                Out-File -LiteralPath (Join-Path $bundle 'wpr-cancel.txt') -Encoding utf8 -Width 8192
+            $cancelStatus = Invoke-WprBestEffort -Arguments @('-cancel') -LogPath (Join-Path $bundle 'wpr-cancel.txt')
+            "wpr_cancel_exit_code=$cancelStatus" |
+                Add-Content -LiteralPath $failurePath -Encoding utf8
         }
     }
 }
