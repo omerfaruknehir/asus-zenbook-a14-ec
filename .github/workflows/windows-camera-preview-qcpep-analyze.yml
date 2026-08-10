@@ -51,6 +51,7 @@ jobs:
               'camera_preview_closed_confirmed',
               'post_close_hold_complete',
               'qcpep_snapshot_requested',
+              '[AllowEmptyCollection()]',
               'operation=offline-marker-correlation-only',
               'wpr_control=false',
               'etw_control=false',
@@ -85,6 +86,55 @@ jobs:
 
           if ($script -match 'ControlTraceW|OpenTraceW|ProcessTrace|DeviceIoControl|CreateFileW|WriteFile|PoFxActivateComponent|PoFxIdleComponent|HumanPresenceSensor|HumanPresenceSettings|MmMapIoSpace|\\dev\\mem|0x0ac191e0|ioremap|\breadl\s*\(|\bwritel\s*\(') {
               throw 'Offline analysis contains a prohibited live ETW/hardware/power path.'
+          }
+
+      - name: Execute synthetic offline correlation
+        shell: powershell
+        run: |
+          $bundle = Join-Path $env:RUNNER_TEMP 'qcpep-analysis-smoke'
+          $raw = Join-Path $bundle 'A14-QCPEP-RPMH-Raw-test'
+          New-Item -ItemType Directory -Force -Path $raw | Out-Null
+
+          @(
+              'camera_open_window_started=2026-08-10T05:29:40Z'
+              'camera_preview_visible=2026-08-10T05:29:41Z'
+              'camera_preview_hold_complete=2026-08-10T05:29:46Z'
+              'camera_preview_closed_confirmed=2026-08-10T05:29:47Z'
+              'post_close_hold_complete=2026-08-10T05:29:49Z'
+              'qcpep_snapshot_requested=2026-08-10T05:29:50Z'
+          ) | Set-Content -LiteralPath (Join-Path $bundle 'CORRELATION-MARKERS.txt') -Encoding utf8
+
+          $header = @(
+              'ProviderGuid','EventId','Version','Channel','Level','Opcode','Task','Keyword',
+              'HeaderFlags','ProcessId','ThreadId','TimestampFileTime','TimestampUtc','ProcessorIndex',
+              'LoggerId','ExtendedDataCount','UserDataLength','UserDataHex'
+          ) -join "`t"
+          $row1 = @(
+              '4e3aeace-0120-3f12-a3b8-b0f231c22453','28','0','0','4','0','0','0',
+              '0','4','8','0','2026-08-10T05:29:38.0000000Z','0','0','0','8','4943420001000000'
+          ) -join "`t"
+          $row2 = @(
+              '4e3aeace-0120-3f12-a3b8-b0f231c22453','29','0','0','4','0','0','0',
+              '0','4','8','0','2026-08-10T05:29:42.0000000Z','0','0','0','8','4943420002000000'
+          ) -join "`t"
+          @($header, $row1, $row2) | Set-Content -LiteralPath (Join-Path $raw 'qcpep-wpp-raw-events.tsv') -Encoding utf8
+
+          & powershell.exe -NoProfile -ExecutionPolicy Bypass `
+              -File .\scripts\a14-windows-camera-preview-qcpep-analyze.ps1 `
+              $bundle
+          if ($LASTEXITCODE -ne 0) {
+              throw "Synthetic analyzer execution failed with exit code $LASTEXITCODE."
+          }
+
+          $result = Join-Path $bundle 'A14-Camera-Preview-QCPEP-Analysis\ANALYSIS-RESULT.txt'
+          if (-not (Test-Path -LiteralPath $result -PathType Leaf)) {
+              throw 'Synthetic analyzer did not produce ANALYSIS-RESULT.txt.'
+          }
+          $text = Get-Content -LiteralPath $result -Raw
+          foreach ($expected in @('baseline_events=1','camera_open_window_events=1','preview_hold_events=1')) {
+              if (-not $text.Contains($expected)) {
+                  throw "Synthetic analyzer result is missing expected value: $expected"
+              }
           }
 
       - name: Check repository whitespace
