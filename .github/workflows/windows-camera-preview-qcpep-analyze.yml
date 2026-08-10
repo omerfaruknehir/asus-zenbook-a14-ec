@@ -1,0 +1,92 @@
+name: Validate Windows camera preview qcpep analysis
+
+on:
+  push:
+    paths:
+      - 'scripts/a14-windows-camera-preview-qcpep-analyze.ps1'
+      - '.github/workflows/windows-camera-preview-qcpep-analyze.yml'
+  pull_request:
+    paths:
+      - 'scripts/a14-windows-camera-preview-qcpep-analyze.ps1'
+      - '.github/workflows/windows-camera-preview-qcpep-analyze.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Parse PowerShell 5.1 analysis script
+        shell: powershell
+        run: |
+          $path = 'scripts/a14-windows-camera-preview-qcpep-analyze.ps1'
+          $tokens = $null
+          $errors = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path $path),
+              [ref]$tokens,
+              [ref]$errors
+          )
+          if ($errors.Count -ne 0) {
+              $errors | Format-List *
+              throw "PowerShell parser reported $($errors.Count) error(s)."
+          }
+
+      - name: Enforce offline-only analysis boundary
+        shell: powershell
+        run: |
+          $path = 'scripts/a14-windows-camera-preview-qcpep-analyze.ps1'
+          $script = Get-Content $path -Raw
+
+          foreach ($required in @(
+              'CORRELATION-MARKERS.txt',
+              'qcpep-wpp-raw-events.tsv',
+              'camera_open_window_started',
+              'camera_preview_visible',
+              'camera_preview_hold_complete',
+              'camera_preview_closed_confirmed',
+              'post_close_hold_complete',
+              'qcpep_snapshot_requested',
+              'operation=offline-marker-correlation-only',
+              'wpr_control=false',
+              'etw_control=false',
+              'camera_control=false',
+              'camera_ioctls=false',
+              'direct_cpas_mmio=false',
+              'ssc_contacted=false'
+          )) {
+              if (-not $script.Contains($required)) {
+                  throw "Missing required offline-analysis invariant: $required"
+              }
+          }
+
+          $tokens = $null
+          $errors = $null
+          $ast = [System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path $path),
+              [ref]$tokens,
+              [ref]$errors
+          )
+          $commands = @($ast.FindAll({ param($node) $node -is [System.Management.Automation.Language.CommandAst] }, $true))
+          $commandNames = @($commands | ForEach-Object { $_.GetCommandName() } | Where-Object { $_ })
+          foreach ($prohibited in @(
+              'wpr.exe','logman.exe','Start-EtwTraceSession','Stop-EtwTraceSession','Update-EtwTraceSession',
+              'Save-EtwTraceSession','Send-EtwTraceSession','Start-Process','Set-PnpDevice','Disable-PnpDevice',
+              'Enable-PnpDevice','Restart-PnpDevice'
+          )) {
+              if ($commandNames -contains $prohibited) {
+                  throw "Offline analysis contains prohibited command: $prohibited"
+              }
+          }
+
+          if ($script -match 'ControlTraceW|OpenTraceW|ProcessTrace|DeviceIoControl|CreateFileW|WriteFile|PoFxActivateComponent|PoFxIdleComponent|HumanPresenceSensor|HumanPresenceSettings|MmMapIoSpace|\\dev\\mem|0x0ac191e0|ioremap|\breadl\s*\(|\bwritel\s*\(') {
+              throw 'Offline analysis contains a prohibited live ETW/hardware/power path.'
+          }
+
+      - name: Check repository whitespace
+        shell: bash
+        run: git diff --check HEAD^ HEAD || git diff --check
