@@ -1,0 +1,110 @@
+name: Validate Windows camera preview qcpep correlation
+
+on:
+  push:
+    paths:
+      - 'scripts/a14-windows-camera-preview-qcpep-correlation.ps1'
+      - '.github/workflows/windows-camera-preview-qcpep-correlation.yml'
+  pull_request:
+    paths:
+      - 'scripts/a14-windows-camera-preview-qcpep-correlation.ps1'
+      - '.github/workflows/windows-camera-preview-qcpep-correlation.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Parse PowerShell 5.1 wrapper
+        shell: powershell
+        run: |
+          $path = 'scripts/a14-windows-camera-preview-qcpep-correlation.ps1'
+          $tokens = $null
+          $errors = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path $path),
+              [ref]$tokens,
+              [ref]$errors
+          )
+          if ($errors.Count -ne 0) {
+              $errors | Format-List *
+              throw "PowerShell parser reported $($errors.Count) error(s)."
+          }
+
+      - name: Enforce manual camera and capture boundary
+        shell: powershell
+        run: |
+          $path = 'scripts/a14-windows-camera-preview-qcpep-correlation.ps1'
+          $script = Get-Content $path -Raw
+
+          foreach ($required in @(
+              'trigger=user-manual-standard-windows-camera-preview',
+              'camera_opened_by_collector=false',
+              'camera_ioctls_sent_by_collector=false',
+              'camera_platform_ioctl_sent_by_collector=false',
+              'qcpep_snapshot_order=before-wpr-stop',
+              'a14-windows-qcpep-rpmh-snapshot.ps1',
+              'a14-windows-camera-platform-kernel-power-export.ps1',
+              'a14-windows-qcpep-rpmh-raw-dump.ps1',
+              "'-start', 'Power', '-filemode'",
+              "camera_open_window_started",
+              "camera_preview_visible",
+              "camera_preview_closed_confirmed",
+              "qcpep_snapshot_requested",
+              "wpr_stop_requested",
+              'devices_restarted=false',
+              'pnp_state_changed=false',
+              'direct_cpas_mmio=false',
+              'camera_register_access=false',
+              'ssc_contacted=false'
+          )) {
+              if (-not $script.Contains($required)) {
+                  throw "Missing required camera-preview correlation invariant: $required"
+              }
+          }
+
+          # The private buffer must be preserved before WPR save/stop because
+          # WPR serialization itself can take minutes and create unrelated PEP
+          # traffic. Check the actual child invocation, not only marker names.
+          $snapshotCall = $script.IndexOf('& $snapshotScript -OutputRoot $bundle')
+          $stopMarker = $script.IndexOf("Add-Marker -Path `$markers -Name 'wpr_stop_requested'")
+          if ($snapshotCall -lt 0 -or $stopMarker -lt 0 -or $snapshotCall -gt $stopMarker) {
+              throw 'qcpep snapshot invocation must occur before the normal WPR stop marker.'
+          }
+
+          $tokens = $null
+          $errors = $null
+          $ast = [System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path $path),
+              [ref]$tokens,
+              [ref]$errors
+          )
+          if ($errors.Count -ne 0) { throw 'Correlation wrapper did not parse.' }
+
+          $commands = @($ast.FindAll({
+              param($node)
+              $node -is [System.Management.Automation.Language.CommandAst]
+          }, $true))
+          $commandNames = @($commands | ForEach-Object { $_.GetCommandName() } | Where-Object { $_ })
+          foreach ($prohibited in @(
+              'Start-Process','Set-PnpDevice','Disable-PnpDevice','Enable-PnpDevice','Restart-PnpDevice',
+              'Start-EtwTraceSession','Stop-EtwTraceSession','Update-EtwTraceSession','Save-EtwTraceSession',
+              'Send-EtwTraceSession','Add-EtwTraceProvider','Set-EtwTraceProvider','Remove-EtwTraceProvider'
+          )) {
+              if ($commandNames -contains $prohibited) {
+                  throw "Camera-preview correlation wrapper contains prohibited command: $prohibited"
+              }
+          }
+
+          if ($script -match 'DeviceIoControl|CreateFileW|WriteFile|ControlTraceW|OpenTraceW|ProcessTrace|MmMapIoSpace|\\dev\\mem|0x0ac191e0|ioremap|\breadl\s*\(|\bwritel\s*\(|PoFxActivateComponent|PoFxIdleComponent|HumanPresenceSensor|HumanPresenceSettings|GetCurrentReading\(') {
+              throw 'Camera-preview correlation wrapper contains a prohibited direct ETW-control/hardware/power/sensor path.'
+          }
+
+      - name: Check repository whitespace
+        shell: bash
+        run: git diff --check HEAD^ HEAD || git diff --check
