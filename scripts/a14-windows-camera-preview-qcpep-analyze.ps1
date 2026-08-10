@@ -80,7 +80,7 @@ function Add-SegmentSummary {
         [Parameter(Mandatory = $true)][object[]]$Rows
     )
 
-    $segmentRows = Get-RowsInWindow -Rows $Rows -Start $Start -End $End
+    $segmentRows = @(Get-RowsInWindow -Rows $Rows -Start $Start -End $End)
     $icbRows = @($segmentRows | Where-Object { $_.UserDataHex -like '49434200*' })
     $rpmh = @($segmentRows | Where-Object { $_.ProviderGuid -ieq '4e3aeace-0120-3f12-a3b8-b0f231c22453' })
     $aux = @($segmentRows | Where-Object { $_.ProviderGuid -ieq 'b844d345-3584-316e-f5dd-a946e820b3eb' })
@@ -157,7 +157,7 @@ $segments | Export-Csv -LiteralPath (Join-Path $analysis 'segment-summary.csv') 
 # Detailed target window: baseline through snapshot request.
 $targetStart = $open.AddSeconds(-$BaselineSeconds)
 $targetEnd = $snapshotRequested
-$targetRows = Get-RowsInWindow -Rows $rows -Start $targetStart -End $targetEnd
+$targetRows = @(Get-RowsInWindow -Rows $rows -Start $targetStart -End $targetEnd)
 
 $targetRows |
     Select-Object TimestampUtc,ProviderGuid,EventId,Version,Level,Opcode,Task,ProcessId,ThreadId,UserDataLength,UserDataHex |
@@ -188,7 +188,7 @@ $bins = New-Object 'System.Collections.Generic.List[object]'
 while ($binStart -lt $targetEnd) {
     $binEnd = $binStart.AddSeconds(1)
     if ($binEnd -gt $targetEnd) { $binEnd = $targetEnd }
-    $binRows = Get-RowsInWindow -Rows $rows -Start $binStart -End $binEnd
+    $binRows = @(Get-RowsInWindow -Rows $rows -Start $binStart -End $binEnd)
     $bins.Add([pscustomobject]@{
         StartUtc = $binStart.ToString('o')
         EndUtc = $binEnd.ToString('o')
