@@ -6,7 +6,7 @@
 set -Eeuo pipefail
 
 fail() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
-for tool in cat find grep lsmod modprobe readlink sudo; do
+for tool in cat find grep lsmod readlink rmmod sudo; do
     command -v "$tool" >/dev/null 2>&1 || fail "required command is missing: $tool"
 done
 
@@ -49,13 +49,17 @@ else
     printf '%s\n' 'platform_device_present=false'
 fi
 
-printf '\n%s\n' '===== ATTEMPT NORMAL MODULE REMOVE ====='
+printf '\n%s\n' '===== ATTEMPT DIRECT MODULE REMOVE ====='
+# The diagnostic was loaded with insmod from a staging directory and is not
+# necessarily indexed in /lib/modules. rmmod is therefore the correct symmetric
+# unload operation; modprobe -r can fail before it ever asks the kernel to
+# remove an unindexed module.
 set +e
-remove_output=$(sudo modprobe -r -v qcom_ssc_hpd 2>&1)
+remove_output=$(sudo rmmod qcom_ssc_hpd 2>&1)
 remove_rc=$?
 set -e
-printf '%s\n' "$remove_output"
-printf 'modprobe_remove_status=%s\n' "$remove_rc"
+[ -z "$remove_output" ] || printf '%s\n' "$remove_output"
+printf 'rmmod_status=%s\n' "$remove_rc"
 
 if grep -Eq '^qcom_ssc_hpd[[:space:]]' /proc/modules; then
     printf '%s\n' 'qcom_ssc_hpd_loaded_after_remove=true'
