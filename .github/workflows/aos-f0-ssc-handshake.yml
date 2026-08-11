@@ -1,0 +1,60 @@
+name: AOS F0 SSC handshake static checks
+
+on:
+  push:
+    paths:
+      - 'kernel/aos/Makefile'
+      - 'kernel/aos/qcom_ssc_hpd_camss.c'
+      - 'scripts/a14-aos-f0-ssc-handshake-*.sh'
+      - 'scripts/a14-aos-f0-ssc-handshake-*.py'
+      - 'docs/aos/LINUX-AOS-F0-SSC-HANDSHAKE-DISCRIMINATOR.md'
+      - '.github/workflows/aos-f0-ssc-handshake.yml'
+  pull_request:
+    paths:
+      - 'kernel/aos/Makefile'
+      - 'kernel/aos/qcom_ssc_hpd_camss.c'
+      - 'scripts/a14-aos-f0-ssc-handshake-*.sh'
+      - 'scripts/a14-aos-f0-ssc-handshake-*.py'
+      - 'docs/aos/LINUX-AOS-F0-SSC-HANDSHAKE-DISCRIMINATOR.md'
+      - '.github/workflows/aos-f0-ssc-handshake.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  static:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Shell syntax
+        run: |
+          bash -n scripts/a14-aos-f0-ssc-handshake-build.sh
+          bash -n scripts/a14-aos-f0-ssc-handshake-run.sh
+
+      - name: Python syntax
+        run: python3 -m py_compile scripts/a14-aos-f0-ssc-handshake-extend.py
+
+      - name: Verify diagnostic gates
+        run: |
+          grep -q 'AOS_UNROUTED_HANDSHAKE_DIAG ?= 0' kernel/aos/Makefile
+          grep -q 'DA14_SSC_UNROUTED_HANDSHAKE_DIAG' kernel/aos/Makefile
+          grep -q 'allow_unrouted_handshake_probe' kernel/aos/qcom_ssc_hpd_camss.c
+          grep -q 'module_param(allow_unrouted_handshake_probe, bool, 0600)' kernel/aos/qcom_ssc_hpd_camss.c
+          grep -q 'AON mux not switched' kernel/aos/qcom_ssc_hpd_camss.c
+
+      - name: Verify no diagnostic CPAS MMIO
+        run: |
+          diag=$(sed -n '/#ifdef A14_SSC_UNROUTED_HANDSHAKE_DIAG/,/#endif/p' kernel/aos/qcom_ssc_hpd_camss.c)
+          if printf '%s\n' "$diag" | grep -Eq '\<(readl|writel|ioread|iowrite|ioremap)\>'; then
+            echo 'Unrouted handshake diagnostic must not access CPAS MMIO' >&2
+            exit 1
+          fi
+          grep -q 'cpas_ownership_mux_access=false' scripts/a14-aos-f0-ssc-handshake-run.sh
+          grep -q 'direct_cpas_mmio=false' scripts/a14-aos-f0-ssc-handshake-run.sh
+
+      - name: Verify bounded owner hold
+        run: |
+          grep -q 'value < 250 || value > 5000' scripts/a14-aos-f0-ssc-handshake-extend.py
+          grep -q 'hold duration must be 3500..5000 ms' scripts/a14-aos-f0-ssc-handshake-run.sh
+          grep -q 'A14-F0-SSC-HANDSHAKE-DIAG extension' scripts/a14-aos-f0-ssc-handshake-extend.py
