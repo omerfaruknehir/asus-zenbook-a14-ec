@@ -28,7 +28,7 @@ cleanup() {
     if [ -n "$hold_pid" ]; then
         wait "$hold_pid" 2>/dev/null || true
     fi
-    if [ -n "$event_enable" ] && [ -w "$event_enable" -o -e "$event_enable" ]; then
+    if [ -n "$event_enable" ] && [ -e "$event_enable" ]; then
         sudo sh -c 'printf "0\n" > "$1"' sh "$event_enable" 2>/dev/null || true
     fi
     if [ "$hpd_loaded" = true ]; then
@@ -42,8 +42,8 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-for tool in awk cam cat date find fuser grep insmod journalctl lsmod modprobe \
-            readlink sleep sudo sync systemctl tee timeout uname; do
+for tool in awk cam cat date find fuser grep insmod journalctl lsmod mktemp modprobe \
+            readlink rm seq sleep sort sudo sync systemctl tee timeout uname; do
     command -v "$tool" >/dev/null 2>&1 || fail "required command is missing: $tool"
 done
 [ "${EUID:-$(id -u)}" -ne 0 ] || fail "run this script as your normal user, not with sudo"
@@ -185,8 +185,11 @@ hold_pid=$!
 
 hold_ready=false
 for _ in $(seq 1 40); do
-    if sudo journalctl -k -b -n 160 --no-pager -o cat | \
-       grep -Fq "AON-F0-ICP-OWNER-DIAG targets-ok hold-ms=$hold_ms"; then
+    # Do not use journalctl | grep -q under pipefail: grep exits on the first
+    # match and journalctl can then report SIGPIPE, falsely making the pipeline
+    # fail. Capture the finite recent log first.
+    recent_klog=$(sudo journalctl -k -b -n 160 --no-pager -o cat)
+    if grep -Fq "AON-F0-ICP-OWNER-DIAG targets-ok hold-ms=$hold_ms" <<< "$recent_klog"; then
         hold_ready=true
         break
     fi
