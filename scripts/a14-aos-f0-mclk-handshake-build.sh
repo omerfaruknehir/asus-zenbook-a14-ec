@@ -14,7 +14,7 @@ overlay_dts="$work/a14-f0-mclk97-98-overlay.dts"
 overlay_dtbo="$work/a14-f0-mclk97-98-overlay.dtbo"
 
 fail() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
-for tool in bash cp dtc fdtget find grep modinfo rm sha256sum strings uname; do
+for tool in bash cp dtc fdtget find grep modinfo rm sha256sum sort strings uname xargs; do
     command -v "$tool" >/dev/null 2>&1 || fail "required command is missing: $tool"
 done
 [ "${EUID:-$(id -u)}" -ne 0 ] || fail "run this builder as your normal user, not with sudo"
@@ -149,5 +149,4 @@ printf '%s\n' 'gpio99_untouched=true'
 printf '%s\n' 'direct_tlmm_mmio=false'
 printf '%s\n' 'direct_cpas_mmio=false'
 printf '\nInstall/update the isolated one-shot boot with:\n'
-printf '  A14_AOS_F0_ICP_OWNER_STAGE=%q bash %q\n' "$mclk_stage" \
-    "$repo/scripts/a14-aos-f0-icp-owner-diag-install-test.sh"
+printf '  bash %q\n' "$repo/scripts/a14-aos-f0-mclk-handshake-install.sh"
