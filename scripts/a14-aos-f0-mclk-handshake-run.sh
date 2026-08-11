@@ -136,7 +136,9 @@ printf '\n%s\n' '===== LOAD INERT MCLK DIAGNOSTIC ====='
 sudo insmod "$stage/qcom_a14_f0_mclk_diag.ko"
 diag_loaded=true
 for _ in $(seq 1 40); do
-    attr=$(find /sys/bus/platform/drivers/qcom-a14-f0-mclk-diag \
+    # Bound platform devices appear under the driver directory as symlinks.
+    # Follow them so the device attribute is visible to find(1).
+    attr=$(find -L /sys/bus/platform/drivers/qcom-a14-f0-mclk-diag \
         -maxdepth 2 -type f -name a14_f0_mclk_active -print -quit 2>/dev/null || true)
     [ -n "$attr" ] && break
     sleep 0.05
