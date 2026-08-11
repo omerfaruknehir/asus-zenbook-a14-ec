@@ -32,7 +32,10 @@ cleanup() {
         sudo sh -c 'printf "0\n" > "$1"' sh "$event_enable" 2>/dev/null || true
     fi
     if [ "$hpd_loaded" = true ]; then
-        sudo modprobe -r qcom_ssc_hpd 2>/dev/null || true
+        # This module is loaded with insmod from the staging directory, so use
+        # the symmetric direct unload path rather than relying on /lib/modules
+        # indexing through modprobe.
+        sudo rmmod qcom_ssc_hpd 2>/dev/null || true
     fi
     [ -z "$tmp_camera" ] || rm -f "$tmp_camera"
     if [ "$media_stopped" = true ]; then
@@ -42,7 +45,7 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-for tool in awk cam cat date find fuser grep insmod journalctl lsmod mktemp modprobe \
+for tool in awk cam cat date find fuser grep insmod journalctl lsmod mktemp rmmod \
             readlink rm seq sleep sort sudo sync systemctl tee timeout uname; do
     command -v "$tool" >/dev/null 2>&1 || fail "required command is missing: $tool"
 done
@@ -269,7 +272,7 @@ fi
 [ "$hold_rc" -eq 0 ] || fail "full-F0 owner hold failed with status $hold_rc"
 
 printf '\n%s\n' '===== CLEANUP / CAMERA RESTORE ====='
-sudo modprobe -r qcom_ssc_hpd
+sudo rmmod qcom_ssc_hpd
 hpd_loaded=false
 for _ in $(seq 1 30); do
     cs=$(cat "$camss_dev/power/runtime_status" 2>/dev/null || true)
