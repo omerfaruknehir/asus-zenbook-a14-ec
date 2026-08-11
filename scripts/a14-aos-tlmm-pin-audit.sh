@@ -49,7 +49,10 @@ if grep -qsE '[[:space:]]/sys/kernel/debug[[:space:]]+debugfs[[:space:]]' /proc/
     for ctrl in "${ctrl_paths[@]}"; do
         controllers=$((controllers + 1))
         printf '\ncontroller=%s\n' "$(basename "$ctrl")"
-        for file in pinmux-pins pins pingroups; do
+        # pinmux identifies the function/owner while pinconf exposes the
+        # currently programmed bias, drive strength and input/output state when
+        # the Qualcomm pinctrl driver provides those debugfs views.
+        for file in pinmux-pins pins pingroups pinconf-pins pinconf-groups; do
             path="$ctrl/$file"
             sudo test -r "$path" 2>/dev/null || continue
             printf '%s\n' "--- $file ---"
