@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 #include <linux/device.h>
 #include <linux/errno.h>
+#include <linux/module.h>
 #include <linux/of.h>
 #include <linux/of_platform.h>
 #include <linux/platform_device.h>
@@ -9,6 +10,13 @@
 
 #ifdef A14_SSC_CAMSS_HANDOFF
 #include <media/qcom_camss.h>
+
+#ifdef A14_SSC_UNROUTED_HANDSHAKE_DIAG
+static bool allow_unrouted_handshake_probe;
+module_param(allow_unrouted_handshake_probe, bool, 0600);
+MODULE_PARM_DESC(allow_unrouted_handshake_probe,
+	"DIAGNOSTIC ONLY: allow SSC camera-handshake while an external full-F0 CAMSS/CCI/ICP hold is active, without touching the quarantined CPAS ownership mux");
+#endif
 
 int a14_ssc_camss_init(struct a14_ssc_hpd *hpd)
 {
@@ -34,6 +42,11 @@ int a14_ssc_camss_init(struct a14_ssc_hpd *hpd)
 	}
 
 	dev_info(hpd->dev, "CAMSS AON ownership handoff enabled\n");
+#ifdef A14_SSC_UNROUTED_HANDSHAKE_DIAG
+	if (allow_unrouted_handshake_probe)
+		dev_warn(hpd->dev,
+			 "DIAGNOSTIC: unrouted SSC handshake probe enabled; CPAS ownership mux remains untouched\n");
+#endif
 	return 0;
 }
 
@@ -64,6 +77,18 @@ int a14_ssc_camss_acquire(struct a14_ssc_hpd *hpd)
 
 	if (!hpd->camss_dev)
 		return -ENODEV;
+
+#ifdef A14_SSC_UNROUTED_HANDSHAKE_DIAG
+	if (allow_unrouted_handshake_probe) {
+		/* This mode is intentionally NOT ownership. A separate isolated
+		 * diagnostic must already be holding the validated Windows-F0
+		 * CAMSS/CCI/ICP resources. Do not set camss_aon_owned: cleanup must
+		 * never pretend that the quarantined ownership mux was switched. */
+		dev_warn(hpd->dev,
+			 "DIAGNOSTIC: attempting SSC handshake under external full-F0 hold; AON mux not switched\n");
+		return 0;
+	}
+#endif
 
 	ret = qcom_camss_aon_acquire(hpd->camss_dev);
 	if (ret)
