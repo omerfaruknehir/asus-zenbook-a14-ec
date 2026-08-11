@@ -14,6 +14,7 @@ marker=${A14_AOS_F0_MCLK_MARKER:-"$HOME/Downloads/a14-aos-f0-mclk-handshake-last
 attr=
 diag_loaded=false
 active_selected=false
+media_stopped=false
 tmp_camera=
 
 fail() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
@@ -38,6 +39,16 @@ show_pins() {
         sudo grep -E '^(97 \(gpio97\)|98 \(gpio98\)):' "$ctrl/pinconf-groups" 2>/dev/null || true
     fi
 }
+stop_user_media() {
+    systemctl --user stop pipewire-pulse.socket pipewire.socket 2>/dev/null || true
+    systemctl --user stop wireplumber.service pipewire-pulse.service pipewire.service 2>/dev/null || true
+    media_stopped=true
+}
+start_user_media() {
+    systemctl --user start pipewire.socket pipewire-pulse.socket 2>/dev/null || true
+    systemctl --user start pipewire.service pipewire-pulse.service wireplumber.service 2>/dev/null || true
+    media_stopped=false
+}
 cleanup() {
     local rc=$?
     set +e
@@ -50,12 +61,15 @@ cleanup() {
         diag_loaded=false
     fi
     [ -z "$tmp_camera" ] || rm -f "$tmp_camera"
+    if [ "$media_stopped" = true ]; then
+        start_user_media
+    fi
     exit "$rc"
 }
 trap cleanup EXIT INT TERM
 
 for tool in bash cam cat dirname find fuser grep insmod lsmod mktemp rmmod seq \
-            sleep sudo timeout uname; do
+            sleep sudo systemctl timeout uname; do
     command -v "$tool" >/dev/null 2>&1 || fail "required command is missing: $tool"
 done
 [ "${EUID:-$(id -u)}" -ne 0 ] || fail "run this runner as your normal user, not with sudo"
@@ -101,11 +115,15 @@ printf '%s\n' "$baseline_conf"
 [ "$(grep -c 'drive strength (2 mA)' <<<"$baseline_conf")" -eq 2 ] || \
     fail "GPIO97/98 baseline is not 2 mA"
 
+printf '\n%s\n' '===== QUIESCE USER CAMERA SERVICES ====='
+stop_user_media
+sleep 2
 users=$(sudo fuser /dev/video* /dev/media* /dev/v4l-subdev* 2>/dev/null || true)
 if [ -n "$users" ]; then
     sudo fuser -v /dev/video* /dev/media* /dev/v4l-subdev* 2>&1 || true
-    fail "camera/media nodes are busy before MCLK activation"
+    fail "camera/media nodes remain busy after PipeWire/WirePlumber quiesce"
 fi
+printf '%s\n' 'user_media_quiesced=true'
 
 tmp_camera=$(mktemp)
 sudo timeout 25 cam -l >"$tmp_camera" 2>&1 || { cat "$tmp_camera"; fail "pre-MCLK camera enumeration failed"; }
@@ -155,6 +173,12 @@ A14_AOS_F0_SSC_MARKER="$marker" \
 handshake_rc=$?
 set -e
 printf 'handshake_runner_status=%s\n' "$handshake_rc"
+
+# The nested SSC runner restores PipeWire/WirePlumber on exit.  Quiesce them
+# again before returning GPIO97/98 to their baseline state and doing the final
+# camera check, so this outer diagnostic owns the whole pin-state window.
+stop_user_media
+sleep 1
 
 printf '\n%s\n' '===== RESTORE GPIO97/98 BEFORE MODULE REMOVE ====='
 sudo sh -c 'printf "0\n" > "$1"' sh "$attr"
