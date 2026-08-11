@@ -53,15 +53,16 @@ new = """\t/* qcAlwaysOnSensing.dll constructs qsh_camera_handshake_init with\n\
 count = text.count(old)
 if count != 1:
     raise SystemExit(f"ERROR: expected one INIT576 field2=0 sequence, found {count}")
-path.write_text(text.replace(old, new, 1), encoding="utf-8")
+patched = text.replace(old, new, 1)
+if patched.count("num_restarts_detected_since_last_successful_op = 5") != 1:
+    raise SystemExit("ERROR: Windows-matched source marker validation failed")
+if patched.count("\tpayload[p++] = 0x10;\n\tpayload[p++] = 0x05;\n\tpayload[p++] = 0x18;\n\tpayload[p++] = 0x02;\n") != 1:
+    raise SystemExit("ERROR: exact INIT576 field sequence validation failed")
+path.write_text(patched, encoding="utf-8")
 PY
 
 grep -Fq 'num_restarts_detected_since_last_successful_op = 5' \
     "$wire_src/qcom_ssc_hpd_protocol.c" || fail "wire-exact source marker is missing"
-if grep -A8 -F 'size_t a14_ssc_build_handshake_request' "$wire_src/qcom_ssc_hpd_protocol.c" | \
-   grep -Fq 'payload[p++] = 0x00;'; then
-    fail "INIT576 builder still contains restart-count 0 near its header"
-fi
 printf '%s\n' 'wire_exact_source=validated'
 
 printf '\n%s\n' '===== REBUILD ONLY THE HPD MODULE ====='
