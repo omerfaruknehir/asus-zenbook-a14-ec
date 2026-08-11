@@ -15,6 +15,7 @@ cci_modsrc="$work/i2c-qcom-cci-module"
 extender="$repo/scripts/a14-aos-f0-ssc-handshake-extend.py"
 hpd_src="$repo/kernel/aos"
 jobs=${JOBS:-$(nproc 2>/dev/null || printf '4')}
+resume_extended=false
 
 fail() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 for tool in bash cp find grep make modinfo nm python3 rm sha256sum strings uname; do
@@ -33,33 +34,61 @@ printf '%s\n' 'build_only=true'
 printf '%s\n' 'direct_cpas_mmio_allowed=false'
 printf '%s\n' 'automatic_ssc_activation=false'
 
-printf '\n%s\n' '===== BUILD KNOWN-SAFE STAGE-C OWNER BASE ====='
-A14_AOS_F0_ICP_OWNER_WORK="$work" \
-    bash "$repo/scripts/a14-aos-f0-icp-owner-diag-build.sh"
-
-[ -s "$camss_modsrc/camss.c" ] || fail "generated Stage-C CAMSS source is missing"
-[ -s "$cci_modsrc/Module.symvers" ] || fail "CCI owner Module.symvers is missing"
-[ -d "$base_stage" ] || fail "Stage-C artifact directory is missing"
-
-printf '\n%s\n' '===== EXTEND ONLY THE GENERATED DIAGNOSTIC HOLD ====='
-python3 "$extender" "$camss_modsrc/camss.c"
-grep -Fq 'A14-F0-SSC-HANDSHAKE-DIAG extension' "$camss_modsrc/camss.c" || \
-    fail "bounded hold extension was not injected"
-grep -Fq 'value > 5000' "$camss_modsrc/camss.c" || \
-    fail "bounded hold maximum is missing"
-if grep -Eq 'A14-F0-SSC-HANDSHAKE-DIAG.*(readl|writel|ioremap)' "$camss_modsrc/camss.c"; then
-    fail "handshake hold extension unexpectedly contains direct MMIO"
+# A failed post-build validation must not force a full Stage-C rebuild. If the
+# generated diagnostic source is already extended and its just-built module plus
+# CCI symbol table are present, resume from that exact local state.
+if [ -s "$camss_modsrc/camss.c" ] && \
+   grep -Fq 'A14-F0-SSC-HANDSHAKE-DIAG extension' "$camss_modsrc/camss.c" && \
+   grep -Fq 'AON-F0-ICP-OWNER-DIAG targets-ok hold-ms=%u' "$camss_modsrc/camss.c" && \
+   [ -s "$camss_modsrc/qcom-camss.ko" ] && \
+   [ -s "$cci_modsrc/Module.symvers" ] && \
+   [ -d "$base_stage" ]; then
+    case "$(modinfo -F vermagic "$camss_modsrc/qcom-camss.ko")" in
+        "$release "*) resume_extended=true ;;
+    esac
 fi
 
-printf '\n%s\n' '===== REBUILD EXTENDED DIAGNOSTIC CAMSS ====='
-make -C "$headers" M="$camss_modsrc" clean
-make -C "$headers" M="$camss_modsrc" W=1 \
-    KBUILD_EXTRA_SYMBOLS="$cci_modsrc/Module.symvers" -j"$jobs" modules
+if [ "$resume_extended" = true ]; then
+    printf '\n%s\n' '===== RESUME EXISTING EXTENDED STAGE-C BUILD ====='
+    printf '%s\n' 'resume_extended_stage_c=true'
+    printf 'camss_module=%s\n' "$camss_modsrc/qcom-camss.ko"
+    printf '%s\n' 'source_dynamic_hold=validated'
+else
+    printf '\n%s\n' '===== BUILD KNOWN-SAFE STAGE-C OWNER BASE ====='
+    A14_AOS_F0_ICP_OWNER_WORK="$work" \
+        bash "$repo/scripts/a14-aos-f0-icp-owner-diag-build.sh"
+
+    [ -s "$camss_modsrc/camss.c" ] || fail "generated Stage-C CAMSS source is missing"
+    [ -s "$cci_modsrc/Module.symvers" ] || fail "CCI owner Module.symvers is missing"
+    [ -d "$base_stage" ] || fail "Stage-C artifact directory is missing"
+
+    printf '\n%s\n' '===== EXTEND ONLY THE GENERATED DIAGNOSTIC HOLD ====='
+    python3 "$extender" "$camss_modsrc/camss.c"
+    grep -Fq 'A14-F0-SSC-HANDSHAKE-DIAG extension' "$camss_modsrc/camss.c" || \
+        fail "bounded hold extension was not injected"
+    grep -Fq 'value > 5000' "$camss_modsrc/camss.c" || \
+        fail "bounded hold maximum is missing"
+    grep -Fq 'AON-F0-ICP-OWNER-DIAG targets-ok hold-ms=%u' "$camss_modsrc/camss.c" || \
+        fail "extended CAMSS source lacks the dynamic hold marker"
+    if grep -Eq 'A14-F0-SSC-HANDSHAKE-DIAG.*(readl|writel|ioremap)' "$camss_modsrc/camss.c"; then
+        fail "handshake hold extension unexpectedly contains direct MMIO"
+    fi
+
+    printf '\n%s\n' '===== REBUILD EXTENDED DIAGNOSTIC CAMSS ====='
+    make -C "$headers" M="$camss_modsrc" clean
+    make -C "$headers" M="$camss_modsrc" W=1 \
+        KBUILD_EXTRA_SYMBOLS="$cci_modsrc/Module.symvers" -j"$jobs" modules
+fi
+
 camss_ko="$camss_modsrc/qcom-camss.ko"
 [ -s "$camss_ko" ] || fail "extended diagnostic qcom-camss.ko was not produced"
 case "$(modinfo -F vermagic "$camss_ko")" in "$release "*) ;; *) fail "CAMSS vermagic mismatch" ;; esac
-strings "$camss_ko" | grep -Fq 'AON-F0-ICP-OWNER-DIAG targets-ok hold-ms=%u' || \
-    fail "extended CAMSS binary lacks dynamic hold marker"
+# Validate the generated source rather than relying on `strings` preserving the
+# compiler's exact format-string layout in the final module. The previous check
+# produced a false negative even though this source compiled and linked.
+grep -Fq 'AON-F0-ICP-OWNER-DIAG targets-ok hold-ms=%u' "$camss_modsrc/camss.c" || \
+    fail "extended CAMSS source lacks dynamic hold marker after build"
+printf '%s\n' 'extended_camss_module=validated'
 
 printf '\n%s\n' '===== BUILD MANUALLY-GATED SSC HPD PROBE ====='
 make -C "$hpd_src" KDIR="$headers" clean
@@ -96,7 +125,7 @@ EOF_INFO
 (
     cd "$probe_stage"
     rm -f SHA256SUMS
-    find . -type f -maxdepth 1 ! -name SHA256SUMS -print0 |
+    find . -maxdepth 1 -type f ! -name SHA256SUMS -print0 |
         sort -z | xargs -0 sha256sum > SHA256SUMS
     sha256sum -c SHA256SUMS
 )
