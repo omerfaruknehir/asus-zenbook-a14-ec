@@ -239,8 +239,11 @@ hold_pid=
 printf 'full_f0_hold_status=%s\n' "$hold_rc"
 
 printf '\n%s\n' '===== CAPTURE DISCRIMINATING KERNEL LOG ====='
+# Keep ordinary watchdog initialization messages out of the diagnostic log.
+# They previously caused a false fault result merely because the word
+# "watchdog" appeared during boot.
 sudo journalctl -k -b --no-pager -o short-monotonic | \
-    grep -E 'AON-F0-ICP-OWNER-DIAG|qcom-ssc-hpd|qcom_ssc_hpd|SSC datatype|camera handshake|presence activation|SSC sensor error|DIAGNOSTIC: attempting SSC handshake|watchdog|panic|SError|Call trace|Internal error|Oops' \
+    grep -E 'AON-F0-ICP-OWNER-DIAG|qcom-ssc-hpd|qcom_ssc_hpd|SSC datatype|camera handshake|presence activation|SSC sensor error|DIAGNOSTIC: attempting SSC handshake|panic|SError|Call trace|Internal error|Oops|soft lockup|hard LOCKUP|watchdog: BUG' \
     > "$klog" || true
 cat "$klog"
 
@@ -256,8 +259,12 @@ elif [ "$enable_rc" -ne 0 ]; then
 fi
 printf 'discriminator_result=%s\n' "$result"
 
-if grep -Eq 'watchdog|panic|SError|Call trace|Internal error|Oops' "$klog"; then
-    fail "kernel fault marker detected during discriminator"
+fault_detected=false
+if grep -Eq 'Kernel panic|panic:|SError|Call trace:|Internal error:|Oops:|soft lockup|hard LOCKUP|watchdog: BUG' "$klog"; then
+    fault_detected=true
+    printf '%s\n' 'kernel_fault_detected=true'
+else
+    printf '%s\n' 'kernel_fault_detected=false'
 fi
 [ "$hold_rc" -eq 0 ] || fail "full-F0 owner hold failed with status $hold_rc"
 
@@ -295,6 +302,7 @@ result=$result
 event_enable_write_status=$enable_rc
 full_f0_hold_status=$hold_rc
 presence_raw_status=$raw_status
+kernel_fault_detected=$fault_detected
 cpas_ownership_mux_access=false
 direct_cpas_mmio=false
 EOF_MARKER
@@ -302,8 +310,13 @@ sync "$marker"; sync
 
 printf '\n%s\n' '===== RESULT ====='
 printf 'result=%s\n' "$result"
+printf 'kernel_fault_detected=%s\n' "$fault_detected"
 printf 'report=%s\n' "$report"
 printf 'kernel_log=%s\n' "$klog"
 printf 'marker=%s\n' "$marker"
 printf '%s\n' 'cpas_ownership_mux_access=false'
 printf '%s\n' 'direct_cpas_mmio=false'
+
+if [ "$fault_detected" = true ]; then
+    fail "kernel fault marker detected during discriminator"
+fi
