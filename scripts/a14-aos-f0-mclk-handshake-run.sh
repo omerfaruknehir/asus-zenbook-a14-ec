@@ -19,13 +19,14 @@ tmp_camera=
 fail() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 find_tlmm_debug() {
     local file
-    for file in /sys/kernel/debug/pinctrl/*/pinmux-pins; do
-        [ -e "$file" ] || continue
+    while IFS= read -r file; do
+        [ -n "$file" ] || continue
         if sudo grep -Eq '^pin 97 \(GPIO_97\):|^pin 98 \(GPIO_98\):' "$file" 2>/dev/null; then
             dirname "$file"
             return 0
         fi
-    done
+    done < <(sudo find /sys/kernel/debug/pinctrl \
+        -mindepth 2 -maxdepth 2 -type f -name pinmux-pins -print 2>/dev/null || true)
     return 1
 }
 show_pins() {
@@ -53,8 +54,8 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-for tool in bash cam cat dirname find fuser grep insmod lsmod mktemp readlink \
-            rmmod sleep sudo timeout uname; do
+for tool in bash cam cat dirname find fuser grep insmod lsmod mktemp rmmod seq \
+            sleep sudo timeout uname; do
     command -v "$tool" >/dev/null 2>&1 || fail "required command is missing: $tool"
 done
 [ "${EUID:-$(id -u)}" -ne 0 ] || fail "run this runner as your normal user, not with sudo"
