@@ -3,6 +3,7 @@ KDIR ?= /lib/modules/$(shell uname -r)/build
 PWD := $(shell pwd)
 AOS_CAMSS_HANDOFF ?= 0
 AOS_CAMSS_INCLUDE ?=
+AOS_UNROUTED_HANDSHAKE_DIAG ?= 0
 
 obj-m += qcom_ssc_hpd.o
 qcom_ssc_hpd-y := qcom_ssc_hpd_main.o qcom_ssc_hpd_protocol.o \
@@ -13,6 +14,10 @@ ccflags-y += -DA14_SSC_CAMSS_HANDOFF
 ifneq ($(AOS_CAMSS_INCLUDE),)
 ccflags-y += -I$(AOS_CAMSS_INCLUDE)
 endif
+endif
+
+ifeq ($(AOS_UNROUTED_HANDSHAKE_DIAG),1)
+ccflags-y += -DA14_SSC_UNROUTED_HANDSHAKE_DIAG
 endif
 
 all modules: qcom_ssc_hpd_main.c
