@@ -11,7 +11,7 @@ updates="/usr/lib/firmware/updates/$rel"
 initrd="/boot/initrd.img-$release"
 
 fail() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
-for tool in cat date dpkg grep journalctl ls readlink sha256sum stat sudo uname; do
+for tool in awk cat date dpkg grep journalctl ls readlink sha256sum stat sudo uname; do
     command -v "$tool" >/dev/null 2>&1 || fail "required command is missing: $tool"
 done
 [ "${EUID:-$(id -u)}" -ne 0 ] || fail "run as your normal user, not with sudo"
