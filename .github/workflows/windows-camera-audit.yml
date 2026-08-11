@@ -1,0 +1,137 @@
+name: Validate Windows camera-platform audits
+
+on:
+  push:
+    paths:
+      - 'scripts/a14-windows-camera-platform-audit.ps1'
+      - 'scripts/a14-windows-camera-platform-focused-audit.ps1'
+      - 'scripts/a14-windows-camera-platform-pofx-trace.ps1'
+      - 'scripts/a14-windows-qcom0d06-aos-trace.ps1'
+      - '.github/workflows/windows-camera-audit.yml'
+  pull_request:
+    paths:
+      - 'scripts/a14-windows-camera-platform-audit.ps1'
+      - 'scripts/a14-windows-camera-platform-focused-audit.ps1'
+      - 'scripts/a14-windows-camera-platform-pofx-trace.ps1'
+      - 'scripts/a14-windows-qcom0d06-aos-trace.ps1'
+      - '.github/workflows/windows-camera-audit.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  parse:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Parse PowerShell 5.1 scripts
+        shell: powershell
+        run: |
+          foreach ($path in @(
+              'scripts/a14-windows-camera-platform-audit.ps1',
+              'scripts/a14-windows-camera-platform-focused-audit.ps1',
+              'scripts/a14-windows-camera-platform-pofx-trace.ps1',
+              'scripts/a14-windows-qcom0d06-aos-trace.ps1'
+          )) {
+              $tokens = $null
+              $errors = $null
+              [void][System.Management.Automation.Language.Parser]::ParseFile(
+                  (Resolve-Path $path),
+                  [ref]$tokens,
+                  [ref]$errors
+              )
+              if ($errors.Count -ne 0) {
+                  Write-Host "Parser errors in $path"
+                  $errors | Format-List *
+                  throw "PowerShell parser reported $($errors.Count) error(s)."
+              }
+          }
+
+      - name: Enforce read-only audit collector invariants
+        shell: powershell
+        run: |
+          foreach ($path in @(
+              'scripts/a14-windows-camera-platform-audit.ps1',
+              'scripts/a14-windows-camera-platform-focused-audit.ps1'
+          )) {
+              $script = Get-Content $path -Raw
+              foreach ($required in @(
+                  'hardware_writes=false',
+                  'camera_ioctls_sent=false',
+                  'Get-PnpDeviceProperty',
+                  'qccamplatform',
+                  'Get-AuthenticodeSignature',
+                  'Get-FileHash',
+                  'Compress-Archive'
+              )) {
+                  if (-not $script.Contains($required)) {
+                      throw "$path is missing required collector invariant: $required"
+                  }
+              }
+              if ($script -match 'DeviceIoControl|CreateFileW|WriteFile|Set-PnpDevice|Disable-PnpDevice|Enable-PnpDevice') {
+                  throw "$path contains a prohibited hardware-control path."
+              }
+          }
+
+      - name: Enforce safe WPR trace invariants
+        shell: powershell
+        run: |
+          foreach ($path in @(
+              'scripts/a14-windows-camera-platform-pofx-trace.ps1',
+              'scripts/a14-windows-qcom0d06-aos-trace.ps1'
+          )) {
+              $script = Get-Content $path -Raw
+              foreach ($required in @(
+                  "'-start', 'Power', '-filemode'",
+                  'devices_restarted=false',
+                  'Compress-Archive'
+              )) {
+                  if (-not $script.Contains($required)) {
+                      throw "$path is missing required WPR invariant: $required"
+                  }
+              }
+              if ($script -match '\bSet-PnpDevice\b|\bDisable-PnpDevice\b|\bEnable-PnpDevice\b|\bdevcon(?:\.exe)?\b|\\dev\\mem|0x0ac191e0') {
+                  throw "$path contains a prohibited device/MMIO control path."
+              }
+          }
+
+          $qcom = Get-Content 'scripts/a14-windows-qcom0d06-aos-trace.ps1' -Raw
+          foreach ($required in @(
+              'target_device=ACPI\QCOM0D06',
+              'collector_sends_platform_ioctl=false',
+              'collector_reads_human_presence_sensor=',
+              'direct_cpas_mmio=false',
+              'ms-settings:presence',
+              'UseBuiltInPresenceMonitor',
+              'HumanPresenceSensor]::GetDefault()',
+              'GetCurrentReading()'
+          )) {
+              if (-not $qcom.Contains($required)) {
+                  throw "QCOM0D06 trace collector is missing invariant: $required"
+              }
+          }
+
+          if ($qcom -match 'DeviceIoControl|CreateFileW|MmMapIoSpace|WriteFile') {
+              throw 'QCOM0D06 collector must not contain a direct camera-platform control path.'
+          }
+
+      - name: Check focused-audit PowerShell 5.1 hazards
+        shell: powershell
+        run: |
+          $path = 'scripts/a14-windows-camera-platform-focused-audit.ps1'
+          $script = Get-Content $path -Raw
+
+          if ($script -match '\[System\.Collections\.Generic\.List\[object\]\]\$List') {
+              throw 'Do not bind an initially empty generic list through a mandatory PowerShell 5.1 parameter.'
+          }
+          if ($script -notmatch 'function Add-SelectedPath') {
+              throw 'The focused collector must use return-based file selection.'
+          }
+          if ($script -match '(?m)\\\s*$') {
+              throw 'Shell-style backslash line continuation is invalid in PowerShell.'
+          }
+          if ($script -notmatch '\[AllowEmptyCollection\(\)\]') {
+              throw 'JSON output parameters must explicitly accept empty collections.'
+          }

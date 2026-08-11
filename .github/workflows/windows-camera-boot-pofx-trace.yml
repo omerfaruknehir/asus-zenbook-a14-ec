@@ -1,0 +1,186 @@
+name: Validate Windows camera boot PoFx trace
+
+on:
+  push:
+    paths:
+      - 'scripts/a14-windows-camera-platform-boot-pofx-trace.ps1'
+      - 'scripts/a14-windows-qcom0c17-pep-export.ps1'
+      - 'scripts/a14-windows-qcpep-rpmh-snapshot.ps1'
+      - '.github/workflows/windows-camera-boot-pofx-trace.yml'
+  pull_request:
+    paths:
+      - 'scripts/a14-windows-camera-platform-boot-pofx-trace.ps1'
+      - 'scripts/a14-windows-qcom0c17-pep-export.ps1'
+      - 'scripts/a14-windows-qcpep-rpmh-snapshot.ps1'
+      - '.github/workflows/windows-camera-boot-pofx-trace.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Parse PowerShell 5.1 scripts
+        shell: powershell
+        run: |
+          foreach ($path in @(
+              'scripts/a14-windows-camera-platform-boot-pofx-trace.ps1',
+              'scripts/a14-windows-qcom0c17-pep-export.ps1',
+              'scripts/a14-windows-qcpep-rpmh-snapshot.ps1'
+          )) {
+              $tokens = $null
+              $errors = $null
+              [void][System.Management.Automation.Language.Parser]::ParseFile(
+                  (Resolve-Path $path),
+                  [ref]$tokens,
+                  [ref]$errors
+              )
+              if ($errors.Count -ne 0) {
+                  $errors | Format-List *
+                  throw "${path}: PowerShell parser reported $($errors.Count) error(s)."
+              }
+          }
+
+      - name: Enforce boot-trace safety boundary
+        shell: powershell
+        run: |
+          $path = 'scripts/a14-windows-camera-platform-boot-pofx-trace.ps1'
+          $script = Get-Content $path -Raw
+
+          foreach ($required in @(
+              "'-boottrace','-addboot','Power','-filemode'",
+              "'-boottrace','-stopboot'",
+              "'-boottrace','-cancelboot'",
+              'collector_sends_platform_ioctl=false',
+              'devices_restarted_by_collector=false',
+              'pnp_state_changed_by_collector=false',
+              'camera_register_access=false',
+              'direct_cpas_mmio=false',
+              'boot_autologger_removed=true',
+              'Boottrace is already scheduled',
+              'Only create provenance after WPR confirms that addboot succeeded',
+              'qcAlwaysOnSensing.dll',
+              'QCOM0C32',
+              'QCOM0D06',
+              'QCOM06D9',
+              'QCOM0C17'
+          )) {
+              if (-not $script.Contains($required)) {
+                  throw "Missing required boot-trace invariant: $required"
+              }
+          }
+
+          if ($script -match 'DeviceIoControl|CreateFileW|WriteFile|Set-PnpDevice|Disable-PnpDevice|Enable-PnpDevice|devcon(?:\.exe)?|MmMapIoSpace|\\dev\\mem|0x0ac191e0|ioremap|readl|writel|HumanPresenceSensor\]::GetDefault|GetCurrentReading\(') {
+              throw 'Boot trace helper contains a prohibited direct hardware/PnP/sensor-control path.'
+          }
+
+      - name: Enforce QCOM0C17 static-export safety boundary
+        shell: powershell
+        run: |
+          $path = 'scripts/a14-windows-qcom0c17-pep-export.ps1'
+          $script = Get-Content $path -Raw
+
+          foreach ($required in @(
+              "'target=ACPI\VEN_QCOM&DEV_0C17*'",
+              "'operation=static-read-only-driver-export'",
+              "'pnp_state_changed=false'",
+              "'device_restarted=false'",
+              "'power_state_changed=false'",
+              "'camera_state_changed=false'",
+              "'platform_ioctl_sent=false'",
+              "'hardware_register_access=false'",
+              "'direct_cpas_mmio=false'",
+              "'ssc_contacted=false'",
+              'DEVPKEY_Device_DriverInfPath',
+              'pnputil.exe /export-driver',
+              'Get-AuthenticodeSignature',
+              'Get-FileHash'
+          )) {
+              if (-not $script.Contains($required)) {
+                  throw "Missing QCOM0C17 exporter invariant: $required"
+              }
+          }
+
+          if ($script -match 'DeviceIoControl|CreateFileW|WriteFile|Set-PnpDevice|Disable-PnpDevice|Enable-PnpDevice|Restart-PnpDevice|devcon(?:\.exe)?|MmMapIoSpace|\\dev\\mem|0x0ac191e0|ioremap|readl|writel|PoFxActivateComponent|PoFxIdleComponent|GetCurrentReading\(') {
+              throw 'QCOM0C17 exporter contains a prohibited hardware/PnP/power-control path.'
+          }
+
+          if ($script -match 'pnputil\.exe\s+/(add-driver|delete-driver|disable-device|enable-device|restart-device|remove-device)') {
+              throw 'QCOM0C17 exporter contains a mutating pnputil operation.'
+          }
+
+      - name: Enforce qcpep RPMh snapshot safety boundary
+        shell: powershell
+        run: |
+          $path = 'scripts/a14-windows-qcpep-rpmh-snapshot.ps1'
+          $script = Get-Content $path -Raw
+
+          foreach ($required in @(
+              "`$sessionName = 'qcpep-rpmh'",
+              "`$providerGuid = '{2C89C855-6301-41F9-BF56-63416DFE9CA9}'",
+              "`$bufferingModeBit = [uint32]0x400",
+              'EVENT_TRACE_CONTROL_QUERY = 0',
+              'EVENT_TRACE_CONTROL_FLUSH = 3',
+              'ControlTraceW',
+              'operation=native-controltrace-buffer-flush',
+              'etw_control_query=true',
+              'etw_control_flush=true',
+              'etw_control_update=false',
+              'etw_control_stop=false',
+              'session_still_running=true',
+              'session_stopped_by_collector=false',
+              'session_reconfigured_by_collector=false',
+              'provider_reconfigured_by_collector=false',
+              'direct_cpas_mmio=false',
+              'ssc_contacted=false'
+          )) {
+              if (-not $script.Contains($required)) {
+                  throw "Missing qcpep RPMh snapshot invariant: $required"
+              }
+          }
+
+          if ($script.Contains('EVENT_TRACE_CONTROL_STOP =') -or
+              $script.Contains('EVENT_TRACE_CONTROL_UPDATE =')) {
+              throw 'qcpep RPMh native helper must not define STOP or UPDATE control codes.'
+          }
+
+          $tokens = $null
+          $errors = $null
+          $ast = [System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path $path),
+              [ref]$tokens,
+              [ref]$errors
+          )
+          if ($errors.Count -ne 0) { throw 'qcpep RPMh snapshot script did not parse.' }
+
+          # Check actual PowerShell command AST nodes rather than raw text so
+          # safety comments documenting rejected cmdlets do not cause false
+          # positives.
+          $commands = @($ast.FindAll({
+              param($node)
+              $node -is [System.Management.Automation.Language.CommandAst]
+          }, $true))
+          $commandNames = @($commands | ForEach-Object { $_.GetCommandName() } | Where-Object { $_ })
+          foreach ($prohibited in @(
+              'Start-EtwTraceSession','Stop-EtwTraceSession','Update-EtwTraceSession',
+              'New-EtwTraceSession','Remove-EtwTraceProvider','Add-EtwTraceProvider',
+              'Set-EtwTraceProvider','New-AutologgerConfig','Remove-AutologgerConfig',
+              'Update-AutologgerConfig','Save-EtwTraceSession','Send-EtwTraceSession',
+              'Set-PnpDevice','Disable-PnpDevice','Enable-PnpDevice','Restart-PnpDevice'
+          )) {
+              if ($commandNames -contains $prohibited) {
+                  throw "qcpep RPMh snapshot contains prohibited command: $prohibited"
+              }
+          }
+
+          if ($script -match 'DeviceIoControl|CreateFileW|WriteFile|MmMapIoSpace|\\dev\\mem|0x0ac191e0|ioremap|readl|writel|PoFxActivateComponent|PoFxIdleComponent|GetCurrentReading\(') {
+              throw 'qcpep RPMh snapshot contains a prohibited hardware/power-control path.'
+          }
+
+      - name: Check repository whitespace
+        shell: bash
+        run: git diff --check HEAD^ HEAD || git diff --check

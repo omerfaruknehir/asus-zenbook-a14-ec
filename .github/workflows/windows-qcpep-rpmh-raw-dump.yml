@@ -1,0 +1,117 @@
+name: Validate Windows qcpep raw ETL dumper
+
+on:
+  push:
+    paths:
+      - 'scripts/a14-windows-qcpep-rpmh-raw-dump.ps1'
+      - '.github/workflows/windows-qcpep-rpmh-raw-dump.yml'
+  pull_request:
+    paths:
+      - 'scripts/a14-windows-qcpep-rpmh-raw-dump.ps1'
+      - '.github/workflows/windows-qcpep-rpmh-raw-dump.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Parse PowerShell 5.1 script
+        shell: powershell
+        run: |
+          $path = 'scripts/a14-windows-qcpep-rpmh-raw-dump.ps1'
+          $tokens = $null
+          $errors = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path $path),
+              [ref]$tokens,
+              [ref]$errors
+          )
+          if ($errors.Count -ne 0) {
+              $errors | Format-List *
+              throw "${path}: PowerShell parser reported $($errors.Count) error(s)."
+          }
+
+      - name: Compile native ETL consumer
+        shell: powershell
+        run: |
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\a14-windows-qcpep-rpmh-raw-dump.ps1 -CompileOnly
+
+      - name: Enforce offline consumer boundary
+        shell: powershell
+        run: |
+          $path = 'scripts/a14-windows-qcpep-rpmh-raw-dump.ps1'
+          $script = Get-Content $path -Raw
+
+          foreach ($required in @(
+              "[Guid]'4E3AEACE-0120-3F12-A3B8-B0F231C22453'",
+              "[Guid]'B844D345-3584-316E-F5DD-A946E820B3EB'",
+              'OpenTraceW',
+              'ProcessTrace',
+              'CloseTrace',
+              'PROCESS_TRACE_MODE_EVENT_RECORD',
+              'UserDataLength',
+              'UserDataHex',
+              'operation=offline-etl-consume-only',
+              'open_trace_source=etl-file-only',
+              'live_etw_session_opened=false',
+              'etw_control_query=false',
+              'etw_control_flush=false',
+              'etw_control_update=false',
+              'etw_control_stop=false',
+              'provider_enabled_or_disabled=false',
+              'direct_cpas_mmio=false',
+              'ssc_contacted=false'
+          )) {
+              if (-not $script.Contains($required)) {
+                  throw "Missing raw-dump invariant: $required"
+              }
+          }
+
+          $tokens = $null
+          $errors = $null
+          $ast = [System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path $path),
+              [ref]$tokens,
+              [ref]$errors
+          )
+          if ($errors.Count -ne 0) { throw 'Raw-dump script did not parse.' }
+
+          $commands = @($ast.FindAll({
+              param($node)
+              $node -is [System.Management.Automation.Language.CommandAst]
+          }, $true))
+          $commandNames = @($commands | ForEach-Object { $_.GetCommandName() } | Where-Object { $_ })
+          foreach ($prohibited in @(
+              'Start-EtwTraceSession','Stop-EtwTraceSession','Update-EtwTraceSession',
+              'New-EtwTraceSession','Save-EtwTraceSession','Send-EtwTraceSession',
+              'Remove-EtwTraceProvider','Add-EtwTraceProvider','Set-EtwTraceProvider',
+              'New-AutologgerConfig','Remove-AutologgerConfig','Update-AutologgerConfig',
+              'Set-PnpDevice','Disable-PnpDevice','Enable-PnpDevice','Restart-PnpDevice'
+          )) {
+              if ($commandNames -contains $prohibited) {
+                  throw "Raw ETL dumper contains prohibited command: $prohibited"
+              }
+          }
+
+          foreach ($prohibitedNative in @(
+              'ControlTrace','StartTrace','EnableTrace','EnableTraceEx','EnableTraceEx2',
+              'TraceSetInformation','DeviceIoControl','CreateFileW','WriteFile',
+              'MmMapIoSpace','0x0ac191e0','PoFxActivateComponent','PoFxIdleComponent'
+          )) {
+              if ($script.Contains($prohibitedNative)) {
+                  throw "Raw ETL dumper contains prohibited native/control token: $prohibitedNative"
+              }
+          }
+
+          if ($script -match '(?i)(?:^|[^A-Za-z0-9_])(readl|writel)\s*\(') {
+              throw 'Raw ETL dumper contains prohibited MMIO call syntax.'
+          }
+
+      - name: Check repository whitespace
+        shell: bash
+        run: git diff --check HEAD^ HEAD || git diff --check

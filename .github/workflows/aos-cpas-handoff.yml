@@ -1,0 +1,277 @@
+name: Validate AOS CPAS quarantine
+
+on:
+  push:
+    paths:
+      - 'kernel/aos/**'
+      - 'kernel-patches/aos/cpas-handoff/**'
+      - 'kernel-patches/aos/diagnostics/**'
+      - 'kernel-patches/aos/power-diagnostics/**'
+      - 'docs/aos/**'
+      - 'scripts/a14-aos-stage-*.sh'
+      - 'scripts/a14-aos-power-*.sh'
+      - '.github/workflows/aos-cpas-handoff.yml'
+  pull_request:
+    paths:
+      - 'kernel/aos/**'
+      - 'kernel-patches/aos/cpas-handoff/**'
+      - 'kernel-patches/aos/diagnostics/**'
+      - 'kernel-patches/aos/power-diagnostics/**'
+      - 'docs/aos/**'
+      - 'scripts/a14-aos-stage-*.sh'
+      - 'scripts/a14-aos-power-*.sh'
+      - '.github/workflows/aos-cpas-handoff.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate production patch metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          patches=(kernel-patches/aos/cpas-handoff/0*.patch)
+          if ! python3 kernel-patches/aos/cpas-handoff/normalize-patch.py --check \
+              "${patches[@]}"; then
+            echo 'Patch hunk metadata is not normalized; corrected diff follows:' >&2
+            python3 kernel-patches/aos/cpas-handoff/normalize-patch.py "${patches[@]}"
+            git diff -- "${patches[@]}"
+            exit 1
+          fi
+
+      - name: Validate quarantine and ownership plumbing
+        shell: bash
+        run: |
+          set -euo pipefail
+          sh -n kernel-patches/aos/cpas-handoff/apply.sh
+          for script in scripts/a14-aos-stage-*.sh scripts/a14-aos-power-*.sh; do
+            case "$script" in
+              *.py) python3 -m py_compile "$script" ;;
+              *) bash -n "$script" ;;
+            esac
+          done
+
+          injector=scripts/a14-aos-power-diag-inject.py
+          builder=scripts/a14-aos-power-diag-build.sh
+          installer=scripts/a14-aos-power-diag-install-test.sh
+          runner=scripts/a14-aos-power-diag-run.sh
+          stage_a_patch=kernel-patches/aos/cpas-handoff/0006-media-qcom-camss-own-aos-icp-platform-clocks.patch
+          stage_b_patch=kernel-patches/aos/cpas-handoff/0007-i2c-qcom-cci-add-platform-clock-hold-api.patch
+
+          test -s docs/aos/WINDOWS-AOS-PLATFORM-HANDOFF.md
+          test -s docs/aos/LINUX-AOS-PLATFORM-OWNER-DESIGN.md
+          test -s kernel-patches/aos/cpas-handoff/0005-media-qcom-camss-quarantine-direct-aon-mmio.patch
+          test -s "$stage_a_patch"
+          test -s "$stage_b_patch"
+          test -s "$injector"
+          test -s "$builder"
+          test -s "$installer"
+          test -s "$runner"
+
+          grep -q '0005-media-qcom-camss-quarantine-direct-aon-mmio.patch' \
+            kernel-patches/aos/cpas-handoff/apply.sh
+          grep -q '0006-media-qcom-camss-own-aos-icp-platform-clocks.patch' \
+            kernel-patches/aos/cpas-handoff/apply.sh
+          grep -q '0007-i2c-qcom-cci-add-platform-clock-hold-api.patch' \
+            kernel-patches/aos/cpas-handoff/apply.sh
+          grep -q 'returns -EOPNOTSUPP before' \
+            kernel-patches/aos/cpas-handoff/apply.sh
+          grep -q 'Direct host MMIO' kernel-patches/aos/cpas-handoff/README.md
+          grep -q 'access to the AON mux is quarantined' \
+            kernel-patches/aos/cpas-handoff/README.md
+          grep -q 'AOS-only CAMSS consumer clocks' \
+            kernel-patches/aos/cpas-handoff/README.md
+          grep -q 'CCI-owned platform-hold API' \
+            kernel-patches/aos/cpas-handoff/README.md
+          grep -q 'stage 3 is retired' scripts/a14-aos-stage-diag-run.sh
+          grep -q 'stage 4 is permanently blocked' scripts/a14-aos-stage-diag-run.sh
+          grep -q 'write-capable A14 AON diagnostic module has been retired' \
+            scripts/a14-aos-stage-diag-build.sh
+          grep -q 'installation of the write-capable A14 AON diagnostic is blocked' \
+            scripts/a14-aos-stage-diag-install-test.sh
+
+          grep -q 'platform-power-stock-no-mmio-v2' "$builder"
+          grep -q 'source_mode=stock-ubuntu-temporary-copy' "$builder"
+          grep -q 'dtb_changes=false' "$builder"
+          grep -q 'direct_cpas_mmio_allowed=false' "$builder"
+          grep -q 'ssc_activation_allowed=false' "$builder"
+          grep -q 'a14_aon_power_diag/a14_aon_power_probe' "$runner"
+          grep -q 'a14_aos_power_test=1' "$installer"
+          grep -q 'a14_aos_power_test=1' "$runner"
+          grep -q 'AON-POWER-DIAG begin direct-mmio=false ssc=false' "$injector"
+
+          if grep -Eq '^\+.*\b(clk_prepare_enable|clk_bulk_prepare_enable|clk_set_rate)\b' \
+              "$stage_a_patch"; then
+            echo 'Stage A patch must not activate or rate-change ICP clocks' >&2
+            exit 1
+          fi
+
+          grep -q '^+int qcom_cci_platform_hold_get' "$stage_b_patch"
+          grep -q '^+int qcom_cci_platform_hold_put' "$stage_b_patch"
+          grep -q '^+.*pm_runtime_resume_and_get' "$stage_b_patch"
+          grep -q '^+.*clk_round_rate' "$stage_b_patch"
+          grep -q '^+.*platform_active_xfers' "$stage_b_patch"
+          if grep -q '^diff --git a/drivers/media/platform/qcom/camss/' "$stage_b_patch"; then
+            echo 'Stage B must not wire the CCI hold API into CAMSS' >&2
+            exit 1
+          fi
+
+          if grep -q 'a14-aos-stage-build.sh' "$builder"; then
+            echo 'Power diagnostic must not depend on the master-oriented CPAS build' >&2
+            exit 1
+          fi
+          if grep -Eq '^[[:space:]]*cp .*qcom_ssc_hpd|^[[:space:]]*cp .*x1e80100-asus-zenbook-a14-aos-cpas' "$builder"; then
+            echo 'Power diagnostic builder must not stage SSC or a CPAS DTB' >&2
+            exit 1
+          fi
+
+          if find kernel-patches/aos/diagnostics -type f -name '*.patch' \
+              -print -quit 2>/dev/null | grep -q .; then
+            echo 'Retired write-capable diagnostic patches must not return' >&2
+            exit 1
+          fi
+
+          if grep -R -E 'confirm-mmio-write|confirm-aon-switch' \
+              scripts kernel-patches/aos/diagnostics 2>/dev/null; then
+            echo 'A runnable direct-MMIO confirmation path remains' >&2
+            exit 1
+          fi
+
+          if grep -R -E '0x0ac191e0|devm_ioremap.*0x0ac19|ioremap.*0x0ac19' kernel/aos; then
+            echo 'SSC consumer must not map the physical CPAS address' >&2
+            exit 1
+          fi
+
+          for patch in kernel-patches/aos/cpas-handoff/0*.patch; do
+            git apply --numstat "$patch" >/dev/null
+          done
+
+      - name: Check ownership series against Linux master
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --filter=blob:none --sparse \
+            https://github.com/torvalds/linux.git linux
+          git -C linux sparse-checkout set --no-cone \
+            Documentation/devicetree/bindings/media/qcom,x1e80100-camss.yaml \
+            drivers/media/platform/qcom/camss/ \
+            drivers/i2c/busses/i2c-qcom-cci.c \
+            include/media/ \
+            include/linux/i2c-qcom-cci.h \
+            arch/arm64/boot/dts/qcom/x1e80100-asus-zenbook-a14.dts
+
+          for patch in "$GITHUB_WORKSPACE"/kernel-patches/aos/cpas-handoff/0*.patch; do
+            git -C linux apply --check "$patch"
+            git -C linux apply "$patch"
+          done
+
+          camss=linux/drivers/media/platform/qcom/camss/camss.c
+          camss_h=linux/drivers/media/platform/qcom/camss/camss.h
+          cci=linux/drivers/i2c/busses/i2c-qcom-cci.c
+          cci_h=linux/include/linux/i2c-qcom-cci.h
+          binding=linux/Documentation/devicetree/bindings/media/qcom,x1e80100-camss.yaml
+          aos_dtsi=linux/arch/arm64/boot/dts/qcom/x1e80100-asus-zenbook-a14-aos.dtsi
+
+          grep -q 'AON handoff unavailable: direct CPAS MMIO resets this platform' "$camss"
+          grep -q 'ret = -EOPNOTSUPP' "$camss"
+          ! grep -q 'aon_diag_stage' "$camss"
+
+          provider=$(sed -n \
+            '/int qcom_camss_aon_acquire/,/EXPORT_SYMBOL_GPL(qcom_camss_aon_release)/p' \
+            "$camss")
+          if printf '%s\n' "$provider" | grep -Eq '\<(readl|writel)\>'; then
+            echo 'Direct AON MMIO remains in the final provider implementation' >&2
+            exit 1
+          fi
+          if printf '%s\n' "$provider" | grep -Eq '\<(clk_prepare_enable|clk_bulk_prepare_enable|clk_set_rate)\>'; then
+            echo 'Production AON provider must not activate Stage A ICP resources' >&2
+            exit 1
+          fi
+          if grep -q 'qcom_cci_platform_hold_get' "$camss"; then
+            echo 'Stage B CCI hold API is already wired into CAMSS' >&2
+            exit 1
+          fi
+
+          grep -q 'aon_platform_clks\[2\]' "$camss_h"
+          grep -q 'aon_platform_clks\[0\].id = "icp_ahb"' "$camss"
+          grep -q 'aon_platform_clks\[1\].id = "icp"' "$camss"
+          grep -q 'devm_clk_bulk_get_optional' "$camss"
+          test "$(grep -c 'aon_platform_clks' "$camss")" -eq 3
+
+          grep -A1 '^  clocks:' "$binding" | grep -q 'maxItems: 31'
+          grep -q -- '- const: icp_ahb' "$binding"
+          grep -q '^      - const: icp$' "$binding"
+          grep -q 'CAM_CC_ICP_AHB_CLK' "$aos_dtsi"
+          grep -q 'CAM_CC_ICP_CLK' "$aos_dtsi"
+          grep -q '"icp_ahb", "icp"' "$aos_dtsi"
+
+          test -s "$cci_h"
+          grep -q 'qcom_cci_platform_hold_get' "$cci_h"
+          grep -q 'qcom_cci_platform_hold_put' "$cci_h"
+          grep -q 'EXPORT_SYMBOL_GPL(qcom_cci_platform_hold_get)' "$cci"
+          grep -q 'EXPORT_SYMBOL_GPL(qcom_cci_platform_hold_put)' "$cci"
+          grep -q 'pm_runtime_resume_and_get(dev)' "$cci"
+          grep -q 'clk_round_rate(cci->platform_hold_clk, rate)' "$cci"
+          grep -q 'platform_hold_restore_rate' "$cci"
+          grep -q 'platform_active_xfers' "$cci"
+          grep -q 'if (cci->platform_hold_count)' "$cci"
+
+          git -C linux diff --check
+
+          git -C linux reset --hard
+          python3 "$GITHUB_WORKSPACE/scripts/a14-aos-power-diag-inject.py" "$camss"
+          grep -q 'a14_aon_power_probe' "$camss"
+          grep -q 'A14_AON_POWER_CLK_COUNT 7' "$camss"
+          for clock in camnoc_rt_axi camnoc_nrt_axi cpas_ahb core_ahb \
+                       cpas_fast_ahb gcc_axi_hf gcc_axi_sf; do
+            grep -q "\"$clock\"" "$camss"
+          done
+
+          helper=$(sed -n \
+            '/static int a14_camss_aon_power_probe/,/static DEVICE_ATTR_WO(a14_aon_power_probe)/p' \
+            "$camss")
+          if printf '%s\n' "$helper" | grep -Eq '\<(readl|writel|ioread|iowrite)\>'; then
+            echo 'The stock-source power diagnostic helper contains direct MMIO' >&2
+            exit 1
+          fi
+          if printf '%s\n' "$helper" | grep -Eq 'qcom_ssc_hpd|camera.handshake|INIT 576'; then
+            echo 'The stock-source power diagnostic helper contains an SSC path' >&2
+            exit 1
+          fi
+          git -C linux diff --check
+
+      - name: Install kernel headers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y linux-headers-generic
+
+      - name: Compile discovery-only SSC module
+        shell: bash
+        run: |
+          set -euo pipefail
+          kdir=$(find /usr/src -maxdepth 1 -type d -name 'linux-headers-*-generic' | sort -V | tail -n1)
+          test -n "$kdir"
+          make -C kernel/aos clean KDIR="$kdir"
+          make -C kernel/aos KDIR="$kdir" W=1 KBUILD_MODPOST_WARN=1
+          test -s kernel/aos/qcom_ssc_hpd.ko
+
+      - name: Compile CAMSS-provider SSC integration
+        shell: bash
+        run: |
+          set -euo pipefail
+          kdir=$(find /usr/src -maxdepth 1 -type d -name 'linux-headers-*-generic' | sort -V | tail -n1)
+          test -n "$kdir"
+          make -C kernel/aos clean KDIR="$kdir"
+          make -C kernel/aos \
+            KDIR="$kdir" \
+            W=1 \
+            KBUILD_MODPOST_WARN=1 \
+            AOS_CAMSS_HANDOFF=1 \
+            AOS_CAMSS_INCLUDE="$GITHUB_WORKSPACE/kernel/aos/test-include"
+          test -s kernel/aos/qcom_ssc_hpd.ko

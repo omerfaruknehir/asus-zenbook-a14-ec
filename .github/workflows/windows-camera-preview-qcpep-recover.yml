@@ -1,0 +1,89 @@
+name: Validate Windows camera preview qcpep recovery
+
+on:
+  push:
+    paths:
+      - 'scripts/a14-windows-camera-preview-qcpep-recover.ps1'
+      - '.github/workflows/windows-camera-preview-qcpep-recover.yml'
+  pull_request:
+    paths:
+      - 'scripts/a14-windows-camera-preview-qcpep-recover.ps1'
+      - '.github/workflows/windows-camera-preview-qcpep-recover.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Parse PowerShell 5.1 recovery
+        shell: powershell
+        run: |
+          $path = 'scripts/a14-windows-camera-preview-qcpep-recover.ps1'
+          $tokens = $null
+          $errors = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path $path),
+              [ref]$tokens,
+              [ref]$errors
+          )
+          if ($errors.Count -ne 0) {
+              $errors | Format-List *
+              throw "PowerShell parser reported $($errors.Count) error(s)."
+          }
+
+      - name: Enforce offline-only recovery boundary
+        shell: powershell
+        run: |
+          $path = 'scripts/a14-windows-camera-preview-qcpep-recover.ps1'
+          $script = Get-Content $path -Raw
+
+          foreach ($required in @(
+              'Offline decode/package only; no WPR/ETW control or hardware operation.',
+              'a14-windows-camera-platform-kernel-power-export.ps1',
+              'a14-windows-qcpep-rpmh-raw-dump.ps1',
+              'recovery_live_etw_control=false',
+              'recovery_wpr_control=false',
+              'camera_opened_by_recovery=false',
+              'camera_ioctls_sent_by_recovery=false',
+              'direct_cpas_mmio=false',
+              'ssc_contacted=false'
+          )) {
+              if (-not $script.Contains($required)) {
+                  throw "Missing recovery invariant: $required"
+              }
+          }
+
+          $tokens = $null
+          $errors = $null
+          $ast = [System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path $path),
+              [ref]$tokens,
+              [ref]$errors
+          )
+          $commands = @($ast.FindAll({
+              param($node)
+              $node -is [System.Management.Automation.Language.CommandAst]
+          }, $true))
+          $commandNames = @($commands | ForEach-Object { $_.GetCommandName() } | Where-Object { $_ })
+          foreach ($prohibited in @(
+              'wpr.exe','Start-Process','Set-PnpDevice','Disable-PnpDevice','Enable-PnpDevice','Restart-PnpDevice',
+              'Start-EtwTraceSession','Stop-EtwTraceSession','Update-EtwTraceSession','Save-EtwTraceSession',
+              'Send-EtwTraceSession','Add-EtwTraceProvider','Set-EtwTraceProvider','Remove-EtwTraceProvider'
+          )) {
+              if ($commandNames -contains $prohibited) {
+                  throw "Recovery contains prohibited live-control command: $prohibited"
+              }
+          }
+
+          if ($script -match 'ControlTraceW|DeviceIoControl|CreateFileW|WriteFile|PoFxActivateComponent|PoFxIdleComponent|MmMapIoSpace|\\dev\\mem|0x0ac191e0|ioremap|\breadl\s*\(|\bwritel\s*\(') {
+              throw 'Recovery contains a prohibited direct live-control/hardware path.'
+          }
+
+      - name: Check repository whitespace
+        shell: bash
+        run: git diff --check HEAD^ HEAD || git diff --check

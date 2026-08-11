@@ -1,0 +1,159 @@
+name: Validate AOS Stage D owner audit
+
+on:
+  push:
+    paths:
+      - 'scripts/a14-aos-stage-d-*.sh'
+      - 'scripts/a14-aos-stage-d-*.py'
+      - 'docs/aos/LINUX-AOS-STAGE-D-OWNERSHIP-DISCOVERY.md'
+      - '.github/workflows/aos-stage-d-owner-audit.yml'
+  pull_request:
+    paths:
+      - 'scripts/a14-aos-stage-d-*.sh'
+      - 'scripts/a14-aos-stage-d-*.py'
+      - 'docs/aos/LINUX-AOS-STAGE-D-OWNERSHIP-DISCOVERY.md'
+      - '.github/workflows/aos-stage-d-owner-audit.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate Stage D discovery safety boundaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          owner=scripts/a14-aos-stage-d-owner-audit.sh
+          gpio_audit=scripts/a14-aos-stage-d-gpio-audit.sh
+          gpio_map=scripts/a14-aos-stage-d-gpio-map.py
+          runtime_pinctrl=scripts/a14-aos-stage-d-pinctrl-runtime-audit.sh
+
+          for f in "$owner" "$gpio_audit" "$gpio_map" "$runtime_pinctrl"; do
+            test -s "$f"
+          done
+          bash -n "$owner"
+          bash -n "$gpio_audit"
+          bash -n "$runtime_pinctrl"
+          python3 -m py_compile "$gpio_map"
+
+          grep -Fq 'operation=read-only-discovery' "$owner"
+          grep -Fq 'cpas_mmio_access=false' "$owner"
+          grep -Fq 'scm_invocation=false' "$owner"
+          grep -Fq 'ssc_contacted=false' "$owner"
+          grep -Fq 'clock_state_change=false' "$owner"
+          grep -Fq 'power_domain_state_change=false' "$owner"
+          grep -Fq 'camera_stream_started=false' "$owner"
+          grep -Fq '[ ! -e "$out" ] || fail' "$owner"
+
+          grep -Fq 'hardware_write=false' "$gpio_audit"
+          grep -Fq 'direct_cpas_mmio=false' "$gpio_audit"
+          grep -Fq 'ssc_contacted=false' "$gpio_audit"
+          grep -Fq 'boot_scope=custom-diagnostic' "$gpio_audit"
+
+          grep -Fq 'operation=read-only-live-dt-map' "$gpio_map"
+          grep -Fq 'hardware_write=false' "$gpio_map"
+          grep -Fq 'gpio_write=false' "$gpio_map"
+          grep -Fq 'direct_cpas_mmio=false' "$gpio_map"
+          grep -Fq 'ssc_contacted=false' "$gpio_map"
+          grep -Fq '99: "gpio"' "$gpio_map"
+          grep -Fq '100: "cam_aon"' "$gpio_map"
+          grep -Fq '101: "cci_i2c"' "$gpio_map"
+          grep -Fq 'pinctrl_consumers' "$gpio_map"
+
+          grep -Fq 'operation=read-only-runtime-pinctrl-audit' "$runtime_pinctrl"
+          grep -Fq 'hardware_write=false' "$runtime_pinctrl"
+          grep -Fq 'gpio_write=false' "$runtime_pinctrl"
+          grep -Fq 'pinctrl_write=false' "$runtime_pinctrl"
+          grep -Fq 'camera_state_change=false' "$runtime_pinctrl"
+          grep -Fq 'clock_state_change=false' "$runtime_pinctrl"
+          grep -Fq 'power_domain_state_change=false' "$runtime_pinctrl"
+          grep -Fq 'direct_cpas_mmio=false' "$runtime_pinctrl"
+          grep -Fq 'ssc_contacted=false' "$runtime_pinctrl"
+          grep -Fq 'mount -t debugfs debugfs "$DBG_ROOT"' "$runtime_pinctrl"
+          grep -Fq 'sudo umount "$DBG_ROOT"' "$runtime_pinctrl"
+
+          python3 - "$owner" "$gpio_audit" "$gpio_map" "$runtime_pinctrl" <<'PY'
+          import re
+          import sys
+
+          owner, gpio_audit, gpio_map, runtime_pinctrl = [
+              open(p, encoding='utf-8').read() for p in sys.argv[1:]
+          ]
+
+          forbidden_owner = {
+              '/dev/mem': 'userspace physical-memory access',
+              'devmem ': 'devmem invocation',
+              'ioremap(': 'kernel MMIO mapping helper',
+              'readl(': 'kernel MMIO read helper',
+              'writel(': 'kernel MMIO write helper',
+              'qcom_scm_io_': 'Qualcomm secure-I/O helper',
+              'qcom_scm_call': 'Qualcomm SCM call helper',
+              'a14_f0_icp_owner_probe': 'Stage C writable probe path',
+              'camera.handshake': 'SSC camera-handshake activation',
+              'INIT 576': 'SSC INIT activation',
+              'modprobe ': 'module loading',
+              'insmod ': 'module loading',
+              'systemctl ': 'service-state mutation',
+              'fuser ': 'media-node manipulation path',
+              'cam -l': 'camera enumeration side effect',
+          }
+          for needle, why in forbidden_owner.items():
+              if needle in owner:
+                  raise SystemExit(f'Stage D owner audit contains prohibited {why}: {needle}')
+
+          def executable_shell(text):
+              return '\n'.join(
+                  line for line in text.splitlines()
+                  if not line.lstrip().startswith('#')
+              )
+
+          forbidden_shell = (
+              '/dev/mem', 'devmem ', 'modprobe ', 'insmod ', 'systemctl ',
+              'fuser ', 'cam -l', 'a14_f0_icp_owner_probe', 'camera.handshake',
+          )
+          for text, label in (
+              (executable_shell(gpio_audit), 'gpio-audit'),
+              (executable_shell(runtime_pinctrl), 'runtime-pinctrl'),
+          ):
+              for needle in forbidden_shell:
+                  if needle in text:
+                      raise SystemExit(f'Stage D {label} executable path contains prohibited token: {needle}')
+              for pattern in (
+                  r'>\s*/sys/',
+                  r'\btee\s+[^\n]*/sys/',
+                  r'\becho\s+[^\n]*>\s*/sys/',
+                  r'\bprintf\s+[^\n]*>\s*/sys/',
+              ):
+                  if re.search(pattern, text):
+                      raise SystemExit(f'Stage D {label} contains possible sysfs mutation: {pattern}')
+
+          # Runtime audit may mount only debugfs and must always carry an unmount path.
+          runtime_code = executable_shell(runtime_pinctrl)
+          mount_lines = [line.strip() for line in runtime_code.splitlines() if re.search(r'\bmount\b', line)]
+          real_mounts = [line for line in mount_lines if 'umount' not in line and 'temporary_debugfs_mount=' not in line]
+          if real_mounts != ['sudo mount -t debugfs debugfs "$DBG_ROOT"']:
+              raise SystemExit(f'unexpected runtime-pinctrl mount path: {real_mounts}')
+          if 'sudo umount "$DBG_ROOT"' not in runtime_code:
+              raise SystemExit('runtime-pinctrl audit lacks cleanup unmount')
+
+          forbidden_gpio_map = (
+              '/dev/mem', 'devmem ', 'modprobe ', 'insmod ', 'systemctl ',
+              'fuser ', 'cam -l', 'a14_f0_icp_owner_probe', 'camera.handshake',
+          )
+          for needle in forbidden_gpio_map:
+              if needle in gpio_map:
+                  raise SystemExit(f'Stage D GPIO mapper contains prohibited token: {needle}')
+          if 'subprocess.run(' not in gpio_map or '["dtc", "-I", "fs", "-O", "dts"' not in gpio_map:
+              raise SystemExit('Stage D GPIO mapper does not have the expected dtc-only subprocess path')
+          if re.search(r'\bsudo\b', gpio_map):
+              raise SystemExit('Stage D GPIO mapper unexpectedly contains sudo')
+          PY
+
+          test -s docs/aos/LINUX-AOS-STAGE-D-OWNERSHIP-DISCOVERY.md
+          grep -Fq 'Direct CPAS MMIO remains prohibited' \
+            docs/aos/LINUX-AOS-STAGE-D-OWNERSHIP-DISCOVERY.md

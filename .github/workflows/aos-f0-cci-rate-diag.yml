@@ -1,0 +1,72 @@
+name: Validate AOS F0 CCI rate diagnostic
+
+on:
+  push:
+    paths:
+      - 'scripts/a14-aos-f0-cci-rate-*'
+      - '.github/workflows/aos-f0-cci-rate-diag.yml'
+  pull_request:
+    paths:
+      - 'scripts/a14-aos-f0-cci-rate-*'
+      - '.github/workflows/aos-f0-cci-rate-diag.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Syntax and safety checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile scripts/a14-aos-f0-cci-rate-diag-inject.py
+          bash -n scripts/a14-aos-f0-cci-rate-diag-build.sh
+          bash -n scripts/a14-aos-f0-cci-rate-diag-install-test.sh
+          bash -n scripts/a14-aos-f0-cci-rate-diag-run.sh
+
+          grep -q '37500000' scripts/a14-aos-f0-cci-rate-diag-inject.py
+          grep -q 'direct_cpas_mmio_allowed=false' scripts/a14-aos-f0-cci-rate-diag-build.sh
+          grep -q 'ssc_activation_allowed=false' scripts/a14-aos-f0-cci-rate-diag-build.sh
+          grep -q 'a14_aos_f0_cci_rate_test=1' scripts/a14-aos-f0-cci-rate-diag-install-test.sh
+          grep -q 'both-cci-runtime-suspended' scripts/a14-aos-f0-cci-rate-diag-run.sh
+
+          if grep -R -E '0x0ac191e0|0x1e0|/dev/mem|(^|[;&|])[[:space:]]*(sudo[[:space:]]+)?(devmem|busybox[[:space:]]+devmem)' scripts/a14-aos-f0-cci-rate-*; then
+            echo 'CCI-rate diagnostic contains a direct CPAS/MMIO path' >&2
+            exit 1
+          fi
+          if grep -R -E '(^|[;&|])[[:space:]]*(sudo[[:space:]]+)?(modprobe|insmod)[^#\n]*qcom_ssc_hpd' scripts/a14-aos-f0-cci-rate-*; then
+            echo 'CCI-rate diagnostic contains an SSC activation path' >&2
+            exit 1
+          fi
+
+      - name: Check injector against Linux master
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --filter=blob:none --sparse https://github.com/torvalds/linux.git linux
+          git -C linux sparse-checkout set --no-cone drivers/i2c/busses/i2c-qcom-cci.c
+
+          cci=linux/drivers/i2c/busses/i2c-qcom-cci.c
+          python3 "$GITHUB_WORKSPACE/scripts/a14-aos-f0-cci-rate-diag-inject.py" "$cci"
+
+          grep -q 'AON-F0-CCI-RATE-DIAG begin' "$cci"
+          grep -q 'A14_F0_CCI_TARGET_RATE 37500000UL' "$cci"
+          grep -q 'pm_runtime_resume_and_get' "$cci"
+          grep -q 'restore device=%s target=%lu actual=%lu' "$cci"
+
+          helper=$(sed -n '/static int a14_f0_cci_rate_probe/,/static DEVICE_ATTR_WO(a14_f0_cci_rate_probe)/p' "$cci")
+          if printf '%s\n' "$helper" | grep -Eq '\<(readl|writel|ioread|iowrite|ioremap)\>'; then
+            echo 'Injected CCI-rate helper contains direct MMIO' >&2
+            exit 1
+          fi
+          if printf '%s\n' "$helper" | grep -Eq 'qcom_ssc_hpd|camera.handshake|INIT 576'; then
+            echo 'Injected CCI-rate helper contains an SSC path' >&2
+            exit 1
+          fi
+
+          git -C linux diff --check

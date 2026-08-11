@@ -1,0 +1,70 @@
+name: Validate AOS Stage D MMCX audit
+
+on:
+  push:
+    paths:
+      - 'scripts/a14-aos-stage-d-mmcx-audit.py'
+      - '.github/workflows/aos-stage-d-mmcx-audit.yml'
+  pull_request:
+    paths:
+      - 'scripts/a14-aos-stage-d-mmcx-audit.py'
+      - '.github/workflows/aos-stage-d-mmcx-audit.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compile Python audit
+        run: python3 -m py_compile scripts/a14-aos-stage-d-mmcx-audit.py
+
+      - name: Run parser self-test
+        run: python3 scripts/a14-aos-stage-d-mmcx-audit.py --self-test
+
+      - name: Enforce read-only safety boundary
+        shell: python
+        run: |
+          from pathlib import Path
+          import ast
+          import re
+
+          path = Path('scripts/a14-aos-stage-d-mmcx-audit.py')
+          text = path.read_text()
+          ast.parse(text)
+
+          required = [
+              'operation=read-only-discovery',
+              'runtime_pm_changes=false',
+              'power_domain_changes=false',
+              'performance_state_changes=false',
+              'clock_changes=false',
+              'camera_stream_started=false',
+              'cpas_mmio_access=false',
+              'direct_readl_writel=false',
+              'scm_invocation=false',
+              'ssc_contacted=false',
+              'required-opps',
+              'power-domains',
+              'pm_genpd_summary',
+          ]
+          for item in required:
+              if item not in text:
+                  raise SystemExit(f'missing safety/audit invariant: {item}')
+
+          prohibited = [
+              r'/dev/mem', r'0x0ac191e0', r'\bioremap\b', r'\breadl\s*\(', r'\bwritel\s*\(',
+              r'pm_runtime_resume', r'pm_runtime_get', r'pm_runtime_put', r'set_performance_state',
+              r'clk_set_rate', r'clk_prepare_enable', r'icc_set_bw', r'DeviceIoControl',
+              r'qcom_scm', r'SSC INIT', r'576', r'subprocess\.', r'os\.system\(', r'Popen\(',
+          ]
+          for pattern in prohibited:
+              if re.search(pattern, text, flags=re.IGNORECASE):
+                  raise SystemExit(f'prohibited state-changing/direct-access pattern: {pattern}')
+
+      - name: Check whitespace
+        run: git diff --check HEAD^ HEAD || git diff --check

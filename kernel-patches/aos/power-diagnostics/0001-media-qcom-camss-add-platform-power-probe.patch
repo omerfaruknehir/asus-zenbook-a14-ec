@@ -1,0 +1,202 @@
+From 0000000000000000000000000000000000002001 Mon Sep 17 00:00:00 2001
+From: Omer Faruk Nehir <omerfaruknehir@gmail.com>
+Date: Thu, 6 Aug 2026 16:15:00 +0300
+Subject: [PATCH diagnostic] media: qcom: camss: add non-MMIO platform power probe
+
+The matching Windows qccamplatform8380 driver activates PoFx component 0 and
+requires PlatformPowerState=ON before storing to the AON camera-select mux.
+Its PEP resource graph enables a wider platform clock set than the original
+Linux diagnostic, which held only cpas_ahb and cpas_fast_ahb.
+
+Add a diagnostic-only sysfs trigger which acquires CAMSS runtime PM, and thus
+the top GDSC plus CAMSS interconnect votes, then enables the seven equivalent
+clock resources exposed by the X1E80100 CAMSS binding. Report their resulting
+rates, hold the state briefly, and unwind everything in reverse.
+
+This probe never reads or writes the CPAS-top window and never contacts SSC.
+It is intentionally outside the production patch series.
+
+Signed-off-by: Omer Faruk Nehir <omerfaruknehir@gmail.com>
+---
+ drivers/media/platform/qcom/camss/camss.c | 125 ++++++++++++++++++++++
+ drivers/media/platform/qcom/camss/camss.h |   1 +
+ 2 files changed, 126 insertions(+)
+
+diff --git a/drivers/media/platform/qcom/camss/camss.h b/drivers/media/platform/qcom/camss/camss.h
+index 000000000002..000000002001 100644
+--- a/drivers/media/platform/qcom/camss/camss.h
++++ b/drivers/media/platform/qcom/camss/camss.h
+@@ -139,6 +139,7 @@ struct camss {
+ 
+ 	void __iomem *cpas_top_base;
+ 	struct clk_bulk_data aon_clks[2];
++	struct clk_bulk_data aon_power_clks[7];
+ 	struct mutex aon_lock;
+ 	unsigned int ap_streams;
+ 	bool aon_owned;
+diff --git a/drivers/media/platform/qcom/camss/camss.c b/drivers/media/platform/qcom/camss/camss.c
+index 000000000006..000000002002 100644
+--- a/drivers/media/platform/qcom/camss/camss.c
++++ b/drivers/media/platform/qcom/camss/camss.c
+@@ -8,7 +8,9 @@
+  * Copyright (C) 2015-2018 Linaro Ltd.
+  */
+ #include <linux/clk.h>
++#include <linux/delay.h>
+ #include <linux/io.h>
++#include <linux/kstrtox.h>
+ #include <linux/interconnect.h>
+ #include <linux/media-bus-format.h>
+ #include <linux/media.h>
+@@ -37,6 +39,18 @@
+ #define X1E_CPAS_AON_CAM_SEL_AON	0x101
+ #define X1E_CPAS_AON_CLK_COUNT		2
+ 
++#define X1E_AON_POWER_CLK_COUNT		7
++
++static const char * const x1e_aon_power_clk_ids[X1E_AON_POWER_CLK_COUNT] = {
++	"camnoc_rt_axi",
++	"camnoc_nrt_axi",
++	"cpas_ahb",
++	"core_ahb",
++	"cpas_fast_ahb",
++	"gcc_axi_hf",
++	"gcc_axi_sf",
++};
++
+ static const struct parent_dev_ops vfe_parent_dev_ops;
+ 
+ int camss_ap_stream_get(struct camss *camss)
+@@ -126,6 +140,98 @@ void qcom_camss_aon_release(struct device *camss_dev)
+ }
+ EXPORT_SYMBOL_GPL(qcom_camss_aon_release);
+ 
++static int qcom_camss_aon_power_probe(struct camss *camss)
++{
++	bool clocks_held = false;
++	bool pm_held = false;
++	unsigned int i;
++	int ret = 0;
++
++	mutex_lock(&camss->aon_lock);
++	if (camss->aon_owned || camss->ap_streams) {
++		ret = -EBUSY;
++		goto out_unlock;
++	}
++
++	dev_emerg(camss->dev,
++		  "AON-POWER-DIAG begin direct-mmio=false ssc=false\n");
++
++	ret = pm_runtime_resume_and_get(camss->dev);
++	if (ret < 0) {
++		dev_emerg(camss->dev,
++			  "AON-POWER-DIAG runtime-pm failed ret=%d\n", ret);
++		goto out_unlock;
++	}
++	pm_held = true;
++	dev_emerg(camss->dev,
++		  "AON-POWER-DIAG runtime-pm ok top-gdsc=true icc-votes=true\n");
++
++	ret = clk_bulk_prepare_enable(X1E_AON_POWER_CLK_COUNT,
++				      camss->aon_power_clks);
++	if (ret) {
++		dev_emerg(camss->dev,
++			  "AON-POWER-DIAG platform-clocks failed ret=%d\n",
++			  ret);
++		goto out_release;
++	}
++	clocks_held = true;
++
++	for (i = 0; i < X1E_AON_POWER_CLK_COUNT; i++)
++		dev_emerg(camss->dev,
++			  "AON-POWER-DIAG clock=%s rate=%lu\n",
++			  camss->aon_power_clks[i].id,
++			  clk_get_rate(camss->aon_power_clks[i].clk));
++
++	dev_emerg(camss->dev,
++		  "AON-POWER-DIAG platform-clocks ok hold-ms=250\n");
++	msleep(250);
++
++out_release:
++	if (clocks_held)
++		clk_bulk_disable_unprepare(X1E_AON_POWER_CLK_COUNT,
++					   camss->aon_power_clks);
++	if (pm_held)
++		pm_runtime_put(camss->dev);
++	dev_emerg(camss->dev,
++		  "AON-POWER-DIAG complete ret=%d direct-mmio=false ssc=false\n",
++		  ret);
++out_unlock:
++	mutex_unlock(&camss->aon_lock);
++	return ret;
++}
++
++static ssize_t aon_power_probe_store(struct device *dev,
++				     struct device_attribute *attr,
++				     const char *buf, size_t count)
++{
++	struct camss *camss = dev_get_drvdata(dev);
++	unsigned int trigger;
++	int ret;
++
++	if (!camss)
++		return -ENODEV;
++
++	ret = kstrtouint(buf, 0, &trigger);
++	if (ret)
++		return ret;
++	if (trigger != 1)
++		return -EINVAL;
++
++	ret = qcom_camss_aon_power_probe(camss);
++	return ret ? ret : count;
++}
++static DEVICE_ATTR_WO(aon_power_probe);
++
++static struct attribute *camss_aon_power_diag_attrs[] = {
++	&dev_attr_aon_power_probe.attr,
++	NULL,
++};
++
++static const struct attribute_group camss_aon_power_diag_group = {
++	.name = "aon_power_diag",
++	.attrs = camss_aon_power_diag_attrs,
++};
++
+ static const struct camss_subdev_resources csiphy_res_8x16[] = {
+ 	/* CSIPHY0 */
+ 	{
+@@ -5415,5 +5521,6 @@ static int camss_probe(struct platform_device *pdev)
+ 	struct device *dev = &pdev->dev;
+ 	struct camss *camss;
++	unsigned int i;
+ 	int ret;
+ 
+ 	camss = devm_kzalloc(dev, sizeof(*camss), GFP_KERNEL);
+@@ -5430,6 +5537,24 @@ static int camss_probe(struct platform_device *pdev)
+ 		if (ret)
+ 			return dev_err_probe(dev, ret,
+ 					     "failed to get CPAS AON clocks\n");
++
++		for (i = 0; i < X1E_AON_POWER_CLK_COUNT; i++)
++			camss->aon_power_clks[i].id = x1e_aon_power_clk_ids[i];
++
++		ret = devm_clk_bulk_get(dev, X1E_AON_POWER_CLK_COUNT,
++					camss->aon_power_clks);
++		if (ret)
++			return dev_err_probe(dev, ret,
++					     "failed to get AON platform clocks\n");
++
++		ret = devm_device_add_group(dev,
++					    &camss_aon_power_diag_group);
++		if (ret)
++			return dev_err_probe(dev, ret,
++					     "failed to add AON power diagnostic\n");
++
++		dev_warn(dev,
++			 "diagnostic-only AON platform power probe available; direct MMIO remains disabled\n");
+ 	}
+ 
+ 	camss->csiphy = devm_kcalloc(dev, camss->res->csiphy_num,
+-- 
+2.51.0

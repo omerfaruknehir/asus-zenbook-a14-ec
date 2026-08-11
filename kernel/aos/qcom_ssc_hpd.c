@@ -148,6 +148,7 @@ static void disconnect_client(struct a14_ssc_hpd *hpd)
 
 	if (release)
 		qmi_handle_release(&hpd->client);
+	a14_ssc_camss_release(hpd);
 	mutex_unlock(&hpd->op_lock);
 }
 
@@ -300,20 +301,26 @@ static int a14_ssc_hpd_probe(struct platform_device *pdev)
 		goto err_destroy_wq;
 	platform_set_drvdata(pdev, hpd);
 
-	ret = qmi_handle_init(&hpd->lookup, 0, &lookup_ops, NULL);
+	ret = a14_ssc_camss_init(hpd);
 	if (ret)
 		goto err_destroy_wq;
+
+	ret = qmi_handle_init(&hpd->lookup, 0, &lookup_ops, NULL);
+	if (ret)
+		goto err_camss_cleanup;
 	ret = qmi_add_lookup(&hpd->lookup, A14_SSC_QMI_SERVICE,
 			     A14_SSC_QMI_VERSION, A14_SSC_QMI_INSTANCE);
 	if (ret) {
 		qmi_handle_release(&hpd->lookup);
-		goto err_destroy_wq;
+		goto err_camss_cleanup;
 	}
 
 	dev_info(&pdev->dev,
 		 "waiting for SSC QMI service 400; IIO activation is manual\n");
 	return 0;
 
+err_camss_cleanup:
+	a14_ssc_camss_cleanup(hpd);
 err_destroy_wq:
 	destroy_workqueue(hpd->wq);
 	return ret;
@@ -367,12 +374,17 @@ static void a14_ssc_hpd_remove(struct platform_device *pdev)
 	cancel_work_sync(&hpd->connect_work);
 	cancel_work_sync(&hpd->disconnect_work);
 	disconnect_client(hpd);
+	a14_ssc_camss_cleanup(hpd);
 	destroy_workqueue(hpd->wq);
 }
 
 static struct platform_driver a14_ssc_hpd_driver = {
 	.probe = a14_ssc_hpd_probe,
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 11, 0)
+	.remove_new = a14_ssc_hpd_remove,
+#else
 	.remove = a14_ssc_hpd_remove,
+#endif
 	.driver = {
 		.name = "qcom-ssc-hpd-a14",
 		.pm = pm_sleep_ptr(&a14_ssc_hpd_pm_ops),

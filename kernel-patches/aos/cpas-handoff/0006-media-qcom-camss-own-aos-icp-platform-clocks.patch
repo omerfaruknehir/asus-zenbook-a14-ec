@@ -1,0 +1,160 @@
+From 0000000000000000000000000000000000000006 Mon Sep 17 00:00:00 2001
+From: Omer Faruk Nehir <omerfaruknehir@gmail.com>
+Date: Sun, 9 Aug 2026 00:25:00 +0300
+Subject: [PATCH 6/6] media: qcom: camss: own AOS ICP platform clocks
+
+Windows CAMP component-0 F0 includes the ICP AHB and ICP functional clocks at
+80 MHz and 400 MHz. Linux already represents the other validated F0 resources
+through CAMSS, CCI, genpd and interconnect owners, leaving this pair as the
+remaining named platform-resource gap.
+
+Model the ICP pair as AOS-only CAMSS consumer clocks and acquire only managed
+clock handles at probe time. Keep the clocks outside normal streaming tables
+and do not prepare, enable or change their rate in this stage.
+
+Use optional acquisition so stock or older experimental DTBs that do not yet
+describe the pair keep normal AP camera operation. The A14 override describes
+the complete clock list with the ICP pair appended.
+
+The AON provider remains quarantined and returns -EOPNOTSUPP before any direct
+CPAS MMIO. This patch therefore changes resource ownership representation only;
+it does not activate ICP hardware or authorize an AOS handoff test.
+
+Signed-off-by: Omer Faruk Nehir <omerfaruknehir@gmail.com>
+---
+diff --git a/Documentation/devicetree/bindings/media/qcom,x1e80100-camss.yaml b/Documentation/devicetree/bindings/media/qcom,x1e80100-camss.yaml
+index 000000000006..000000000007 100644
+--- a/Documentation/devicetree/bindings/media/qcom,x1e80100-camss.yaml
++++ b/Documentation/devicetree/bindings/media/qcom,x1e80100-camss.yaml
+@@ -41,7 +41,7 @@ properties:
+       - const: cpas-top
+ 
+   clocks:
+-    maxItems: 29
++    maxItems: 31
+ 
+   clock-names:
+     items:
+@@ -74,6 +74,8 @@ properties:
+       - const: vfe_lite_ahb
+       - const: vfe_lite_cphy_rx
+       - const: vfe_lite_csid
++      - const: icp_ahb
++      - const: icp
+ 
+   interrupts:
+     maxItems: 13
+@@ -260,7 +262,9 @@ examples:
+                      <&camcc CAM_CC_IFE_LITE_CLK>,
+                      <&camcc CAM_CC_IFE_LITE_AHB_CLK>,
+                      <&camcc CAM_CC_IFE_LITE_CPHY_RX_CLK>,
+-                     <&camcc CAM_CC_IFE_LITE_CSID_CLK>;
++                     <&camcc CAM_CC_IFE_LITE_CSID_CLK>,
++                     <&camcc CAM_CC_ICP_AHB_CLK>,
++                     <&camcc CAM_CC_ICP_CLK>;
+ 
+             clock-names = "camnoc_nrt_axi",
+                           "camnoc_rt_axi",
+@@ -290,7 +294,9 @@ examples:
+                           "vfe_lite",
+                           "vfe_lite_ahb",
+                           "vfe_lite_cphy_rx",
+-                          "vfe_lite_csid";
++                          "vfe_lite_csid",
++                          "icp_ahb",
++                          "icp";
+ 
+            interrupts = <GIC_SPI 464 IRQ_TYPE_EDGE_RISING>,
+                         <GIC_SPI 466 IRQ_TYPE_EDGE_RISING>,
+diff --git a/arch/arm64/boot/dts/qcom/x1e80100-asus-zenbook-a14-aos.dtsi b/arch/arm64/boot/dts/qcom/x1e80100-asus-zenbook-a14-aos.dtsi
+index 000000000006..000000000007 100644
+--- a/arch/arm64/boot/dts/qcom/x1e80100-asus-zenbook-a14-aos.dtsi
++++ b/arch/arm64/boot/dts/qcom/x1e80100-asus-zenbook-a14-aos.dtsi
+@@ -29,4 +29,46 @@
+ 		    "csid_wrapper", "csiphy0", "csiphy1", "csiphy2", "csiphy4",
+ 		    "csitpg0", "csitpg1", "csitpg2", "vfe0", "vfe1",
+ 		    "vfe_lite0", "vfe_lite1", "cpas-top";
++
++	clocks = <&camcc CAM_CC_CAMNOC_AXI_NRT_CLK>,
++		 <&camcc CAM_CC_CAMNOC_AXI_RT_CLK>,
++		 <&camcc CAM_CC_CORE_AHB_CLK>,
++		 <&camcc CAM_CC_CPAS_AHB_CLK>,
++		 <&camcc CAM_CC_CPAS_FAST_AHB_CLK>,
++		 <&camcc CAM_CC_CPAS_IFE_0_CLK>,
++		 <&camcc CAM_CC_CPAS_IFE_1_CLK>,
++		 <&camcc CAM_CC_CPAS_IFE_LITE_CLK>,
++		 <&camcc CAM_CC_CPHY_RX_CLK_SRC>,
++		 <&camcc CAM_CC_CSID_CLK>,
++		 <&camcc CAM_CC_CSID_CSIPHY_RX_CLK>,
++		 <&camcc CAM_CC_CSIPHY0_CLK>,
++		 <&camcc CAM_CC_CSI0PHYTIMER_CLK>,
++		 <&camcc CAM_CC_CSIPHY1_CLK>,
++		 <&camcc CAM_CC_CSI1PHYTIMER_CLK>,
++		 <&camcc CAM_CC_CSIPHY2_CLK>,
++		 <&camcc CAM_CC_CSI2PHYTIMER_CLK>,
++		 <&camcc CAM_CC_CSIPHY4_CLK>,
++		 <&camcc CAM_CC_CSI4PHYTIMER_CLK>,
++		 <&gcc GCC_CAMERA_HF_AXI_CLK>,
++		 <&gcc GCC_CAMERA_SF_AXI_CLK>,
++		 <&camcc CAM_CC_IFE_0_CLK>,
++		 <&camcc CAM_CC_IFE_0_FAST_AHB_CLK>,
++		 <&camcc CAM_CC_IFE_1_CLK>,
++		 <&camcc CAM_CC_IFE_1_FAST_AHB_CLK>,
++		 <&camcc CAM_CC_IFE_LITE_CLK>,
++		 <&camcc CAM_CC_IFE_LITE_AHB_CLK>,
++		 <&camcc CAM_CC_IFE_LITE_CPHY_RX_CLK>,
++		 <&camcc CAM_CC_IFE_LITE_CSID_CLK>,
++		 <&camcc CAM_CC_ICP_AHB_CLK>,
++		 <&camcc CAM_CC_ICP_CLK>;
++
++	clock-names = "camnoc_nrt_axi", "camnoc_rt_axi", "core_ahb",
++		      "cpas_ahb", "cpas_fast_ahb", "cpas_vfe0",
++		      "cpas_vfe1", "cpas_vfe_lite", "cphy_rx_clk_src",
++		      "csid", "csid_csiphy_rx", "csiphy0", "csiphy0_timer",
++		      "csiphy1", "csiphy1_timer", "csiphy2", "csiphy2_timer",
++		      "csiphy4", "csiphy4_timer", "gcc_axi_hf", "gcc_axi_sf",
++		      "vfe0", "vfe0_fast_ahb", "vfe1", "vfe1_fast_ahb",
++		      "vfe_lite", "vfe_lite_ahb", "vfe_lite_cphy_rx",
++		      "vfe_lite_csid", "icp_ahb", "icp";
+ };
+diff --git a/drivers/media/platform/qcom/camss/camss.c b/drivers/media/platform/qcom/camss/camss.c
+index 000000000006..000000000007 100644
+--- a/drivers/media/platform/qcom/camss/camss.c
++++ b/drivers/media/platform/qcom/camss/camss.c
+@@ -2,6 +2,7 @@
+ #define X1E_CPAS_AON_CAM_SEL_AP		0x000
+ #define X1E_CPAS_AON_CAM_SEL_AON	0x101
+ #define X1E_CPAS_AON_CLK_COUNT		2
++#define X1E_AOS_PLATFORM_CLK_COUNT	2
+ 
+ static const struct parent_dev_ops vfe_parent_dev_ops;
+ 
+@@ -38,6 +39,14 @@ static int camss_probe(struct platform_device *pdev)
+ 		if (ret)
+ 			return dev_err_probe(dev, ret,
+ 					     "failed to get CPAS AON clocks\n");
++
++		camss->aon_platform_clks[0].id = "icp_ahb";
++		camss->aon_platform_clks[1].id = "icp";
++		ret = devm_clk_bulk_get_optional(dev, X1E_AOS_PLATFORM_CLK_COUNT,
++					 camss->aon_platform_clks);
++		if (ret)
++			return dev_err_probe(dev, ret,
++					     "failed to get AOS platform clocks\n");
+ 	}
+ 
+ 	camss->csiphy = devm_kcalloc(dev, camss->res->csiphy_num,
+diff --git a/drivers/media/platform/qcom/camss/camss.h b/drivers/media/platform/qcom/camss/camss.h
+index 000000000006..000000000007 100644
+--- a/drivers/media/platform/qcom/camss/camss.h
++++ b/drivers/media/platform/qcom/camss/camss.h
+@@ -18,6 +18,7 @@ struct camss {
+ 
+ 	void __iomem *cpas_top_base;
+ 	struct clk_bulk_data aon_clks[2];
++	struct clk_bulk_data aon_platform_clks[2];
+ 	struct mutex aon_lock;
+ 	unsigned int ap_streams;
+ 	bool aon_owned;
+-- 
+2.51.0

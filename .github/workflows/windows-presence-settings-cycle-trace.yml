@@ -1,0 +1,74 @@
+name: Validate Windows presence settings-cycle trace
+
+on:
+  push:
+    paths:
+      - 'scripts/a14-windows-human-presence-settings-cycle-trace.ps1'
+      - '.github/workflows/windows-presence-settings-cycle-trace.yml'
+  pull_request:
+    paths:
+      - 'scripts/a14-windows-human-presence-settings-cycle-trace.ps1'
+      - '.github/workflows/windows-presence-settings-cycle-trace.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Parse PowerShell 5.1 script
+        shell: powershell
+        run: |
+          $path = 'scripts/a14-windows-human-presence-settings-cycle-trace.ps1'
+          $tokens = $null
+          $errors = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path $path),
+              [ref]$tokens,
+              [ref]$errors
+          )
+          if ($errors.Count -ne 0) {
+              $errors | Format-List *
+              throw "PowerShell parser reported $($errors.Count) error(s)."
+          }
+
+      - name: Enforce reversible public-API boundary
+        shell: powershell
+        run: |
+          $path = 'scripts/a14-windows-human-presence-settings-cycle-trace.ps1'
+          $script = Get-Content $path -Raw
+
+          foreach ($required in @(
+              'HumanPresenceSettings]::GetCurrentSettings()',
+              'HumanPresenceSettings]::UpdateSettings(',
+              'Restore-PresenceToggles',
+              'restore_in_finally=true',
+              'restore_verified=',
+              "'-start', 'Power', '-filemode'",
+              'collector_sends_platform_ioctl=false',
+              'collector_acquires_human_presence_sensor=false',
+              'devices_restarted=false',
+              'pnp_state_changed=false',
+              'direct_cpas_mmio=false',
+              'camera_register_access=false'
+          )) {
+              if (-not $script.Contains($required)) {
+                  throw "Missing required invariant: $required"
+              }
+          }
+
+          if ($script -match 'DeviceIoControl|CreateFileW|WriteFile|Set-PnpDevice|Disable-PnpDevice|Enable-PnpDevice|devcon(?:\.exe)?|MmMapIoSpace|\\dev\\mem|0x0ac191e0|ioremap|readl|writel') {
+              throw 'Presence settings trace contains a prohibited direct hardware/PnP path.'
+          }
+
+          if ($script -match 'HumanPresenceSensor\]::GetDefault|GetCurrentReading\(') {
+              throw 'Settings-cycle trace must not hold/open the HumanPresenceSensor data path.'
+          }
+
+      - name: Check repository whitespace
+        shell: bash
+        run: git diff --check HEAD^ HEAD || git diff --check
