@@ -18,6 +18,7 @@
 #include <linux/of.h>
 #include <linux/pinctrl/consumer.h>
 #include <linux/platform_device.h>
+#include <linux/slab.h>
 
 struct a14_f0_mclk_diag {
 	struct pinctrl *pinctrl;
