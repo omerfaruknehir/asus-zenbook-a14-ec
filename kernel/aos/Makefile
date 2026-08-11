@@ -6,6 +6,7 @@ AOS_CAMSS_INCLUDE ?=
 AOS_UNROUTED_HANDSHAKE_DIAG ?= 0
 
 obj-m += qcom_ssc_hpd.o
+obj-m += qcom_a14_f0_mclk_diag.o
 qcom_ssc_hpd-y := qcom_ssc_hpd_main.o qcom_ssc_hpd_protocol.o \
 	qcom_ssc_hpd_transport.o qcom_ssc_hpd_camss.o
 
