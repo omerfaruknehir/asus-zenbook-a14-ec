@@ -83,9 +83,9 @@ fi
 camss_ko="$camss_modsrc/qcom-camss.ko"
 [ -s "$camss_ko" ] || fail "extended diagnostic qcom-camss.ko was not produced"
 case "$(modinfo -F vermagic "$camss_ko")" in "$release "*) ;; *) fail "CAMSS vermagic mismatch" ;; esac
-# Validate the generated source rather than relying on `strings` preserving the
-# compiler's exact format-string layout in the final module. The previous check
-# produced a false negative even though this source compiled and linked.
+# Validate the generated source rather than relying on a `strings | grep -q`
+# pipeline. Under `set -o pipefail`, grep may exit early after a match, causing
+# strings to receive SIGPIPE and making a successful check look like failure.
 grep -Fq 'AON-F0-ICP-OWNER-DIAG targets-ok hold-ms=%u' "$camss_modsrc/camss.c" || \
     fail "extended CAMSS source lacks dynamic hold marker after build"
 printf '%s\n' 'extended_camss_module=validated'
@@ -101,12 +101,18 @@ make -C "$hpd_src" KDIR="$headers" W=1 \
 hpd_ko="$hpd_src/qcom_ssc_hpd.ko"
 [ -s "$hpd_ko" ] || fail "diagnostic qcom_ssc_hpd.ko was not produced"
 case "$(modinfo -F vermagic "$hpd_ko")" in "$release "*) ;; *) fail "HPD vermagic mismatch" ;; esac
-modinfo "$hpd_ko" | grep -Fq 'allow_unrouted_handshake_probe' || \
+
+# Avoid all producer|grep -q validation under pipefail for the same SIGPIPE
+# reason. Capture the finite output first, then inspect it.
+hpd_modinfo=$(modinfo "$hpd_ko")
+grep -Fq 'allow_unrouted_handshake_probe' <<< "$hpd_modinfo" || \
     fail "HPD module lacks the explicit runtime diagnostic gate"
-strings "$hpd_ko" | grep -Fq 'AON mux not switched' || \
+grep -aFq 'AON mux not switched' "$hpd_ko" || \
     fail "HPD module lacks the no-mux diagnostic marker"
-nm -u "$hpd_ko" | grep -q 'qcom_camss_aon_acquire' || \
+hpd_undef=$(nm -u "$hpd_ko")
+grep -q 'qcom_camss_aon_acquire' <<< "$hpd_undef" || \
     fail "HPD module was not built against the CAMSS handoff API"
+printf '%s\n' 'diagnostic_hpd_module=validated'
 
 printf '\n%s\n' '===== ASSEMBLE TEST-ONLY PAYLOAD ====='
 rm -rf "$probe_stage"
