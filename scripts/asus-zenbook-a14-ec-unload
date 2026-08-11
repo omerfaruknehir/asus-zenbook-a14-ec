@@ -1,5 +1,40 @@
 #!/bin/sh
 set -u
+
 # Removing the module calls its quiesce path: automatic fan mode, uncapped CPU,
-# cancelled safety work, and cleared EC compound-operation mailbox.
+# cancelled safety work, and a cleared EC compound-operation mailbox.
+#
+# qcom-geni-i2c runtime-powers the serial engine down after the final transfer.
+# Do not let an orderly reboot race that autosuspend: the warm-reboot failure we
+# are tracking appears on the next boot's first EC transfer, so make sure the
+# controller has actually reached runtime suspend before shutdown continues.
+I2C_CONTROLLER=/sys/bus/platform/devices/b94000.i2c
+RUNTIME_STATUS="$I2C_CONTROLLER/power/runtime_status"
+
+was_loaded=0
+if grep -q '^asus_zenbook_a14_ec ' /proc/modules 2>/dev/null; then
+  was_loaded=1
+fi
+
 modprobe -r asus_zenbook_a14_ec 2>/dev/null || true
+
+# If the module was not loaded there was no EC transfer to drain from this
+# service. Likewise, older kernels may not expose runtime-PM status here.
+[ "$was_loaded" -eq 1 ] || exit 0
+[ -r "$RUNTIME_STATUS" ] || exit 0
+
+status=unknown
+i=0
+while [ "$i" -lt 40 ]; do
+  status=$(cat "$RUNTIME_STATUS" 2>/dev/null || true)
+  if [ "$status" = "suspended" ]; then
+    echo "ASUS A14 EC: I2C controller runtime-suspended before shutdown"
+    exit 0
+  fi
+  i=$((i + 1))
+  sleep 0.05
+done
+
+echo "ASUS A14 EC: I2C controller did not runtime-suspend before shutdown (status=${status:-unknown})" >&2
+# This is diagnostic/mitigating, not a reason to block reboot indefinitely.
+exit 0
