@@ -13,7 +13,7 @@ base_dtb=${A14_AOS_BASE_DTB:-"/boot/dtb-$release-hm1092-v6-ir-cci"}
 test_dtb="/boot/dtb-$release-f0-icp-owner-hm1092-test"
 
 fail() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
-for tool in bash fdtoverlay fdtget grep install mkdir readlink sha256sum sudo uname; do
+for tool in bash fdtoverlay fdtget grep install mkdir modinfo sed sha256sum sudo uname; do
     command -v "$tool" >/dev/null 2>&1 || fail "required command is missing: $tool"
 done
 [ "${EUID:-$(id -u)}" -ne 0 ] || fail "run this installer as your normal user, not with sudo"
@@ -22,6 +22,10 @@ done
 [ -s "$stage/a14-f0-mclk97-98-overlay.dtbo" ] || fail "MCLK97/98 overlay is missing"
 [ -s "$stage/qcom_a14_f0_mclk_diag.ko" ] || fail "MCLK diagnostic module is missing"
 [ -s "$stage/SHA256SUMS" ] || fail "staged checksums are missing"
+case "$(modinfo -F vermagic "$stage/qcom_a14_f0_mclk_diag.ko")" in
+    "$release "*) ;;
+    *) fail "MCLK diagnostic module vermagic mismatch" ;;
+esac
 
 printf '%s\n' 'A14 full-F0 + MCLK97/98 one-shot installer'
 printf '%s\n' '==============================================='
@@ -97,8 +101,9 @@ fdtget "$merged" "$active" bias-disable >/dev/null || fail "active merged state 
 [ "$(fdtget -t u "$merged" "$idle" drive-strength)" = 2 ] || fail "idle merged drive is not 2 mA"
 fdtget "$merged" "$idle" bias-pull-down >/dev/null || fail "idle merged state lacks bias-pull-down"
 
-if fdtget -t s "$merged" "$active" pins | grep -Fq gpio99 || \
-   fdtget -t s "$merged" "$idle" pins | grep -Fq gpio99; then
+active_pin_text=$(fdtget -t s "$merged" "$active" pins)
+idle_pin_text=$(fdtget -t s "$merged" "$idle" pins)
+if grep -Fq gpio99 <<<"$active_pin_text" || grep -Fq gpio99 <<<"$idle_pin_text"; then
     fail "combined test unexpectedly references GPIO99"
 fi
 printf '%s\n' 'combined_dtb=validated-full-f0-plus-mclk97-98'
