@@ -9,7 +9,7 @@ pins=(96 97 98 99 100 101 102 103 104 105 106)
 report=${A14_AOS_TLMM_REPORT:-"$HOME/Downloads/a14-aos-tlmm-pin-audit.txt"}
 
 fail() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
-for tool in basename cat find grep lsmod sed stat tee tr uname wc; do
+for tool in basename cat find grep lsmod sed stat sudo tee tr uname wc; do
     command -v "$tool" >/dev/null 2>&1 || fail "required command is missing: $tool"
 done
 
@@ -40,16 +40,20 @@ fi
 printf '\n%s\n' '===== PINCTRL DEBUGFS ====='
 controllers=0
 matches=0
-if [ -d /sys/kernel/debug/pinctrl ]; then
-    for ctrl in /sys/kernel/debug/pinctrl/*; do
-        [ -d "$ctrl" ] || continue
+if grep -qsE '[[:space:]]/sys/kernel/debug[[:space:]]+debugfs[[:space:]]' /proc/mounts; then
+    # Reading pinctrl debugfs typically requires root. sudo is used only for
+    # read operations; no mount, write, bind/unbind or pinctrl operation occurs.
+    sudo -v
+    mapfile -t ctrl_paths < <(sudo find /sys/kernel/debug/pinctrl \
+        -mindepth 1 -maxdepth 1 -type d -print 2>/dev/null || true)
+    for ctrl in "${ctrl_paths[@]}"; do
         controllers=$((controllers + 1))
         printf '\ncontroller=%s\n' "$(basename "$ctrl")"
         for file in pinmux-pins pins pingroups; do
             path="$ctrl/$file"
-            [ -r "$path" ] || continue
+            sudo test -r "$path" 2>/dev/null || continue
             printf '%s\n' "--- $file ---"
-            out=$(grep -E "$pin_regex|$name_regex" "$path" 2>/dev/null || true)
+            out=$(sudo grep -E "$pin_regex|$name_regex" "$path" 2>/dev/null || true)
             if [ -n "$out" ]; then
                 printf '%s\n' "$out"
                 count=$(printf '%s\n' "$out" | wc -l)
@@ -61,7 +65,7 @@ if [ -d /sys/kernel/debug/pinctrl ]; then
     done
 else
     printf '%s\n' 'debugfs_pinctrl_available=false'
-    printf '%s\n' 'debugfs_note=not mounted or pinctrl debugfs support unavailable; no mount attempted'
+    printf '%s\n' 'debugfs_note=debugfs is not mounted; audit deliberately did not mount it'
 fi
 printf '\npinctrl_controller_count=%s\n' "$controllers"
 printf 'pinctrl_candidate_match_lines=%s\n' "$matches"
