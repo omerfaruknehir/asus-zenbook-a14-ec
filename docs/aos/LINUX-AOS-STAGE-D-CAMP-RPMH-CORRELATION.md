@@ -131,19 +131,77 @@ while reproducing the named CAMP F0 clock state.
 The focused Windows state-0 camera ICB group therefore does not reveal a new
 unrepresented bus resource.
 
-## 4. Revised Stage D conclusion
+## 4. Remaining Windows CLOCK aliases are already represented by Linux
 
-The two strongest resource classes observed inside blocking Windows
-`PoFxActivateComponent(CAMP)` are now accounted for by Linux framework state:
+The A14-selected `CAMP_RES_QRD.bin` encodes three previously unmatched F0 names
+as `CLOCK` resources with enable value `1`:
 
-1. `vdd_arc_hlos` / MMCX LOW_SVS: represented by CAMCC's MXC/MMCX genpd
-   `required-opps` and restored through normal runtime-PM operation;
-2. camera ICB/BCM activity: represented by the existing X1E CAMSS ICC routes and
-   Command DB resources.
+```text
+gcc_camera_xo_clk
+gcc_camera_ahb_clk
+cam_cc_gdsc_clk
+```
 
-This materially weakens the hypothesis that the retired direct Linux CPAS
-access reset merely because a named CAMP clock, rail or camera bandwidth vote
-was absent.
+They were absent from the earlier Linux `clk_summary` name search, but source
+inspection shows why.
+
+### GCC camera AHB/XO
+
+The X1E GCC binding contains `GCC_CAMERA_AHB_CLK` and `GCC_CAMERA_XO_CLK`, but
+the driver intentionally does not expose normal `clk_branch` objects for them.
+Instead GCC probe forces both hardware branches on directly:
+
+```c
+qcom_branch_set_clk_en(regmap, 0x26004); /* GCC_CAMERA_AHB_CLK */
+qcom_branch_set_clk_en(regmap, 0x26028); /* GCC_CAMERA_XO_CLK */
+```
+
+Therefore `clk_summary` reporting `gcc_camera_ahb_clk` / `gcc_camera_xo_clk` as
+not found was expected. The corresponding X1E hardware gates are provider-owned
+and kept enabled by Linux independently of a CAMSS consumer clock request.
+
+### CAM_CC_GDSC_CLK
+
+The X1E CAMCC binding defines `CAM_CC_GDSC_CLK`. The driver does not register it
+as a normal consumer-visible clock either; it places its CBCR (`0x13a9c`) in the
+provider's critical CBCR list:
+
+```c
+static u32 cam_cc_x1e80100_critical_cbcrs[] = {
+        0x13a9c, /* CAM_CC_GDSC_CLK */
+        0x13ab8, /* CAM_CC_SLEEP_CLK */
+};
+```
+
+Qualcomm common-clock probe processes that list through
+`qcom_cc_clk_regs_configure()`, which calls `qcom_branch_set_clk_en()` for every
+critical CBCR before GDSC/clock registration. Thus `cam_cc_gdsc_clk` is also a
+provider-owned always-enabled prerequisite rather than a missing CAMSS clock.
+
+The actual `cam_cc_titan_top_gdsc` is separately modeled as a Linux genpd object
+and was already part of the Stage C framework-managed power-domain path.
+
+Conclusion: the three previously unmatched Windows F0 `CLOCK` names do not
+identify omitted Linux clock gates.
+
+## 5. Revised Stage D conclusion
+
+The strongest named resource classes observed or reconstructed for Windows
+`PoFxActivateComponent(CAMP)` are now accounted for by Linux framework/provider
+state:
+
+1. `vdd_arc_hlos` / MMCX LOW_SVS: CAMCC MXC/MMCX genpd `required-opps`;
+2. camera ICB/BCM activity: X1E CAMSS ICC paths and Command DB BCM resources;
+3. `gcc_camera_ahb_clk`: X1E GCC provider-forced always-on branch;
+4. `gcc_camera_xo_clk`: X1E GCC provider-forced always-on branch;
+5. `cam_cc_gdsc_clk`: X1E CAMCC critical CBCR forced on by common-clock probe;
+6. `cam_cc_titan_top_gdsc`: Linux CAMCC genpd object;
+7. the directly named CAMNOC/CPAS/Core/GCC HF/SF clocks and CCI/ICP resources:
+   explicitly reproduced by the Stage C full-F0 owner diagnostic.
+
+This substantially exhausts the hypothesis that the retired direct Linux CPAS
+access reset merely because a named CAMP F0 clock, rail, power-domain or camera
+bandwidth resource was missing.
 
 The unresolved classes are now narrower:
 
@@ -153,7 +211,8 @@ The unresolved classes are now narrower:
   dependency graph;
 - host-access semantics for the CPAS ownership window that differ from merely
   having its resources powered;
-- another dependency not yet visible in the captured qcpep RPMh classes.
+- another dependency not represented in the reconstructed CAMP F0 resource
+  graph or the captured qcpep RPMh classes.
 
 None of those classes should be tested by retrying raw CPAS access. The next
 step must remain evidence-first and framework-owned/read-only unless a concrete
