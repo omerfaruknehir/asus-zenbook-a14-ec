@@ -169,19 +169,37 @@ with open(sys.argv[2], "rb") as stream:
     reference = stream.read()
 offset = partial_offset(current)
 reference_partial = partial_offset(reference)
-valid = (
+malformed = (
     offset is not None
     and reference_partial is None
     and len(current) % 512 == 0
     and current[32:] == reference[32:len(current)]
     and current[offset:] == reference[offset:len(current)]
 )
-print("malformed-partial" if valid else "other")
+self_path = b"/persist/sensors/registry/registry/sns_secure_database.bin"
+self_record_only = (
+    offset is None
+    and reference_partial is None
+    and len(current) == len(reference)
+    and len(current) >= 32 + len(self_path) + 1
+    and current[:32] != reference[:32]
+    and current[32:] == reference[32:]
+    and current[32:32 + len(self_path)] == self_path
+    and current[32 + len(self_path)] == 0
+)
+if malformed:
+    print("malformed-partial")
+elif self_record_only:
+    print("complete-self-record-only")
+else:
+    print("other")
 PY
 )
 
 if [ "$structure_result" = malformed-partial ]; then
     printf '%s\n' 'result=active-database-is-malformed-block-boundary-partial-write'
+elif [ "$structure_result" = complete-self-record-only ]; then
+    printf '%s\n' 'result=active-database-is-complete-and-differs-only-in-self-record-value'
 elif [ "$prefix_match" = true ] && [ "$current_size" -lt "$reference_size" ]; then
     printf '%s\n' 'result=active-database-is-truncated-reference-prefix'
     printf 'missing_tail_bytes=%s\n' "$((reference_size - current_size))"

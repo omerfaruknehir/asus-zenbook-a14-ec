@@ -196,7 +196,7 @@ printf 'recovery_tail=%s\n' "$recovery_tail"
 
 printf '\n%s\n' '===== RELEVANT BOOT EVENTS ====='
 grep -E \
-    'remoteproc0: (adsp is available|powering up adsp|Booting fw image|remote processor adsp is now up|handling crash)|qcom,fastrpc 6800000\.remoteproc|sns_registry|sns_secure|sns_rps|a14-ssc-hexagonrpcd|hexagonrpcd-a14' \
+    'remoteproc0: (adsp is available|powering up adsp|Booting fw image|remote processor adsp is now up|handling crash)|qcom,fastrpc 6800000\.remoteproc|sns_registry|sns_secure|sns_rps|a14-ssc-hexagonrpcd\.service|hexagonrpcd-a14.*(Starting .*INIT_ATTACH|Could not attach to FastRPC node|Could not fetch next FastRPC message: Broken pipe|sns_secure_database\.bin)' \
     "$boot_log" || true
 
 printf '\n%s\n' '===== RESULT ====='

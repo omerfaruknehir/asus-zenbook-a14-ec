@@ -6,7 +6,8 @@ set -Eeuo pipefail
 report=${A14_AUDIO_DIAG_REPORT:-"$HOME/Downloads/a14-audio-card-diag.txt"}
 
 fail() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
-for tool in cat date find grep journalctl ls lsmod readlink sudo uname; do
+for tool in basename cat date find grep id journalctl ls lsmod readlink sort \
+        sudo tail tee tr uname; do
     command -v "$tool" >/dev/null 2>&1 || fail "required command is missing: $tool"
 done
 [ "${EUID:-$(id -u)}" -ne 0 ] || fail "run as your normal user, not with sudo"
