@@ -16,6 +16,7 @@ wait_iterations=${A14_HOOK_AB_WAIT_ITERATIONS:-300}
 masked_hooks=
 aegis_was_active=false
 keyboard_was_active=false
+keyboard_hook_was_masked=false
 
 fail() {
     printf 'ERROR: %s\n' "$*" >&2
@@ -35,6 +36,9 @@ mask_hook() {
     sudo mountpoint -q -- "$hook" || fail "hook mask was not established: $hook"
     sudo test ! -x "$hook" || fail "masked hook remains executable: $hook"
     masked_hooks="$hook $masked_hooks"
+    if [ "$hook" = "$keyboard_hook" ]; then
+        keyboard_hook_was_masked=true
+    fi
     printf 'hook_masked=%s\n' "$hook"
 }
 
@@ -52,7 +56,12 @@ restore_state() {
     done
     masked_hooks=
 
-    if [ "$keyboard_was_active" = true ]; then
+    if [ "$keyboard_hook_was_masked" = true ] && sudo test -x "$keyboard_hook"; then
+        sudo "$keyboard_hook" post suspend || true
+        printf '%s\n' 'keyboard_post_resume_restored=true'
+        keyboard_hook_was_masked=false
+        keyboard_was_active=false
+    elif [ "$keyboard_was_active" = true ]; then
         sudo systemctl start a14-kbd-userspace.service || true
         printf '%s\n' 'keyboard_service_restored=true'
         keyboard_was_active=false
@@ -68,7 +77,8 @@ restore_state() {
 cleanup() {
     restore_state || true
 }
-trap cleanup EXIT HUP INT TERM
+trap cleanup EXIT
+trap 'exit 130' HUP INT TERM
 
 for tool in awk cat date dirname id journalctl mkdir mount mountpoint \
         sha256sum sleep stat sudo systemctl tee umount uname; do
