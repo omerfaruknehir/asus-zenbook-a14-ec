@@ -11,7 +11,7 @@ fail() {
 }
 
 print_file() {
-    local path=$1 resolved
+    local path=$1 resolved mime
 
     printf '\n--- path=%s ---\n' "$path"
     if ! sudo test -e "$path" && ! sudo test -L "$path"; then
@@ -25,9 +25,18 @@ print_file() {
     sudo sha256sum -- "$resolved" 2>&1 || true
     printf 'package_owner='
     dpkg-query -S "$resolved" 2>/dev/null || printf '%s\n' unowned
-    printf '%s\n' 'content_begin'
-    sudo sed -n '1,360p' -- "$resolved" 2>&1 || true
-    printf '%s\n' 'content_end'
+    mime=$(sudo file --brief --mime-type -- "$resolved" 2>/dev/null || printf unknown)
+    printf 'mime_type=%s\n' "$mime"
+    case "$mime" in
+        text/*|application/x-shellscript)
+            printf '%s\n' 'content_begin'
+            sudo sed -n '1,360p' -- "$resolved" 2>&1 || true
+            printf '%s\n' 'content_end'
+            ;;
+        *)
+            printf '%s\n' 'content_skipped=non-text-file'
+            ;;
+    esac
 }
 
 print_tree_files() {
@@ -46,7 +55,7 @@ print_tree_files() {
     done < <(sudo find "$root" -maxdepth 1 -type f -print 2>/dev/null | sort)
 }
 
-for tool in cat date dirname dpkg-query find grep id journalctl lsmod mkdir \
+for tool in cat date dirname dpkg-query file find grep id journalctl lsmod mkdir \
         readlink sed sha256sum sort stat sudo systemctl tee tr uname; do
     command -v "$tool" >/dev/null 2>&1 || fail "required command is missing: $tool"
 done
@@ -84,20 +93,38 @@ printf '\n===== RELEVANT SYSTEM-SLEEP HOOKS =====\n'
 for path in \
     /usr/lib/systemd/system-sleep/85-a14-x1e-suspend-hardware \
     /usr/lib/systemd/system-sleep/a14-kbd-leds \
-    /usr/lib/systemd/system-sleep/aegis-hello; do
+    /usr/lib/systemd/system-sleep/aegis-hello \
+    /usr/local/libexec/a14-x1e-suspend-hardware/a14-suspend-prep.sh \
+    /usr/local/bin/a14-hardware-recover \
+    /usr/sbin/aegis-hello-camera-recover; do
     print_file "$path"
+done
+
+printf '\n===== KEYBOARD HELPER METADATA =====\n'
+for path in /usr/bin/a14-kbdctl; do
+    printf '\n--- path=%s ---\n' "$path"
+    if sudo test -e "$path"; then
+        sudo stat -Lc 'type=%F size=%s mode=%a owner=%U:%G mtime=%y' -- "$path" 2>&1 || true
+        sudo sha256sum -- "$path" 2>&1 || true
+        printf 'package_owner='
+        dpkg-query -S "$path" 2>/dev/null || printf '%s\n' unowned
+    else
+        printf '%s\n' 'exists=false'
+    fi
 done
 
 printf '\n===== REFERENCED A14 / AEGIS UNITS =====\n'
 systemctl list-unit-files --no-pager --no-legend 2>/dev/null | \
     grep -Ei 'a14|aegis|hello|suspend|resume' || true
-for unit in a14-x1e-hardware-resume.service aegis-hello.service \
-        a14-kbd-leds.service; do
+for unit in a14-x1e-hardware-resume.service a14-resume-recovery.service \
+        aegis-hello.service a14-kbd-leds.service \
+        hexagonrpcd-suspend.service hexagonrpcd-resume.service; do
     printf '\n--- unit=%s ---\n' "$unit"
     systemctl cat "$unit" --no-pager 2>&1 || true
     systemctl show "$unit" --no-pager \
         -p LoadState -p ActiveState -p SubState -p FragmentPath \
-        -p DropInPaths -p ExecStart 2>&1 || true
+        -p DropInPaths -p ExecStart -p Before -p After -p Wants -p Requires \
+        2>&1 || true
 done
 
 printf '\n===== QCOM SLEEP-STATS SUPPORT =====\n'
