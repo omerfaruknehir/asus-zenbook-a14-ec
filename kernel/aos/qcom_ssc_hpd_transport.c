@@ -5,6 +5,50 @@
 
 #include "qcom_ssc_hpd_internal.h"
 
+/* sns_client_req_msg_v01 recovered from qcAlwaysOnSensing.dll.
+ * TLV 0x01 is a QMI variable-length byte array: QMI_DATA_LEN represents the
+ * array-length field on the QMI wire; data[] itself contains only the raw
+ * nanopb-encoded sns_client_request_msg bytes.
+ * TLV 0x10 (use_jumbo_report) is optional and deliberately omitted. */
+static const struct qmi_elem_info a14_ssc_control_req_ei[] = {
+	{
+		.data_type = QMI_DATA_LEN,
+		.elem_len = 1,
+		.elem_size = sizeof(u32),
+		.array_type = NO_ARRAY,
+		.tlv_type = 0x01,
+		.offset = offsetof(struct a14_ssc_control_req, data_len),
+	},
+	{
+		.data_type = QMI_UNSIGNED_1_BYTE,
+		.elem_len = A14_SSC_DATA_MAX,
+		.elem_size = sizeof(u8),
+		.array_type = VAR_LEN_ARRAY,
+		.tlv_type = 0x01,
+		.offset = offsetof(struct a14_ssc_control_req, data),
+	},
+	{
+		.data_type = QMI_OPT_FLAG,
+		.elem_len = 1,
+		.elem_size = sizeof(u8),
+		.array_type = NO_ARRAY,
+		.tlv_type = 0x10,
+		.offset = offsetof(struct a14_ssc_control_req,
+				  use_jumbo_report_valid),
+	},
+	{
+		.data_type = QMI_UNSIGNED_1_BYTE,
+		.elem_len = 1,
+		.elem_size = sizeof(u8),
+		.array_type = NO_ARRAY,
+		.tlv_type = 0x10,
+		.offset = offsetof(struct a14_ssc_control_req, use_jumbo_report),
+	},
+	{}
+};
+
+/* sns_client_resp_msg_v01. client_id and result are optional QMI TLVs; the
+ * QMI decoder sets their *_valid bytes when the corresponding TLV exists. */
 static const struct qmi_elem_info a14_ssc_control_resp_ei[] = {
 	{
 		.data_type = QMI_STRUCT,
@@ -16,6 +60,14 @@ static const struct qmi_elem_info a14_ssc_control_resp_ei[] = {
 		.ei_array = qmi_response_type_v01_ei,
 	},
 	{
+		.data_type = QMI_OPT_FLAG,
+		.elem_len = 1,
+		.elem_size = sizeof(u8),
+		.array_type = NO_ARRAY,
+		.tlv_type = 0x10,
+		.offset = offsetof(struct a14_ssc_control_resp, client_id_valid),
+	},
+	{
 		.data_type = QMI_UNSIGNED_8_BYTE,
 		.elem_len = 1,
 		.elem_size = sizeof(u64),
@@ -24,16 +76,25 @@ static const struct qmi_elem_info a14_ssc_control_resp_ei[] = {
 		.offset = offsetof(struct a14_ssc_control_resp, client_id),
 	},
 	{
+		.data_type = QMI_OPT_FLAG,
+		.elem_len = 1,
+		.elem_size = sizeof(u8),
+		.array_type = NO_ARRAY,
+		.tlv_type = 0x11,
+		.offset = offsetof(struct a14_ssc_control_resp, result_valid),
+	},
+	{
 		.data_type = QMI_UNSIGNED_4_BYTE,
 		.elem_len = 1,
 		.elem_size = sizeof(u32),
 		.array_type = NO_ARRAY,
 		.tlv_type = 0x11,
-		.offset = offsetof(struct a14_ssc_control_resp, response),
+		.offset = offsetof(struct a14_ssc_control_resp, result),
 	},
 	{}
 };
 
+/* sns_client_report_ind_msg_v01, normal (non-jumbo) indication. */
 static const struct qmi_elem_info a14_ssc_report_ind_ei[] = {
 	{
 		.data_type = QMI_UNSIGNED_8_BYTE,
@@ -44,9 +105,6 @@ static const struct qmi_elem_info a14_ssc_report_ind_ei[] = {
 		.offset = offsetof(struct a14_ssc_report_ind, client_id),
 	},
 	{
-		/* SSC's Data TLV starts with its own little-endian u16 frame
-		 * length. QMI_DATA_LEN consumes that protocol field, leaving the
-		 * protobuf body in data[] and its exact size in data_len. */
 		.data_type = QMI_DATA_LEN,
 		.elem_len = 1,
 		.elem_size = sizeof(u32),
@@ -67,39 +125,6 @@ static const struct qmi_elem_info a14_ssc_report_ind_ei[] = {
 
 static int send_control(struct a14_ssc_hpd *hpd, const u8 *data, size_t len)
 {
-	/* The SSC service's Data TLV is an opaque byte string whose first two
-	 * bytes are already the SSC client-frame length. A QMI_DATA_LEN /
-	 * VAR_LEN_ARRAY descriptor would prepend another u16 array length and
-	 * produce:
-	 *
-	 *   <QMI array length> <SSC frame length> <SSC protobuf body>
-	 *
-	 * libssc and the captured machine wire format require exactly:
-	 *
-	 *   <SSC frame length> <SSC protobuf body>
-	 *
-	 * Use a request-local fixed-size array descriptor so the QMI TLV length
-	 * comes only from the TLV header and no bytes are inserted into the
-	 * payload itself. */
-	struct qmi_elem_info req_ei[] = {
-		{
-			.data_type = QMI_UNSIGNED_1_BYTE,
-			.elem_len = 1,
-			.elem_size = sizeof(u8),
-			.array_type = NO_ARRAY,
-			.tlv_type = 0x10,
-			.offset = offsetof(struct a14_ssc_control_req, report_type),
-		},
-		{
-			.data_type = QMI_UNSIGNED_1_BYTE,
-			.elem_len = (u32)len,
-			.elem_size = sizeof(u8),
-			.array_type = STATIC_ARRAY,
-			.tlv_type = 0x01,
-			.offset = offsetof(struct a14_ssc_control_req, data),
-		},
-		{}
-	};
 	struct a14_ssc_control_resp resp = {};
 	struct a14_ssc_control_req *req;
 	struct qmi_txn txn;
@@ -111,10 +136,15 @@ static int send_control(struct a14_ssc_hpd *hpd, const u8 *data, size_t len)
 	req = kzalloc(sizeof(*req), GFP_KERNEL);
 	if (!req)
 		return -ENOMEM;
-	req->report_type = 1;
-	memcpy(req->data, data, len);
 
-	/* qmi_txn_init() returns a non-negative transaction ID on success. */
+	req->data_len = len;
+	memcpy(req->data, data, len);
+	/* Normal reports are sufficient for these small sensor messages. Keeping
+	 * the optional TLV absent also lets us use the recovered 1000-byte normal
+	 * indication shape rather than the 62000-byte jumbo variant. */
+	req->use_jumbo_report_valid = 0;
+	req->use_jumbo_report = 0;
+
 	ret = qmi_txn_init(&hpd->client, &txn, a14_ssc_control_resp_ei,
 			   &resp);
 	if (ret < 0)
@@ -122,27 +152,26 @@ static int send_control(struct a14_ssc_hpd *hpd, const u8 *data, size_t len)
 
 	ret = qmi_send_request(&hpd->client, NULL, &txn,
 			       A14_SSC_QMI_CONTROL,
-			       len + 16, req_ei, req);
+			       A14_SSC_QMI_REQ_MAX_MSG_LEN,
+			       a14_ssc_control_req_ei, req);
 	if (ret < 0) {
 		qmi_txn_cancel(&txn);
 		goto out;
 	}
 
-	/* qmi_txn_wait() returns a negative errno on failure. On successful
-	 * decoded responses it may return the non-negative decoder result, which
-	 * is not a protocol error. */
 	ret = qmi_txn_wait(&txn, A14_SSC_TIMEOUT);
 	if (ret < 0)
 		goto out;
+
 	if (resp.resp.result != QMI_RESULT_SUCCESS_V01) {
 		dev_err(hpd->dev, "SSC control failed: result=%u error=%u\n",
 			resp.resp.result, resp.resp.error);
 		ret = -EREMOTEIO;
 		goto out;
 	}
-	if (resp.response) {
-		dev_err(hpd->dev, "SSC rejected request: response=%u\n",
-			resp.response);
+	if (resp.result_valid && resp.result) {
+		dev_err(hpd->dev, "SSC rejected request: result=%u\n",
+			resp.result);
 		ret = -EREMOTEIO;
 		goto out;
 	}
@@ -169,13 +198,6 @@ const struct qmi_msg_handler a14_ssc_handlers[] = {
 	{
 		.type = QMI_INDICATION,
 		.msg_id = A14_SSC_QMI_REPORT_SMALL,
-		.ei = a14_ssc_report_ind_ei,
-		.decoded_size = sizeof(struct a14_ssc_report_ind),
-		.fn = report_cb,
-	},
-	{
-		.type = QMI_INDICATION,
-		.msg_id = A14_SSC_QMI_REPORT_LARGE,
 		.ei = a14_ssc_report_ind_ei,
 		.decoded_size = sizeof(struct a14_ssc_report_ind),
 		.fn = report_cb,
@@ -228,7 +250,8 @@ int a14_ssc_enable_hpd(struct a14_ssc_hpd *hpd)
 	hpd->handshake_error = -EINPROGRESS;
 	mutex_unlock(&hpd->lock);
 
-	len = a14_ssc_build_handshake_request(data, sizeof(data), &hpd->handshake_suid);
+	len = a14_ssc_build_handshake_request(data, sizeof(data),
+					     &hpd->handshake_suid);
 	if (!len) {
 		ret = -EINVAL;
 		goto out_unlock_op;
