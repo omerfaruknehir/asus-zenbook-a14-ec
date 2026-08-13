@@ -1,0 +1,35 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Ömer Faruk Nehir <92220159+omerfaruknehir@users.noreply.github.com>
+Date: Thu, 13 Aug 2026 23:32:00 +0300
+Subject: [PATCH] arm64: dts: qcom: hamoa: fix CAMSS CSIPHY resource sizes
+
+The X1E80100 CAMSS CSIPHY0, CSIPHY1 and CSIPHY2 register windows used
+by the camera driver span 0x2000 bytes. The older Hamoa camera tree
+listed only 0x1000 for those three resources in the CAMSS parent reg
+array, while the corresponding PHY nodes use 0x2000.
+
+Use the full window sizes. This matches the camera tree validated on
+the ASUS Zenbook A14.
+
+Signed-off-by: Ömer Faruk Nehir <92220159+omerfaruknehir@users.noreply.github.com>
+---
+ arch/arm64/boot/dts/qcom/hamoa.dtsi | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/arch/arm64/boot/dts/qcom/hamoa.dtsi b/arch/arm64/boot/dts/qcom/hamoa.dtsi
+--- a/arch/arm64/boot/dts/qcom/hamoa.dtsi
++++ b/arch/arm64/boot/dts/qcom/hamoa.dtsi
+@@ -5553,9 +5553,9 @@ camss: isp@acb7000 {
+ 			      <0 0x0acca000 0 0x1000>,
+ 			      <0 0x0acb6000 0 0x1000>,
+-			      <0 0x0ace4000 0 0x1000>,
+-			      <0 0x0ace6000 0 0x1000>,
+-			      <0 0x0ace8000 0 0x1000>,
++			      <0 0x0ace4000 0 0x2000>,
++			      <0 0x0ace6000 0 0x2000>,
++			      <0 0x0ace8000 0 0x2000>,
+ 			      <0 0x0acec000 0 0x4000>,
+ 			      <0 0x0acf6000 0 0x1000>,
+ 			      <0 0x0acf7000 0 0x1000>,
+-- 
+2.53.0
