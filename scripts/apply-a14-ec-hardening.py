@@ -43,6 +43,12 @@ once(
 )
 
 once(
+    '''\tret = asus_ec_set_pwm_both(ec, pwm);\n\tif (ret) {\n\t\t(void)asus_ec_set_fan_mode(ec, EC_FAN_MODE_AUTO);\n\t\tec->manual_active = false;\n\t}\n\treturn ret;\n}\n''',
+    '''\tret = asus_ec_set_pwm_both(ec, pwm);\n\tif (ret) {\n\t\tint restore_ret = asus_ec_force_auto_locked(ec);\n\n\t\tif (restore_ret) {\n\t\t\tdev_err(ec->dev,\n\t\t\t\t"manual fan setup failed and automatic restore failed: %d\\n",\n\t\t\t\trestore_ret);\n\t\t\tif (!ec->shutting_down)\n\t\t\t\tmod_delayed_work(system_freezable_wq, &ec->safety_work,\n\t\t\t\t\t\t msecs_to_jiffies(500));\n\t\t}\n\t}\n\treturn ret;\n}\n''',
+    "manual entry rollback",
+)
+
+once(
     '''\tif (fallback) {\n\t\tdev_warn(ec->dev,\n\t\t\t "manual fan mode safety fallback (temp=%d, read failures=%u)\\n",\n\t\t\t temp, ec->temp_failures);\n\t\tif (!asus_ec_leave_manual_locked(ec)) {\n\t\t\tec->active_profile = ASUS_EC_PROFILE_BALANCED;\n\t\t\tasus_ec_freq_qos_set(ec, FREQ_QOS_MAX_DEFAULT_VALUE);\n\t\t\tsysfs_notify(&ec->dev->kobj, NULL, "profile");\n\t\t\tasus_ec_notify_profile(ec);\n\t\t}\n\t\tgoto out;\n\t}\n''',
     '''\tif (fallback) {\n\t\tint ret;\n\n\t\tdev_warn(ec->dev,\n\t\t\t "manual fan mode safety fallback (temp=%d, read failures=%u)\\n",\n\t\t\t temp, ec->temp_failures);\n\t\tret = asus_ec_force_auto_locked(ec);\n\t\tif (!ret) {\n\t\t\tec->active_profile = ASUS_EC_PROFILE_BALANCED;\n\t\t\tasus_ec_freq_qos_set(ec, FREQ_QOS_MAX_DEFAULT_VALUE);\n\t\t\tsysfs_notify(&ec->dev->kobj, NULL, "profile");\n\t\t\tasus_ec_notify_profile(ec);\n\t\t\tgoto out;\n\t\t}\n\n\t\tdev_err(ec->dev,\n\t\t\t"failed to restore automatic fan mode during safety fallback: %d\\n",\n\t\t\tret);\n\t\tif (!ec->shutting_down)\n\t\t\tmod_delayed_work(system_freezable_wq, &ec->safety_work,\n\t\t\t\t\t msecs_to_jiffies(500));\n\t\tgoto out;\n\t}\n''',
     "safety fallback retry",
@@ -74,7 +80,7 @@ once(
 
 once(
     '''static int asus_ec_suspend(struct device *dev)\n{\n\tstruct asus_ec *ec = dev_get_drvdata(dev);\n\n\tcancel_delayed_work_sync(&ec->safety_work);\n\tmutex_lock(&ec->mode_lock);\n\t(void)asus_ec_leave_manual_locked(ec);\n\tmutex_unlock(&ec->mode_lock);\n\tasus_ec_mailbox_quiesce(ec);\n\treturn 0;\n}\n''',
-    '''static int asus_ec_suspend(struct device *dev)\n{\n\tstruct asus_ec *ec = dev_get_drvdata(dev);\n\tint ret;\n\n\tcancel_delayed_work_sync(&ec->safety_work);\n\tmutex_lock(&ec->mode_lock);\n\tret = asus_ec_leave_manual_locked(ec);\n\tif (ret && ec->manual_active)\n\t\tmod_delayed_work(system_freezable_wq, &ec->safety_work,\n\t\t\t\t msecs_to_jiffies(500));\n\tmutex_unlock(&ec->mode_lock);\n\tif (ret) {\n\t\tdev_err(ec->dev,\n\t\t\t"refusing suspend: automatic fan mode restore failed: %d\\n", ret);\n\t\treturn ret;\n\t}\n\n\tret = asus_ec_mailbox_quiesce(ec);\n\tif (ret) {\n\t\tdev_err(ec->dev, "refusing suspend: EC mailbox quiesce failed: %d\\n", ret);\n\t\treturn ret;\n\t}\n\n\treturn 0;\n}\n''',
+    '''static int asus_ec_suspend(struct device *dev)\n{\n\tstruct asus_ec *ec = dev_get_drvdata(dev);\n\tenum asus_ec_profile profile = ec->active_profile;\n\tint ret;\n\n\tcancel_delayed_work_sync(&ec->safety_work);\n\tmutex_lock(&ec->mode_lock);\n\tret = asus_ec_leave_manual_locked(ec);\n\tif (ret && ec->manual_active)\n\t\tmod_delayed_work(system_freezable_wq, &ec->safety_work,\n\t\t\t\t msecs_to_jiffies(500));\n\tmutex_unlock(&ec->mode_lock);\n\tif (ret) {\n\t\tdev_err(ec->dev,\n\t\t\t"refusing suspend: automatic fan mode restore failed: %d\\n", ret);\n\t\treturn ret;\n\t}\n\n\tret = asus_ec_mailbox_quiesce(ec);\n\tif (ret) {\n\t\tint restore_ret = 0;\n\n\t\tdev_err(ec->dev, "refusing suspend: EC mailbox quiesce failed: %d\\n", ret);\n\t\tmutex_lock(&ec->mode_lock);\n\t\tif (profile == ASUS_EC_PROFILE_PERFORMANCE)\n\t\t\trestore_ret = asus_ec_apply_profile_locked(ec, profile);\n\t\telse if (profile == ASUS_EC_PROFILE_CUSTOM) {\n\t\t\tec->active_profile = ASUS_EC_PROFILE_BALANCED;\n\t\t\tasus_ec_freq_qos_set(ec, FREQ_QOS_MAX_DEFAULT_VALUE);\n\t\t\tsysfs_notify(&ec->dev->kobj, NULL, "profile");\n\t\t\tasus_ec_notify_profile(ec);\n\t\t}\n\t\tmutex_unlock(&ec->mode_lock);\n\t\tif (restore_ret)\n\t\t\tdev_err(ec->dev,\n\t\t\t\t"failed to restore pre-suspend performance profile: %d\\n",\n\t\t\t\trestore_ret);\n\t\treturn ret;\n\t}\n\n\treturn 0;\n}\n''',
     "suspend fail closed",
 )
 
