@@ -6,8 +6,13 @@ all modules: prepare
 	$(MAKE) -C $(KDIR) M=$(PWD) modules
 
 prepare:
-	python3 scripts/apply-a14-ec-hardening.py
-	python3 scripts/apply-a14-native-fan-profile.py
+	@if grep -q 'EC_FW_FAN_PROFILE_COMMAND' asus_zenbook_a14_ec.c; then \
+		echo 'a14_ec_stack=already-composed'; \
+	else \
+		python3 scripts/apply-a14-ec-hardening.py && \
+		python3 scripts/apply-a14-native-fan-profile.py && \
+		python3 scripts/apply-a14-native-hardening-compat.py; \
+	fi
 	python3 scripts/apply-a14-hid-fnlock.py
 
 mainline-check:
@@ -30,10 +35,10 @@ unload-ec:
 
 reload-ec: unload-ec load-ec
 
-install-deb:
+install-deb: prepare
 	./install.sh
 
-deb:
+deb: prepare
 	./scripts/build-deb.sh
 
 aos-probe:
