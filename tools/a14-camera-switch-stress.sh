@@ -13,19 +13,37 @@ date -Ins
 uname -r
 printf 'iterations=%s frames_per_open=%s\n' "$ITERATIONS" "$FRAMES"
 
-# Snapshot itself can keep a libcamera pipeline acquired even after PipeWire is
-# stopped. Close it so this test measures CAMSS/libcamera teardown/startup only.
+# Snapshot itself can keep a libcamera pipeline acquired. Close it before
+# isolating PipeWire so the test measures CAMSS/libcamera only.
 pkill -x snapshot 2>/dev/null || true
-
-# Stop both services and the PipeWire socket to prevent socket activation while
-# the direct libcamera stress test is running.
-systemctl --user stop wireplumber.service pipewire.service pipewire.socket 2>/dev/null || true
-sleep 1
+pkill -f 'org\.gnome\.Snapshot' 2>/dev/null || true
 
 cleanup() {
-    systemctl --user start pipewire.socket pipewire.service wireplumber.service 2>/dev/null || true
+    # Undo only the transient masks created for this test. Bound cleanup so a
+    # broken PipeWire/client state cannot leave the caller's shell hanging.
+    timeout 5s systemctl --user unmask --runtime pipewire.service pipewire.socket >/dev/null 2>&1 || true
+    timeout 8s systemctl --user start pipewire.socket pipewire.service wireplumber.service >/dev/null 2>&1 || true
 }
-trap cleanup EXIT
+trap cleanup EXIT INT TERM
+
+# Stop WirePlumber first, then prevent PipeWire from being socket-activated by
+# desktop/portal clients while direct libcamera owns the media graph.
+systemctl --user stop wireplumber.service >/dev/null 2>&1 || true
+systemctl --user stop pipewire.service pipewire.socket >/dev/null 2>&1 || true
+systemctl --user mask --runtime pipewire.service pipewire.socket >/dev/null 2>&1 || true
+systemctl --user stop pipewire.service pipewire.socket >/dev/null 2>&1 || true
+
+# A process that was already running may survive unit state transitions. Kill
+# only PipeWire itself; do not touch CAMSS/CCI/sensor drivers.
+pkill -TERM -x pipewire 2>/dev/null || true
+for _ in {1..20}; do
+    pgrep -x pipewire >/dev/null 2>&1 || break
+    sleep 0.1
+done
+if pgrep -x pipewire >/dev/null 2>&1; then
+    pkill -KILL -x pipewire 2>/dev/null || true
+    sleep 0.2
+fi
 
 camera_holders() {
     local nodes=()
@@ -40,7 +58,11 @@ HOLDERS="$(camera_holders)"
 if grep -Eq '[[:space:]][0-9]+[[:space:]]' <<<"$HOLDERS"; then
     echo '===== ERROR: CAMERA PIPELINE STILL IN USE ====='
     printf '%s\n' "$HOLDERS"
-    echo 'Close the listed process(es) and rerun. No stress iterations were started.'
+    echo
+    echo '===== PIPEWIRE UNIT/PROCESS STATE ====='
+    systemctl --user --no-pager --full status pipewire.service pipewire.socket wireplumber.service 2>&1 | tail -100 || true
+    ps -eo pid,ppid,state,comm,args | grep -E '[p]ipewire|[w]ireplumber|[s]napshot' || true
+    echo 'No stress iterations were started.'
     exit 3
 fi
 
