@@ -24,7 +24,6 @@ Signed-off-by: OpenAI ChatGPT <noreply@openai.com>
  1 file changed, 44 insertions(+)
 
 diff --git a/drivers/media/platform/qcom/camss/camss-video.c b/drivers/media/platform/qcom/camss/camss-video.c
-index 000000000000..111111111111 100644
 --- a/drivers/media/platform/qcom/camss/camss-video.c
 +++ b/drivers/media/platform/qcom/camss/camss-video.c
 @@ -238,6 +238,43 @@ static int video_prepare_streaming(struct vb2_queue *q)
