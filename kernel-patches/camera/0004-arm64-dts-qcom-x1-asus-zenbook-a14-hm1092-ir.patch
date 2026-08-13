@@ -1,0 +1,162 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Ömer Faruk Nehir <92220159+omerfaruknehir@users.noreply.github.com>
+Date: Thu, 13 Aug 2026 23:30:00 +0300
+Subject: [PATCH] arm64: dts: qcom: x1-asus-zenbook-a14: add HM1092 NIR camera
+
+Add the board wiring validated on the UX3407RA for the Himax HM1092
+NIR sensor. The sensor is on CCI0/I2C0 and CSIPHY0, uses MCLK0 at
+24 MHz, reset GPIO109, PMIC-M camera rails, the existing camera
+indicator, and the standard PM8550 flash LED controller for the NIR
+illuminator.
+
+The sensor is single-lane RAW10 at 180 MHz DDR link frequency. The
+sensor endpoint intentionally does not carry a data-lanes property;
+the HM1092 binding fixes the sensor to one CSI-2 data lane. The CAMSS
+sink endpoint describes the physical lane as data lane 0.
+
+Signed-off-by: Ömer Faruk Nehir <92220159+omerfaruknehir@users.noreply.github.com>
+---
+ arch/arm64/boot/dts/qcom/x1-asus-zenbook-a14.dtsi | 92 ++++++++++++++++++++++
+ 1 file changed, 92 insertions(+)
+
+diff --git a/arch/arm64/boot/dts/qcom/x1-asus-zenbook-a14.dtsi b/arch/arm64/boot/dts/qcom/x1-asus-zenbook-a14.dtsi
+--- a/arch/arm64/boot/dts/qcom/x1-asus-zenbook-a14.dtsi
++++ b/arch/arm64/boot/dts/qcom/x1-asus-zenbook-a14.dtsi
+@@ -776,6 +776,20 @@
+ 		vreg_l3m_1p8: ldo3 {
+ 			regulator-name = "vreg_l3m_1p8";
+ 			regulator-min-microvolt = <1800000>;
+ 			regulator-max-microvolt = <1800000>;
+ 			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+ 		};
++
++		vreg_l4m_1p8: ldo4 {
++			regulator-name = "vreg_l4m_1p8";
++			regulator-min-microvolt = <1800000>;
++			regulator-max-microvolt = <1800000>;
++			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
++		};
++
++		vreg_l7m_2p9: ldo7 {
++			regulator-name = "vreg_l7m_2p9";
++			regulator-min-microvolt = <2912000>;
++			regulator-max-microvolt = <2912000>;
++			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
++		};
+ 	};
+ };
+ 
+@@ -784,6 +798,16 @@ &camss {
+ 	status = "okay";
+ 
+ 	ports {
++		port@0 {
++			reg = <0>;
++
++			camss_csiphy0_inep: endpoint@0 {
++				reg = <0>;
++				clock-lanes = <7>;
++				data-lanes = <0>;
++				remote-endpoint = <&hm1092_ep>;
++			};
++		};
++
+ 		port@3 {
+ 			csiphy4_ep: endpoint@4 {
+ 				reg = <4>;
+@@ -798,6 +822,52 @@ &camss {
+ 	};
+ };
+ 
++&cci0 {
++	status = "okay";
++};
++
++&cci0_i2c0 {
++	hm1092: camera@24 {
++		compatible = "himax,hm1092";
++		reg = <0x24>;
++
++		reset-gpios = <&tlmm 109 GPIO_ACTIVE_LOW>;
++		pinctrl-0 = <&cam_ir_default>;
++		pinctrl-names = "default";
++
++		leds = <&privacy_led>;
++		led-names = "privacy";
++		flash-leds = <&ir_flash>;
++
++		clocks = <&camcc CAM_CC_MCLK0_CLK>;
++		assigned-clocks = <&camcc CAM_CC_MCLK0_CLK>;
++		assigned-clock-rates = <24000000>;
++
++		orientation = <0>;
++
++		avdd-supply = <&vreg_l7m_2p9>;
++		dvdd-supply = <&vreg_l7m_2p9>;
++		dovdd-supply = <&vreg_l4m_1p8>;
++
++		port {
++			hm1092_ep: endpoint {
++				link-frequencies = /bits/ 64 <180000000>;
++				remote-endpoint = <&camss_csiphy0_inep>;
++			};
++		};
++	};
++};
++
++&csiphy0 {
++	vdda-0p8-supply = <&vreg_l2c_0p8>;
++	vdda-1p2-supply = <&vreg_l1c_1p2>;
++	phy-type = <PHY_TYPE_DPHY>;
++	status = "okay";
++};
++
+ &cci1 {
+ 	status = "okay";
+ };
+@@ -844,6 +914,23 @@ &csiphy4 {
+ 	status = "okay";
+ };
+ 
++&pm8550_flash {
++	status = "okay";
++
++	ir_flash: led-0 {
++		color = <LED_COLOR_ID_IR>;
++		function = LED_FUNCTION_FLASH;
++		function-enumerator = <0>;
++		led-sources = <1>;
++		led-max-microamp = <500000>;
++		flash-max-microamp = <700000>;
++		flash-max-timeout-us = <1270000>;
++		default-state = "off";
++	};
++};
++
+ &i2c0 {
+ 	clock-frequency = <400000>;
+@@ -1317,6 +1404,21 @@ cam_indicator_en: cam-indicator-en-state {
+ 		bias-disable;
+ 	};
+ 
++	cam_ir_default: cam-ir-default-state {
++		mclk-pins {
++			pins = "gpio96";
++			function = "cam_mclk";
++			drive-strength = <16>;
++			bias-disable;
++		};
++
++		reset-n-pins {
++			pins = "gpio109";
++			function = "gpio";
++			drive-strength = <2>;
++			bias-disable;
++		};
++	};
++
+ 	cam_rgb_default: cam-rgb-default-state {
+ 		mclk-pins {
+ 			pins = "gpio100";
+-- 
+2.53.0
