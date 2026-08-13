@@ -2,8 +2,15 @@
 KDIR ?= /lib/modules/$(shell uname -r)/build
 PWD  := $(shell pwd)
 
-all modules:
+all modules: prepare
 	$(MAKE) -C $(KDIR) M=$(PWD) modules
+
+prepare:
+	python3 scripts/apply-a14-hid-fnlock.py
+
+mainline-check:
+	@test -n "$(KERNEL_SRC)" || { echo "Usage: make mainline-check KERNEL_SRC=/path/to/linux" >&2; exit 2; }
+	./scripts/a14-mainline-check.sh "$(KERNEL_SRC)"
 
 clean:
 	$(MAKE) -C $(KDIR) M=$(PWD) clean
@@ -41,6 +48,6 @@ aos-firmware-verify:
 	./scripts/verify-a14-aos-firmware.sh "$(DIR)"
 
 dmesg:
-	dmesg --ctime | grep -E 'asus_zenbook_a14_ec|hid_asus_zenbook_a14_ec|asus::kbd_backlight' | tail -n 80
+	dmesg --ctime | grep -E 'asus_zenbook_a14_ec|hid_asus_zenbook_a14_ec|asus::kbd_backlight|Fn-lock' | tail -n 80
 
-.PHONY: all modules clean load-hid load-ec unload-ec reload-ec install-deb deb aos-probe aos-module aos-module-clean aos-firmware-verify dmesg
+.PHONY: all modules prepare mainline-check clean load-hid load-ec unload-ec reload-ec install-deb deb aos-probe aos-module aos-module-clean aos-firmware-verify dmesg
