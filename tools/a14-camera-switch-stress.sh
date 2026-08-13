@@ -13,13 +13,38 @@ date -Ins
 uname -r
 printf 'iterations=%s frames_per_open=%s\n' "$ITERATIONS" "$FRAMES"
 
-systemctl --user stop wireplumber pipewire 2>/dev/null || true
+# Snapshot itself can keep a libcamera pipeline acquired even after PipeWire is
+# stopped. Close it so this test measures CAMSS/libcamera teardown/startup only.
+pkill -x snapshot 2>/dev/null || true
+
+# Stop both services and the PipeWire socket to prevent socket activation while
+# the direct libcamera stress test is running.
+systemctl --user stop wireplumber.service pipewire.service pipewire.socket 2>/dev/null || true
 sleep 1
 
 cleanup() {
-    systemctl --user start pipewire wireplumber 2>/dev/null || true
+    systemctl --user start pipewire.socket pipewire.service wireplumber.service 2>/dev/null || true
 }
 trap cleanup EXIT
+
+camera_holders() {
+    local nodes=()
+    shopt -s nullglob
+    nodes+=(/dev/video* /dev/v4l-subdev* /dev/media*)
+    shopt -u nullglob
+    ((${#nodes[@]})) || return 0
+    fuser -v "${nodes[@]}" 2>&1 || true
+}
+
+HOLDERS="$(camera_holders)"
+if grep -Eq '[[:space:]][0-9]+[[:space:]]' <<<"$HOLDERS"; then
+    echo '===== ERROR: CAMERA PIPELINE STILL IN USE ====='
+    printf '%s\n' "$HOLDERS"
+    echo 'Close the listed process(es) and rerun. No stress iterations were started.'
+    exit 3
+fi
+
+echo '===== EXCLUSIVE CAMERA ACCESS CONFIRMED ====='
 
 CAMLIST="$(cam -l 2>&1)"
 printf '%s\n' "$CAMLIST"
