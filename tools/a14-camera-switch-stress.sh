@@ -3,6 +3,7 @@ set -u
 
 ITERATIONS="${1:-40}"
 FRAMES="${2:-3}"
+OPEN_TIMEOUT="${3:-5}"
 OUT="${OUT:-/tmp/a14-camera-switch-stress-$(date +%Y%m%d-%H%M%S).log}"
 START="$(date --iso-8601=seconds)"
 
@@ -11,7 +12,8 @@ exec > >(tee "$OUT") 2>&1
 echo '===== A14 CAMERA SWITCH STRESS ====='
 date -Ins
 uname -r
-printf 'iterations=%s frames_per_open=%s\n' "$ITERATIONS" "$FRAMES"
+printf 'iterations=%s frames_per_open=%s open_timeout=%ss\n' \
+    "$ITERATIONS" "$FRAMES" "$OPEN_TIMEOUT"
 
 # Snapshot itself can keep a libcamera pipeline acquired. Close it before
 # isolating PipeWire so the test measures CAMSS/libcamera only.
@@ -24,7 +26,10 @@ cleanup() {
     timeout 5s systemctl --user unmask --runtime pipewire.service pipewire.socket >/dev/null 2>&1 || true
     timeout 8s systemctl --user start pipewire.socket pipewire.service wireplumber.service >/dev/null 2>&1 || true
 }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
+# Do not swallow Ctrl+C/TERM. EXIT cleanup will still run.
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 # Stop WirePlumber first, then prevent PipeWire from being socket-activated by
 # desktop/portal clients while direct libcamera owns the media graph.
@@ -89,12 +94,23 @@ for ((i=1; i<=ITERATIONS; i++)); do
         idx="${pair##*:}"
         log="/tmp/a14-switch-${name,,}-${i}.log"
         printf 'ITER=%02d CAMERA=%s INDEX=%s ... ' "$i" "$name" "$idx"
-        cam -c "$idx" --capture="$FRAMES" >"$log" 2>&1
+
+        timeout --signal=INT --kill-after=2s "${OPEN_TIMEOUT}s" \
+            cam -c "$idx" --capture="$FRAMES" >"$log" 2>&1
         rc=$?
+
+        if ((rc == 124)); then
+            echo "TIMEOUT=${OPEN_TIMEOUT}s"
+            echo "===== FIRST FAILURE: iteration=$i camera=$name frame-wait-timeout ====="
+            tail -100 "$log"
+            FAIL=124
+            break 2
+        fi
+
         echo "RC=$rc"
         if ((rc != 0)); then
             echo "===== FIRST FAILURE: iteration=$i camera=$name rc=$rc ====="
-            tail -80 "$log"
+            tail -100 "$log"
             FAIL=$rc
             break 2
         fi
@@ -115,8 +131,8 @@ done
 echo
 echo '===== KERNEL CAMERA EVENTS ====='
 journalctl -k --since "$START" --no-pager |
-    grep -Ei 'camss|csid|csiphy|vfe|cci|hm1092|ov02c10|stream|timeout|error' |
-    tail -300 || true
+    grep -Ei 'camss|csid|csiphy|vfe|cci|hm1092|ov02c10|stream|timeout|error|call_s_stream|WARNING' |
+    tail -400 || true
 
 echo
 echo "STRESS_RC=$FAIL"
