@@ -15,40 +15,45 @@ uname -r
 printf 'iterations=%s frames_per_open=%s open_timeout=%ss\n' \
     "$ITERATIONS" "$FRAMES" "$OPEN_TIMEOUT"
 
-# Snapshot itself can keep a libcamera pipeline acquired. Close it before
-# isolating PipeWire so the test measures CAMSS/libcamera only.
-pkill -x snapshot 2>/dev/null || true
-pkill -f 'org\.gnome\.Snapshot' 2>/dev/null || true
-
 cleanup() {
-    # Undo only the transient masks created for this test. Bound cleanup so a
-    # broken PipeWire/client state cannot leave the caller's shell hanging.
+    echo '[cleanup] restoring PipeWire/WirePlumber'
     timeout 5s systemctl --user unmask --runtime pipewire.service pipewire.socket >/dev/null 2>&1 || true
     timeout 8s systemctl --user start pipewire.socket pipewire.service wireplumber.service >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
-# Do not swallow Ctrl+C/TERM. EXIT cleanup will still run.
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-# Stop WirePlumber first, then prevent PipeWire from being socket-activated by
-# desktop/portal clients while direct libcamera owns the media graph.
-systemctl --user stop wireplumber.service >/dev/null 2>&1 || true
-systemctl --user stop pipewire.service pipewire.socket >/dev/null 2>&1 || true
-systemctl --user mask --runtime pipewire.service pipewire.socket >/dev/null 2>&1 || true
-systemctl --user stop pipewire.service pipewire.socket >/dev/null 2>&1 || true
+echo '[preflight] closing Snapshot'
+pkill -x snapshot 2>/dev/null || true
+pkill -f 'org\.gnome\.Snapshot' 2>/dev/null || true
 
-# A process that was already running may survive unit state transitions. Kill
-# only PipeWire itself; do not touch CAMSS/CCI/sensor drivers.
+echo '[preflight] stopping WirePlumber'
+timeout 5s systemctl --user stop wireplumber.service >/dev/null 2>&1 || true
+
+echo '[preflight] stopping PipeWire service/socket'
+timeout 5s systemctl --user stop pipewire.service pipewire.socket >/dev/null 2>&1 || true
+
+echo '[preflight] masking PipeWire service/socket'
+timeout 5s systemctl --user mask --runtime pipewire.service pipewire.socket >/dev/null 2>&1 || true
+
+echo '[preflight] stopping PipeWire again after mask'
+timeout 5s systemctl --user stop pipewire.service pipewire.socket >/dev/null 2>&1 || true
+
+# A service stop job can outlive a timed-out systemctl client. Ensure no
+# userspace camera broker remains before direct libcamera testing.
+echo '[preflight] terminating lingering camera brokers'
+pkill -TERM -x wireplumber 2>/dev/null || true
 pkill -TERM -x pipewire 2>/dev/null || true
 for _ in {1..20}; do
-    pgrep -x pipewire >/dev/null 2>&1 || break
+    if ! pgrep -x wireplumber >/dev/null 2>&1 && ! pgrep -x pipewire >/dev/null 2>&1; then
+        break
+    fi
     sleep 0.1
 done
-if pgrep -x pipewire >/dev/null 2>&1; then
-    pkill -KILL -x pipewire 2>/dev/null || true
-    sleep 0.2
-fi
+pgrep -x wireplumber >/dev/null 2>&1 && pkill -KILL -x wireplumber 2>/dev/null || true
+pgrep -x pipewire >/dev/null 2>&1 && pkill -KILL -x pipewire 2>/dev/null || true
+sleep 0.2
 
 camera_holders() {
     local nodes=()
@@ -56,16 +61,17 @@ camera_holders() {
     nodes+=(/dev/video* /dev/v4l-subdev* /dev/media*)
     shopt -u nullglob
     ((${#nodes[@]})) || return 0
-    fuser -v "${nodes[@]}" 2>&1 || true
+    timeout 5s fuser -v "${nodes[@]}" 2>&1 || true
 }
 
+echo '[preflight] checking camera holders'
 HOLDERS="$(camera_holders)"
 if grep -Eq '[[:space:]][0-9]+[[:space:]]' <<<"$HOLDERS"; then
     echo '===== ERROR: CAMERA PIPELINE STILL IN USE ====='
     printf '%s\n' "$HOLDERS"
     echo
     echo '===== PIPEWIRE UNIT/PROCESS STATE ====='
-    systemctl --user --no-pager --full status pipewire.service pipewire.socket wireplumber.service 2>&1 | tail -100 || true
+    timeout 5s systemctl --user --no-pager --full status pipewire.service pipewire.socket wireplumber.service 2>&1 | tail -100 || true
     ps -eo pid,ppid,state,comm,args | grep -E '[p]ipewire|[w]ireplumber|[s]napshot' || true
     echo 'No stress iterations were started.'
     exit 3
