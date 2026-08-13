@@ -7,6 +7,7 @@ all modules: prepare
 
 prepare:
 	python3 scripts/apply-a14-ec-hardening.py
+	python3 scripts/apply-a14-native-fan-profile.py
 	python3 scripts/apply-a14-hid-fnlock.py
 
 mainline-check:
