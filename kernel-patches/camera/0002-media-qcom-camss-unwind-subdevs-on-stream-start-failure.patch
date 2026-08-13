@@ -1,0 +1,89 @@
+From: OpenAI ChatGPT <noreply@openai.com>
+Subject: [PATCH] media: qcom: camss: unwind subdevs on stream start failure
+
+If one subdevice fails while CAMSS is walking the media graph and enabling
+streaming, previously-enabled subdevices are left running. The generic V4L2
+subdev core then considers those subdevices already streaming, so a later
+start attempt warns in call_s_stream() and skips the driver's s_stream(1)
+callback. The pipeline can remain poisoned until the graph is reset.
+
+This is observable on X1E80100 when the OV02C10 sensor occasionally hits a
+CCI write timeout while being started. CAMSS returns the start error, but
+CSIPHY/CSID/VFE-side subdevices that were already enabled remain marked as
+streaming. The next camera open then produces call_s_stream() warnings and
+no frames.
+
+Track the subdevice that failed to start and walk the already-started portion
+of the graph again, disabling each subdevice before stopping the media
+pipeline. Keep unwinding even if one stop callback fails so that as much of
+the graph as possible is restored.
+
+Signed-off-by: OpenAI ChatGPT <noreply@openai.com>
+---
+ drivers/media/platform/qcom/camss/camss-video.c | 44 +++++++++++++++++++++++++
+ 1 file changed, 44 insertions(+)
+
+diff --git a/drivers/media/platform/qcom/camss/camss-video.c b/drivers/media/platform/qcom/camss/camss-video.c
+index 000000000000..111111111111 100644
+--- a/drivers/media/platform/qcom/camss/camss-video.c
++++ b/drivers/media/platform/qcom/camss/camss-video.c
+@@ -238,6 +238,43 @@ static int video_prepare_streaming(struct vb2_queue *q)
+ 	return ret;
+ }
+ 
++static void video_unwind_started_subdevs(struct camss_video *video,
++					 struct v4l2_subdev *failed_subdev)
++{
++	struct media_entity *entity = &video->vdev.entity;
++	struct media_pad *pad;
++	struct v4l2_subdev *subdev;
++	int ret;
++
++	while (1) {
++		pad = &entity->pads[0];
++		if (!(pad->flags & MEDIA_PAD_FL_SINK))
++			break;
++
++		pad = media_pad_remote_pad_first(pad);
++		if (!pad || !is_media_entity_v4l2_subdev(pad->entity))
++			break;
++
++		entity = pad->entity;
++		subdev = media_entity_to_v4l2_subdev(entity);
++
++		/* The failing subdev never completed s_stream(1). */
++		if (subdev == failed_subdev)
++			break;
++
++		ret = v4l2_subdev_call(subdev, video, s_stream, 0);
++		if (ret < 0 && ret != -ENOIOCTLCMD)
++			dev_warn(video->camss->dev,
++				 "Failed to unwind video pipeline subdev: %d\n",
++				 ret);
++	}
++}
++
+ static int video_start_streaming(struct vb2_queue *q, unsigned int count)
+ {
+ 	struct camss_video *video = vb2_get_drv_priv(q);
+ 	struct video_device *vdev = &video->vdev;
+ 	struct media_entity *entity;
+ 	struct media_pad *pad;
+ 	struct v4l2_subdev *subdev;
++	struct v4l2_subdev *failed_subdev = NULL;
+ 	int ret;
+ 
+ 	ret = video_device_pipeline_alloc_start(vdev);
+@@ -267,8 +304,15 @@ static int video_start_streaming(struct vb2_queue *q, unsigned int count)
+ 		subdev = media_entity_to_v4l2_subdev(entity);
+ 
+ 		ret = v4l2_subdev_call(subdev, video, s_stream, 1);
+-		if (ret < 0 && ret != -ENOIOCTLCMD)
++		if (ret < 0 && ret != -ENOIOCTLCMD) {
++			failed_subdev = subdev;
++			video_unwind_started_subdevs(video, failed_subdev);
+ 			goto error;
++		}
+ 	}
+ 
+ 	return 0;
