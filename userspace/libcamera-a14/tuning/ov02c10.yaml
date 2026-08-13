@@ -1,0 +1,50 @@
+# SPDX-License-Identifier: CC0-1.0
+%YAML 1.1
+---
+version: 1
+algorithms:
+  - BlackLevel:
+  - Awb:
+      speed: 0.06
+      lowLightSpeed: 0.015
+      maxStep: 0.015
+      lowLightMaxStep: 0.006
+      minGainR: 1.0
+      minGainB: 1.0
+      maxGainR: 3.0
+      maxGainB: 3.0
+      lowLightThreshold: 0.18
+      lowLightAntiGreen: 1.05
+      startupGainR: 2.05
+      startupGainB: 1.45
+      acquireUpdates: 2
+      acquireSpeed: 0.85
+      acquireMaxStep: 0.50
+      acquireLowLightSpeed: 0.60
+      acquireLowLightMaxStep: 0.30
+  - Ccm:
+      ccms:
+        - ct: 2500
+          ccm: [ 1, 0, 0, 0, 1, 0, 0, 0, 1 ]
+        - ct: 6500
+          ccm: [ 1, 0, 0, 0, 1, 0, 0, 0, 1 ]
+  - Adjust:
+      factoryLensShadingSupported: true
+      factoryLensShadingEnable: true
+      factoryLensShadingStrength: 0.75
+      factoryLensShadingMaxGain: 4.0
+      autoToneMap: false
+      toneMapMinContrast: 0.72
+      toneMapSpeed: 0.06
+      toneMapStartSpan: 0.48
+      toneMapFullSpan: 0.80
+      localToneMap: false
+      localToneMapStrength: 0.85
+      localToneMapTargetStops: 3.0
+      localToneMapKey: 0.25
+      localToneMapShadowEv: 2.0
+      localToneMapHighlightEv: 1.5
+      localToneMapTemporal: 0.18
+      localToneMapEdgeStops: 0.85
+  - Agc:
+...
