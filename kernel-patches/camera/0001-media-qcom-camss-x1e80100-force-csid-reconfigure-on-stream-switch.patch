@@ -1,0 +1,50 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Omer Faruk Nehir <omerfaruknehir@gmail.com>
+Date: Thu, 13 Aug 2026 07:20:00 +0300
+Subject: [PATCH] media: qcom: camss: force X1E80100 CSID teardown/reconfigure
+ on stream switches
+
+On X1E80100, rapidly tearing down one camera stream and starting another
+can leave the Gen3 CSID in stale state. The following stream then reaches
+VIDIOC_STREAMON but times out waiting for frames.
+
+The generic csid_set_stream() path currently calls configure_stream() only
+when phy.need_vc_update is set. After a successful start that flag is
+cleared, so a stop that does not coincide with a link or power-state update
+can skip the Gen3 disable writes entirely.
+
+For X1E80100 only, always apply the CSID disable sequence on s_stream(0) and
+mark the VC configuration dirty so the next s_stream(1) necessarily
+reprograms the path.
+
+This is intentionally scoped to X1E80100 while the rapid RGB/IR switching
+failure is being validated on the ASUS Zenbook A14.
+---
+ drivers/media/platform/qcom/camss/camss-csid.c | 13 +++++++++++++
+ 1 file changed, 13 insertions(+)
+
+diff --git a/drivers/media/platform/qcom/camss/camss-csid.c b/drivers/media/platform/qcom/camss/camss-csid.c
+index 000000000000..000000000000 100644
+--- a/drivers/media/platform/qcom/camss/camss-csid.c
++++ b/drivers/media/platform/qcom/camss/camss-csid.c
+@@ -758,6 +758,19 @@ static int csid_set_stream(struct v4l2_subdev *sd, int enable)
+ 	struct csid_device *csid = v4l2_get_subdevdata(sd);
+ 	int ret;
+ 
++	/*
++	 * X1E80100 Gen3 CSID can retain an enabled RDI configuration when
++	 * userspace switches cameras quickly enough that the CSID does not go
++	 * through a full power/link reconfiguration between streams.  Make
++	 * stream-off explicit and force the next stream-on to reprogram the VC.
++	 */
++	if (!enable && csid->camss->res->version == CAMSS_X1E80100) {
++		csid->res->hw_ops->configure_stream(csid, false);
++		csid->phy.need_vc_update = true;
++		return 0;
++	}
++
+ 	if (enable) {
+ 		if (csid->testgen.nmodes != CSID_PAYLOAD_MODE_DISABLED) {
+ 			ret = v4l2_ctrl_handler_setup(&csid->ctrls);
+-- 
+2.43.0
