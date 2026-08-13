@@ -20,13 +20,13 @@ the graph as possible is restored.
 
 Signed-off-by: OpenAI ChatGPT <noreply@openai.com>
 ---
- drivers/media/platform/qcom/camss/camss-video.c | 44 +++++++++++++++++++++++++
- 1 file changed, 44 insertions(+)
+ drivers/media/platform/qcom/camss/camss-video.c | 38 ++++++++++++++++++++++++--
+ 1 file changed, 37 insertions(+), 1 deletion(-)
 
 diff --git a/drivers/media/platform/qcom/camss/camss-video.c b/drivers/media/platform/qcom/camss/camss-video.c
 --- a/drivers/media/platform/qcom/camss/camss-video.c
 +++ b/drivers/media/platform/qcom/camss/camss-video.c
-@@ -238,6 +238,43 @@ static int video_prepare_streaming(struct vb2_queue *q)
+@@ -238,13 +238,46 @@ static int video_prepare_streaming(struct vb2_queue *q)
  	return ret;
  }
  
@@ -73,7 +73,7 @@ diff --git a/drivers/media/platform/qcom/camss/camss-video.c b/drivers/media/pla
  	int ret;
  
  	ret = video_device_pipeline_alloc_start(vdev);
-@@ -267,8 +304,15 @@ static int video_start_streaming(struct vb2_queue *q, unsigned int count)
+@@ -267,8 +300,11 @@ static int video_start_streaming(struct vb2_queue *q, unsigned int count)
  		subdev = media_entity_to_v4l2_subdev(entity);
  
  		ret = v4l2_subdev_call(subdev, video, s_stream, 1);
