@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- Hardened direct EC fan-control recovery: automatic mode is now written,
+  read back and verified with bounded retries instead of being assumed from a
+  successful write.
+- Closed manual-mode failure paths so partial PWM setup, thermal fallback and
+  failed automatic recovery keep retrying the safety path rather than leaving
+  manual fan control unmonitored.
+- Made suspend fail closed when automatic fan restore or EC mailbox quiesce
+  fails, and restore the pre-suspend performance state if suspend is aborted
+  after the fan controller was already returned to automatic mode.
+- Added retryable EC mailbox quiescing and explicit shutdown/remove diagnostics
+  instead of silently discarding EC communication failures.
+- Kept hwmon/profile state coherent by forcing real automatic mode for
+  `pwm1_enable=2` and notifying profile observers after direct hwmon changes.
+- Fixed DKMS source packaging so both guarded EC/HID source transforms are
+  present in `/usr/src`, stale orphaned DKMS registrations are cleaned during
+  upgrades, and initramfs is refreshed so an older HID module cannot return
+  after reboot.
 - Started the always-on camera and human-presence work as proper kernel,
   device-tree, firmware and standard sensor-subsystem support.
 - Added a read-only Linux probe covering OV02C10/CAMSS, ADSP remoteproc,
