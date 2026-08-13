@@ -20,14 +20,14 @@ reprograms the path.
 This is intentionally scoped to X1E80100 while the rapid RGB/IR switching
 failure is being validated on the ASUS Zenbook A14.
 ---
- drivers/media/platform/qcom/camss/camss-csid.c | 13 +++++++++++++
- 1 file changed, 13 insertions(+)
+ drivers/media/platform/qcom/camss/camss-csid.c | 12 ++++++++++++
+ 1 file changed, 12 insertions(+)
 
 diff --git a/drivers/media/platform/qcom/camss/camss-csid.c b/drivers/media/platform/qcom/camss/camss-csid.c
 index 000000000000..000000000000 100644
 --- a/drivers/media/platform/qcom/camss/camss-csid.c
 +++ b/drivers/media/platform/qcom/camss/camss-csid.c
-@@ -758,6 +758,19 @@ static int csid_set_stream(struct v4l2_subdev *sd, int enable)
+@@ -758,6 +758,18 @@ static int csid_set_stream(struct v4l2_subdev *sd, int enable)
  	struct csid_device *csid = v4l2_get_subdevdata(sd);
  	int ret;
  
