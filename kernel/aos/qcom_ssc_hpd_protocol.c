@@ -6,12 +6,6 @@
 
 #include "qcom_ssc_hpd_internal.h"
 
-static void put_le16(u8 *p, u16 v)
-{
-	p[0] = v;
-	p[1] = v >> 8;
-}
-
 static void put_le32(u8 *p, u32 v)
 {
 	p[0] = v;
@@ -59,6 +53,17 @@ static size_t put_varint(u8 *dst, size_t cap, u64 value)
 		dst[n++] = b;
 	} while (value);
 
+	return n;
+}
+
+static size_t varint_size(u64 value)
+{
+	size_t n = 1;
+
+	while (value >= 0x80) {
+		value >>= 7;
+		n++;
+	}
 	return n;
 }
 
@@ -139,16 +144,24 @@ static int pb_next(const u8 *buf, size_t len, size_t *pos,
 	}
 }
 
+/* sns_client_request_msg.request is an sns_std_request, not an opaque byte
+ * string. Every sensor-specific protobuf therefore has to be nested in
+ * sns_std_request.payload (field 2).  The QMI layer adds its own variable-array
+ * length around this completed protobuf; no private SSC length prefix belongs
+ * here. */
 static size_t build_client_request(u8 *dst, size_t cap,
 				   const struct a14_ssc_suid *suid,
 				   u32 msg_id, const u8 *payload,
 				   size_t payload_len)
 {
-	size_t p = 2, n;
+	size_t p = 0, n, std_req_len;
 
 	if (!suid->valid || cap < 40 || payload_len > 900)
 		return 0;
 
+	std_req_len = 1 + varint_size(payload_len) + payload_len;
+
+	/* field 1: required sns_std_suid */
 	dst[p++] = 0x0a;
 	dst[p++] = 0x12;
 	dst[p++] = 0x09;
@@ -157,23 +170,36 @@ static size_t build_client_request(u8 *dst, size_t cap,
 	dst[p++] = 0x11;
 	put_le64(dst + p, suid->field2);
 	p += 8;
+
+	/* field 2: required fixed32 msg_id */
 	dst[p++] = 0x15;
 	put_le32(dst + p, msg_id);
 	p += 4;
+
+	/* field 3: APSS + WAKEUP suspend configuration */
 	dst[p++] = 0x1a;
 	dst[p++] = 0x04;
 	dst[p++] = 0x08;
 	dst[p++] = 0x01;
 	dst[p++] = 0x10;
 	dst[p++] = 0x00;
+
+	/* field 4: sns_std_request { payload = sensor protobuf } */
+	if (p >= cap)
+		return 0;
 	dst[p++] = 0x22;
+	n = put_varint(dst + p, cap - p, std_req_len);
+	if (!n || p + n + std_req_len > cap)
+		return 0;
+	p += n;
+	dst[p++] = 0x12;
 	n = put_varint(dst + p, cap - p, payload_len);
 	if (!n || p + n + payload_len > cap)
 		return 0;
 	p += n;
 	memcpy(dst + p, payload, payload_len);
 	p += payload_len;
-	put_le16(dst, p - 2);
+
 	return p;
 }
 
@@ -186,16 +212,12 @@ size_t a14_ssc_build_suid_request(u8 *dst, size_t cap, const char *datatype)
 	};
 	u8 payload[160];
 	size_t name_len = strlen(datatype);
-	size_t inner_len, p = 0, n;
+	size_t p = 0, n;
 
 	if (!name_len || name_len > 120)
 		return 0;
-	inner_len = 1 + 1 + name_len + 2 + 2;
-	payload[p++] = 0x12;
-	n = put_varint(payload + p, sizeof(payload) - p, inner_len);
-	if (!n)
-		return 0;
-	p += n;
+
+	/* Raw sns_suid_req. The generic builder adds sns_std_request. */
 	payload[p++] = 0x0a;
 	n = put_varint(payload + p, sizeof(payload) - p, name_len);
 	if (!n)
@@ -219,6 +241,7 @@ size_t a14_ssc_build_handshake_request(u8 *dst, size_t cap,
 	u8 payload[32];
 	size_t p = 0;
 
+	/* qsh_camera_handshake_init: sensor_name, restart_count, camera_id. */
 	payload[p++] = 0x0a;
 	payload[p++] = sizeof(name) - 1;
 	memcpy(payload + p, name, sizeof(name) - 1);
@@ -235,6 +258,9 @@ size_t a14_ssc_build_handshake_request(u8 *dst, size_t cap,
 size_t a14_ssc_build_hpd_request(u8 *dst, size_t cap,
 				const struct a14_ssc_suid *suid)
 {
+	/* Policy value for the development driver. Windows stores this setting in
+	 * millimetres and converts to metres for this protobuf. Make it an IIO
+	 * threshold attribute later instead of baking it into the transport. */
 	const float threshold_m = 1.5f;
 	u32 bits;
 	u8 payload[5];
@@ -366,11 +392,7 @@ void a14_ssc_parse_report(struct a14_ssc_hpd *hpd, const u8 *buf, size_t len)
 	struct pb_field f;
 	int ret;
 
-	if (len >= 2 && ((u16)buf[0] | ((u16)buf[1] << 8)) == len - 2) {
-		buf += 2;
-		len -= 2;
-	}
-
+	/* QMI_DATA_LEN has already consumed the QMI array-length field. */
 	while ((ret = pb_next(buf, len, &pos, &f)) > 0) {
 		if (f.number == 2 && f.wire == 2) {
 			size_t ep = 0;
