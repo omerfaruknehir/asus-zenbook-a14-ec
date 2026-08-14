@@ -38,6 +38,7 @@ The final workflow should be one command that checks the upstream tree, applies 
 Keep hardware observations in the repository so later changes can be compared against an explicit baseline.
 
 - [`docs/suspend/2026-08-14-deep-suspend-battery.md`](../suspend/2026-08-14-deep-suspend-battery.md) — approximately one hour in `deep` suspend, 50% → 42% battery, with no immediate auto-resume.
+- [`docs/ec/2026-08-14-native-profile-validation.md`](../ec/2026-08-14-native-profile-validation.md) — EC transport/manual PWM validation, quiet-profile load evidence, and the DT `platform_profile` host-tool blocker.
 
 ## Privacy rule
 
