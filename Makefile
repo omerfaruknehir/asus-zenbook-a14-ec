@@ -35,7 +35,7 @@ deb: prepare
 	sh ./scripts/build-deb.sh
 
 gnome-native-install:
-	python3 ./scripts/a14-gnome-native-five-profile.py
+	sh ./scripts/a14-gnome-native-install.sh
 
 gnome-validate:
 	sh ./scripts/a14-gnome-profile-validation.sh
