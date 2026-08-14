@@ -1,10 +1,5 @@
 #!/usr/bin/env python3
-"""Deliver ASUS A14 Quiet emergency notifications to active desktop sessions.
-
-Invoked by udev for the kernel driver's KOBJ_CHANGE event. The helper runs as
-root but deliberately sends the notification as each logged-in user's uid so it
-uses that user's session D-Bus rather than trying to talk to GNOME as root.
-"""
+"""Deliver ASUS A14 Quiet emergency notifications to active desktop sessions."""
 
 from __future__ import annotations
 
@@ -70,22 +65,33 @@ def notify_user(uid: int, summary: str, body: str, urgency: str, timeout_ms: int
 def main() -> int:
     state = sys.argv[1] if len(sys.argv) > 1 else ""
     temp_raw = sys.argv[2] if len(sys.argv) > 2 else None
+    reason = sys.argv[3] if len(sys.argv) > 3 else "unknown"
     temp = parse_temp(temp_raw)
 
     if state == "engage":
         summary = "Quiet mode: emergency cooling active"
-        body = (
-            f"System temperature reached {temp}. CPU throttling remains active, "
-            "but the firmware cooling curve was temporarily raised to Turbo."
-        )
+        if reason == "qos-unavailable":
+            body = (
+                "CPU frequency throttling control is unavailable, so Quiet cannot "
+                "safely remain on the minimal-fan curve. Firmware Turbo cooling "
+                "has been forced while Quiet remains selected."
+            )
+        else:
+            body = (
+                f"System temperature reached {temp}. CPU throttling remains active, "
+                "but the firmware cooling curve was temporarily raised to Turbo."
+            )
         urgency = "critical"
         timeout_ms = 0
     elif state == "clear":
         summary = "Quiet mode: emergency cooling cleared"
-        body = (
-            f"System temperature recovered to {temp}. The native Quiet cooling "
-            "curve has been restored."
-        )
+        if reason == "profile-change":
+            body = "Emergency cooling ended because another A14 mode was selected."
+        else:
+            body = (
+                f"System temperature recovered to {temp}. The native Quiet cooling "
+                "curve has been restored."
+            )
         urgency = "normal"
         timeout_ms = 6000
     else:
@@ -107,7 +113,7 @@ def main() -> int:
     syslog.openlog("asus-a14-emergency-notify")
     syslog.syslog(
         syslog.LOG_NOTICE,
-        f"quiet_emergency={state} temp_mc={temp_raw or 'unknown'} desktop_notifications={delivered}",
+        f"quiet_emergency={state} reason={reason} temp_mc={temp_raw or 'unknown'} desktop_notifications={delivered}",
     )
     return 0
 
