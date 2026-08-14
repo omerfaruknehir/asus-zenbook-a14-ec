@@ -24,18 +24,22 @@ jobs:
           dpkg-deb -x "$deb" "$root"
           src=$(find "$root/usr/src" -maxdepth 1 -type d -name 'asus-zenbook-a14-ec-*' -print -quit)
           test -n "$src"
-          grep -q '#define EC_FW_FAN_PROFILE_COMMAND        0x11' "$src/asus_zenbook_a14_ec.c"
-          grep -q '#define EC_FW_FAN_PROFILE_NORMAL         0x01' "$src/asus_zenbook_a14_ec.c"
-          grep -q '#define EC_FW_FAN_PROFILE_QUIET          0x02' "$src/asus_zenbook_a14_ec.c"
-          grep -q '#define EC_FW_FAN_PROFILE_TURBO          0x04' "$src/asus_zenbook_a14_ec.c"
-          grep -q '#define EC_FW_FAN_PROFILE_FULL_SPEED     0x10' "$src/asus_zenbook_a14_ec.c"
-          grep -q 'quiet balanced performance full-speed' "$src/asus_zenbook_a14_ec.c"
-          if grep -q 'quiet_max_khz' "$src/asus_zenbook_a14_ec.c"; then
+          ec="$src/asus_zenbook_a14_ec.c"
+          grep -q '#define EC_FW_FAN_PROFILE_COMMAND        0x11' "$ec"
+          grep -q '#define EC_FW_FAN_PROFILE_NORMAL         0x01' "$ec"
+          grep -q '#define EC_FW_FAN_PROFILE_QUIET          0x02' "$ec"
+          grep -q '#define EC_FW_FAN_PROFILE_TURBO          0x04' "$ec"
+          grep -q '#define EC_FW_FAN_PROFILE_FULL_SPEED     0x10' "$ec"
+          grep -q 'quiet balanced performance full-speed' "$ec"
+          grep -q 'PLATFORM_PROFILE_MAX_POWER' "$ec"
+          grep -q 'KERNEL_VERSION(6, 19, 0)' "$ec"
+          if grep -q 'quiet_max_khz' "$ec"; then
             echo 'synthetic quiet CPU cap leaked into packaged EC source' >&2
             false
           fi
           test ! -e "$src/scripts/apply-a14-native-fan-profile.py"
           test ! -e "$src/scripts/apply-a14-native-hardening-compat.py"
+          test ! -e "$src/scripts/apply-a14-native-max-power.py"
           make -C "$src" prepare
       - uses: actions/upload-artifact@v4
         with:
