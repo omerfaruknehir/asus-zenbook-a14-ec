@@ -1,9 +1,10 @@
 #!/bin/sh
 
 # Controlled hardware validation for the ASUS Zenbook A14 EC driver.
-# This script intentionally touches only the proven EC transport and the
-# recovered native fan/thermal profile mailbox.  It performs no raw MMIO and
-# does not touch CPAS/AOS.
+# This script validates the EC transport, native profile command acceptance,
+# automatic/manual ownership transitions, and manual PWM. It does not claim
+# that native profile thermal behavior differs at idle; use the load validator
+# for that. It performs no raw MMIO and does not touch CPAS/AOS.
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." 2>/dev/null && pwd)
 MODULE="$ROOT/asus_zenbook_a14_ec.ko"
@@ -99,7 +100,7 @@ write_profile()
 {
     requested=$1
     say ""
-    say "----- native profile: $requested -----"
+    say "----- native profile command: $requested -----"
     printf '%s\n' "$requested" > "$PROFILE" 2>/dev/null
     rc=$?
     if [ "$rc" -ne 0 ]; then
@@ -107,14 +108,13 @@ write_profile()
         return 1
     fi
 
-    # Give the firmware-owned fan curve time to settle enough for telemetry.
     sleep 2
     actual=$(cat "$PROFILE" 2>/dev/null)
     say "profile_write=$requested rc=0 reported=${actual:-unreadable}"
     if [ "$actual" != "$requested" ]; then
         return 1
     fi
-    sample_state "PROFILE $requested"
+    sample_state "PROFILE COMMAND $requested"
     return 0
 }
 
@@ -183,7 +183,7 @@ if [ "$ok" -eq 1 ]; then
             write_profile "$profile"
             rc=$?
             if [ "$rc" -ne 0 ]; then
-                say "ERROR: native profile validation stopped at $profile"
+                say "ERROR: native profile command validation stopped at $profile"
                 ok=0
             fi
         fi
@@ -191,7 +191,7 @@ if [ "$ok" -eq 1 ]; then
 fi
 
 # Revalidate the previously proven manual-PWM path without confusing it with
-# the native firmware performance profile.  performance_pwm=160 above keeps the
+# the native firmware performance profile. performance_pwm=160 above keeps the
 # initial manual transition moderate before both channels are explicitly set.
 if [ "$ok" -eq 1 ] && [ "$aborted" -eq 0 ]; then
     if [ -w "$HWMON/pwm1_enable" ] && [ -w "$HWMON/pwm1" ] && [ -w "$HWMON/pwm2" ]; then
@@ -244,9 +244,10 @@ fi
 
 say ""
 if [ "$ok" -eq 1 ] && [ "$aborted" -eq 0 ]; then
-    say "A14_EC_RUNTIME_VALIDATION=PASS"
+    say "A14_EC_RUNTIME_TRANSPORT_VALIDATION=PASS"
+    say "native_profile_behavior=requires_load_validation"
 else
-    say "A14_EC_RUNTIME_VALIDATION=FAIL"
+    say "A14_EC_RUNTIME_TRANSPORT_VALIDATION=FAIL"
 fi
 say "local_module_left_loaded=$loaded_local"
 say "final_profile=balanced_requested"
