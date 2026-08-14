@@ -34,6 +34,9 @@ install-deb: prepare
 deb: prepare
 	sh ./scripts/build-deb.sh
 
+gnome-native-install:
+	python3 ./scripts/a14-gnome-native-five-profile.py
+
 gnome-validate:
 	sh ./scripts/a14-gnome-profile-validation.sh
 
@@ -59,4 +62,4 @@ aos-firmware-verify:
 dmesg:
 	dmesg --ctime | grep -E 'asus_zenbook_a14_ec|hid_asus_zenbook_a14_ec|asus::kbd_backlight|Fn-lock' | tail -n 80
 
-.PHONY: all modules prepare mainline-check clean load-hid load-ec unload-ec reload-ec install-deb deb gnome-validate quiet-emergency-validate unify-normal-dtb aos-probe aos-module aos-module-clean aos-firmware-verify dmesg
+.PHONY: all modules prepare mainline-check clean load-hid load-ec unload-ec reload-ec install-deb deb gnome-native-install gnome-validate quiet-emergency-validate unify-normal-dtb aos-probe aos-module aos-module-clean aos-firmware-verify dmesg
