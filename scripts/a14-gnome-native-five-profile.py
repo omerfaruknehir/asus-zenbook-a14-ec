@@ -3,7 +3,7 @@
 all five ASUS Zenbook A14 profiles.
 
 This intentionally patches the distro GNOME Shell and Control Center sources
-instead of adding another fake settings panel.  It keeps one Power Mode tile
+instead of adding another fake settings panel. It keeps one Power Mode tile
 and one Power Mode section, both backed by org.freedesktop.UPower.PowerProfiles.
 """
 
@@ -154,6 +154,10 @@ def main() -> int:
     if not SHELL_PATCH.is_file() or not CC_PATCH.is_file():
         raise RuntimeError("GNOME patch payload is missing from the repository")
 
+    # Always start from freshly unpacked distro sources. A failed previous build
+    # must never leave a half-patched source tree that changes the next result.
+    if WORK.exists():
+        shutil.rmtree(WORK)
     WORK.mkdir(parents=True, exist_ok=True)
 
     # Building distro sources is deliberate here: Shell imports powerProfiles.js
@@ -192,8 +196,7 @@ def main() -> int:
     run(["sudo", "apt-get", "install", "-y", *[str(d) for d in debs]])
 
     # The former A14 extension is now obsolete: patched stock GNOME Shell owns
-    # the single Power Mode tile.  Disable it in the current user session if it
-    # is still registered; package 0.4.0 also stops shipping the payload.
+    # the single Power Mode tile. Disable it in the current user session.
     if shutil.which("gnome-extensions"):
         run(["gnome-extensions", "disable", "asus-a14-modes@omerfaruknehir"], check=False)
 
