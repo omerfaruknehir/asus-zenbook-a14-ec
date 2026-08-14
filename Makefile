@@ -42,7 +42,7 @@ prepare:
 	   grep -q 'A14_PROFILE_TRANSACTIONAL' asus_zenbook_a14_ec.c && \
 	   grep -q 'ASUS_EC_PROFILE_POWER_SAVER' asus_zenbook_a14_ec.c && \
 	   grep -q 'PLATFORM_PROFILE_MAX_POWER' asus_zenbook_a14_ec.c && \
-	   grep -q 'asus_ec_set_pwm_both(ec, 255)' asus_zenbook_a14_ec.c; then \
+	   grep -q 'asus_ec_enter_manual_locked(ec, 255)' asus_zenbook_a14_ec.c; then \
 		echo 'a14_ec_stack=current'; \
 	else \
 		echo 'a14_ec_stack=incomplete' >&2; false; \
