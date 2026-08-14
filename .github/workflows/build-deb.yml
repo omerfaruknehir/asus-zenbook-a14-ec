@@ -51,9 +51,16 @@ jobs:
           test -x "$src/scripts/apply-a14-profile-policy-v2.py"
           test -x "$src/scripts/apply-a14-profile-emergency-notify.py"
           test -x "$src/scripts/apply-a14-profile-transactional.py"
+          test -x "$root/usr/libexec/asus-zenbook-a14-profile-service"
           test -x "$root/usr/libexec/asus-zenbook-a14-emergency-notify"
           test -x "$root/usr/libexec/asus-zenbook-a14-profile-integration"
+          test -x "$root/usr/libexec/asus-zenbook-a14-enable-gnome-extension"
+          test -s "$root/usr/lib/systemd/system/asus-zenbook-a14-profile.service"
           test -s "$root/usr/lib/udev/rules.d/90-asus-zenbook-a14-ec.rules"
+          test -s "$root/usr/share/dbus-1/system.d/io.github.omerfaruknehir.AsusA14.conf"
+          test -s "$root/usr/share/gnome-shell/extensions/asus-a14-modes@omerfaruknehir/metadata.json"
+          test -s "$root/usr/share/gnome-shell/extensions/asus-a14-modes@omerfaruknehir/extension.js"
+          grep -q 'QuickSettings.QuickMenuToggle' "$root/usr/share/gnome-shell/extensions/asus-a14-modes@omerfaruknehir/extension.js"
           make -C "$src" prepare
       - uses: actions/upload-artifact@v4
         with:
