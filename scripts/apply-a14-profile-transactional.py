@@ -211,7 +211,7 @@ required = (
     'previous_quiet_emergency',
     'quiet_qos_unavailable',
     'qos-unavailable',
-    'asus_ec_set_pwm_both(ec, 255)',
+    'asus_ec_enter_manual_locked(ec, 255)',
     'profile switch failed',
 )
 missing = [token for token in required if token not in s]
