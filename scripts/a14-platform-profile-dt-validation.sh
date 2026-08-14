@@ -6,7 +6,14 @@
 # while leaving ACPI-only legacy aggregate sysfs disabled on a DT boot.
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." 2>/dev/null && pwd)
-KERNEL_SRC=${A14_KERNEL_SRC:-$HOME/Downloads/linux-7.1.5-a14-mainline}
+USER_HOME=$HOME
+if [ -n "${SUDO_USER:-}" ] && command -v getent >/dev/null 2>&1; then
+    resolved_home=$(getent passwd "$SUDO_USER" 2>/dev/null | cut -d: -f6)
+    if [ -n "$resolved_home" ]; then
+        USER_HOME=$resolved_home
+    fi
+fi
+KERNEL_SRC=${A14_KERNEL_SRC:-$USER_HOME/Downloads/linux-7.1.5-a14-mainline}
 KBUILD=/lib/modules/$(uname -r)/build
 BUILD_DIR=$ROOT/.platform-profile-dt-build
 PP_SRC=$KERNEL_SRC/drivers/acpi/platform_profile.c
@@ -33,6 +40,17 @@ find_pp_node()
     done
 }
 
+count_profile_handlers()
+{
+    count=0
+    for d in /sys/class/platform-profile/platform-profile-*; do
+        if [ -d "$d" ]; then
+            count=$((count + 1))
+        fi
+    done
+    printf '%s' "$count"
+}
+
 restore_balanced()
 {
     if [ -n "$PP_NODE" ] && [ -w "$PP_NODE/profile" ]; then
@@ -43,14 +61,14 @@ restore_balanced()
 }
 
 if [ "$(id -u)" -ne 0 ]; then
-    say "ERROR: run with sudo -E so HOME/A14_KERNEL_SRC remain visible."
-    say "Example: sudo -E sh ./scripts/a14-platform-profile-dt-validation.sh"
+    say "ERROR: run with sudo: sudo sh ./scripts/a14-platform-profile-dt-validation.sh"
     ok=0
 fi
 
 if [ "$ok" -eq 1 ]; then
     say "===== INPUT ====="
     say "kernel=$(uname -r)"
+    say "user_home=$USER_HOME"
     say "kernel_source=$KERNEL_SRC"
     say "kernel_build=$KBUILD"
 
@@ -92,6 +110,17 @@ if [ "$ok" -eq 1 ]; then
 fi
 
 if [ "$ok" -eq 1 ]; then
+    handlers=$(count_profile_handlers)
+    say "existing_platform_profile_handlers=$handlers"
+    if [ "$handlers" -ne 0 ]; then
+        say "ERROR: a platform-profile handler is already active; refusing to replace the framework underneath it."
+        find_pp_node
+        say "existing_a14_platform_profile=${PP_NODE:-none}"
+        ok=0
+    fi
+fi
+
+if [ "$ok" -eq 1 ]; then
     say ""
     say "===== APPLY DT CLASS FIX ====="
     python3 "$ROOT/scripts/apply-mainline-platform-profile-dt.py" "$KERNEL_SRC"
@@ -125,17 +154,6 @@ EOF
     rc=$?
     say "platform_profile_build_rc=$rc"
     if [ "$rc" -ne 0 ] || [ ! -r "$PP_KO" ]; then
-        ok=0
-    fi
-fi
-
-if [ "$ok" -eq 1 ]; then
-    say ""
-    say "===== PRE-LOAD STATE ====="
-    find_pp_node
-    say "existing_a14_platform_profile=${PP_NODE:-none}"
-    if [ -n "$PP_NODE" ]; then
-        say "ERROR: an A14 platform-profile handler is already active; refusing to replace the framework underneath it."
         ok=0
     fi
 fi
