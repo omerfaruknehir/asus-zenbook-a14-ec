@@ -1,10 +1,15 @@
 #!/usr/bin/env python3
-"""Build/install GNOME 50.x patches that make the stock Power Mode UI understand
-all five ASUS Zenbook A14 profiles.
+"""Build/install GNOME 50.x source changes for the A14 five-profile policy.
 
-This intentionally patches the distro GNOME Shell and Control Center sources
-instead of adding another fake settings panel. It keeps one Power Mode tile
-and one Power Mode section, both backed by org.freedesktop.UPower.PowerProfiles.
+The A14 PPD-compatible bridge already publishes five profiles through the
+standard org.freedesktop.UPower.PowerProfiles API.  Stock GNOME 50 filters
+unknown names in Shell and Control Center, so this script rebuilds the distro
+GNOME packages with narrowly-scoped semantic source edits:
+
+    Quiet / Power Saver / Balanced / Performance / Full Speed
+
+No second Quick Settings extension is needed after this succeeds: the existing
+GNOME Power Mode tile and Settings > Power section become five-profile aware.
 """
 
 from __future__ import annotations
@@ -19,8 +24,6 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 WORK = Path.home() / "Downloads" / "a14-gnome-five-profile-build"
-SHELL_PATCH = REPO / "userspace/gnome/patches/gnome-shell-50-a14-five-profiles.patch"
-CC_PATCH = REPO / "userspace/gnome/patches/gnome-control-center-50-a14-five-profiles.patch"
 ICON_DIR = REPO / "userspace/gnome/icons"
 TARGET_PACKAGES = {
     "gnome-shell",
@@ -68,28 +71,134 @@ def find_source(prefix: str) -> Path:
     return max(candidates, key=lambda p: p.stat().st_mtime)
 
 
-def patch_source(src: Path, patch_file: Path) -> None:
-    reverse = subprocess.run(
-        ["patch", "-p1", "--dry-run", "-R", "-i", str(patch_file)],
-        cwd=src,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-    if reverse.returncode == 0:
-        print(f"patch_current={patch_file.name}")
-        return
+def replace_once(text: str, old: str, new: str, label: str) -> str:
+    if new in text:
+        print(f"semantic_edit_current={label}")
+        return text
+    count = text.count(old)
+    if count != 1:
+        raise RuntimeError(f"{label}: expected one source anchor, found {count}")
+    print(f"semantic_edit_applied={label}")
+    return text.replace(old, new, 1)
 
-    dry = subprocess.run(
-        ["patch", "-p1", "--dry-run", "--forward", "-i", str(patch_file)],
-        cwd=src,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
+
+def patch_shell_semantic(src: Path) -> None:
+    path = src / "js/ui/status/powerProfiles.js"
+    s = path.read_text(encoding="utf-8")
+
+    s = replace_once(
+        s,
+        """const PROFILE_PARAMS = {\n    'performance': {\n""",
+        """const PROFILE_PARAMS = {\n    'full-speed': {\n        name: C_('Power profile', 'Full Speed'),\n        iconName: 'a14-power-profile-full-speed-symbolic',\n    },\n\n    'performance': {\n""",
+        "shell-full-speed-profile",
     )
-    if dry.returncode != 0:
-        print(dry.stdout or "", file=sys.stderr)
-        raise RuntimeError(f"patch does not apply cleanly: {patch_file.name}")
-    run(["patch", "-p1", "--forward", "-i", str(patch_file)], cwd=src)
+
+    s = replace_once(
+        s,
+        """    'power-saver': {\n        name: C_('Power profile', 'Power Saver'),\n        iconName: 'power-profile-power-saver-symbolic',\n    },\n};\n""",
+        """    'power-saver': {\n        name: C_('Power profile', 'Power Saver'),\n        iconName: 'power-profile-power-saver-symbolic',\n    },\n\n    'quiet': {\n        name: C_('Power profile', 'Quiet'),\n        iconName: 'a14-power-profile-quiet-symbolic',\n    },\n};\n""",
+        "shell-quiet-profile",
+    )
+
+    required = (
+        "'quiet': {",
+        "'full-speed': {",
+        "a14-power-profile-quiet-symbolic",
+        "a14-power-profile-full-speed-symbolic",
+        "this._proxy.ActiveProfile = profile",
+    )
+    missing = [token for token in required if token not in s]
+    if missing:
+        raise RuntimeError("GNOME Shell semantic edit incomplete: " + ", ".join(missing))
+
+    path.write_text(s, encoding="utf-8")
+    print("gnome_shell_five_profile_semantic=applied")
+
+
+def patch_control_center_semantic(src: Path) -> None:
+    h = src / "panels/power/cc-power-profile-row.h"
+    c = src / "panels/power/cc-power-profile-row.c"
+    blp = src / "panels/power/cc-power-profile-row.blp"
+
+    hs = h.read_text(encoding="utf-8")
+    cs = c.read_text(encoding="utf-8")
+    bs = blp.read_text(encoding="utf-8")
+
+    hs = replace_once(
+        hs,
+        """typedef enum\n{\n  CC_POWER_PROFILE_PERFORMANCE,\n  CC_POWER_PROFILE_BALANCED,\n  CC_POWER_PROFILE_POWER_SAVER,\n  NUM_CC_POWER_PROFILES,\n""",
+        """typedef enum\n{\n  CC_POWER_PROFILE_FULL_SPEED,\n  CC_POWER_PROFILE_PERFORMANCE,\n  CC_POWER_PROFILE_BALANCED,\n  CC_POWER_PROFILE_POWER_SAVER,\n  CC_POWER_PROFILE_QUIET,\n  NUM_CC_POWER_PROFILES,\n""",
+        "control-center-five-profile-enum",
+    )
+
+    bs = replace_once(
+        bs,
+        """  use-underline: true;\n\n  [prefix]\n  CheckButton button {\n""",
+        """  use-underline: true;\n\n  [prefix]\n  Image icon {\n    valign: center;\n    pixel-size: 18;\n  }\n\n  [prefix]\n  CheckButton button {\n""",
+        "control-center-profile-icons-blueprint",
+    )
+
+    cs = replace_once(
+        cs,
+        """  AdwActionRow parent_instance;\n\n  GtkCheckButton *button;\n""",
+        """  AdwActionRow parent_instance;\n\n  GtkImage *icon;\n  GtkCheckButton *button;\n""",
+        "control-center-profile-icon-member",
+    )
+
+    cs = replace_once(
+        cs,
+        """  gtk_widget_class_set_template_from_resource (widget_class, \"/org/gnome/control-center/power/cc-power-profile-row.ui\");\n\n  gtk_widget_class_bind_template_child (widget_class, CcPowerProfileRow, button);\n""",
+        """  gtk_widget_class_set_template_from_resource (widget_class, \"/org/gnome/control-center/power/cc-power-profile-row.ui\");\n\n  gtk_widget_class_bind_template_child (widget_class, CcPowerProfileRow, icon);\n  gtk_widget_class_bind_template_child (widget_class, CcPowerProfileRow, button);\n""",
+        "control-center-profile-icon-binding",
+    )
+
+    cs = replace_once(
+        cs,
+        """  CcPowerProfileRow *self;\n  const char *text, *subtext;\n\n  self = g_object_new (CC_TYPE_POWER_PROFILE_ROW, NULL);\n\n  self->power_profile = power_profile;\n  switch (self->power_profile)\n    {\n      case CC_POWER_PROFILE_PERFORMANCE:\n        text = C_(\"Power profile\", \"P_erformance\");\n        subtext = _(\"High performance and power usage\");\n        break;\n      case CC_POWER_PROFILE_BALANCED:\n        text = C_(\"Power profile\", \"Ba_lanced\");\n        subtext = _(\"Standard performance and power usage\");\n        break;\n      case CC_POWER_PROFILE_POWER_SAVER:\n        text = C_(\"Power profile\", \"P_ower Saver\");\n        subtext = _(\"Reduced performance and power usage\");\n        break;\n      default:\n        g_assert_not_reached ();\n    }\n\n  adw_preferences_row_set_title (ADW_PREFERENCES_ROW (self), text);\n""",
+        """  CcPowerProfileRow *self;\n  const char *text, *subtext, *icon_name;\n\n  self = g_object_new (CC_TYPE_POWER_PROFILE_ROW, NULL);\n\n  self->power_profile = power_profile;\n  switch (self->power_profile)\n    {\n      case CC_POWER_PROFILE_FULL_SPEED:\n        text = C_(\"Power profile\", \"_Full Speed\");\n        subtext = _(\"Maximum cooling and no artificial CPU frequency cap\");\n        icon_name = \"a14-power-profile-full-speed-symbolic\";\n        break;\n      case CC_POWER_PROFILE_PERFORMANCE:\n        text = C_(\"Power profile\", \"P_erformance\");\n        subtext = _(\"High performance and power usage\");\n        icon_name = \"power-profile-performance-symbolic\";\n        break;\n      case CC_POWER_PROFILE_BALANCED:\n        text = C_(\"Power profile\", \"Ba_lanced\");\n        subtext = _(\"Standard performance and power usage\");\n        icon_name = \"power-profile-balanced-symbolic\";\n        break;\n      case CC_POWER_PROFILE_POWER_SAVER:\n        text = C_(\"Power profile\", \"P_ower Saver\");\n        subtext = _(\"Reduced performance and power usage\");\n        icon_name = \"power-profile-power-saver-symbolic\";\n        break;\n      case CC_POWER_PROFILE_QUIET:\n        text = C_(\"Power profile\", \"_Quiet\");\n        subtext = _(\"Acoustic-first mode with strong CPU throttling\");\n        icon_name = \"a14-power-profile-quiet-symbolic\";\n        break;\n      default:\n        g_assert_not_reached ();\n    }\n\n  gtk_image_set_from_icon_name (self->icon, icon_name);\n  adw_preferences_row_set_title (ADW_PREFERENCES_ROW (self), text);\n""",
+        "control-center-five-profile-rows",
+    )
+
+    cs = replace_once(
+        cs,
+        """CcPowerProfile\ncc_power_profile_from_str (const char *profile)\n{\n  if (g_strcmp0 (profile, \"power-saver\") == 0)\n    return CC_POWER_PROFILE_POWER_SAVER;\n  if (g_strcmp0 (profile, \"balanced\") == 0)\n    return CC_POWER_PROFILE_BALANCED;\n  if (g_strcmp0 (profile, \"performance\") == 0)\n    return CC_POWER_PROFILE_PERFORMANCE;\n""",
+        """CcPowerProfile\ncc_power_profile_from_str (const char *profile)\n{\n  if (g_strcmp0 (profile, \"full-speed\") == 0)\n    return CC_POWER_PROFILE_FULL_SPEED;\n  if (g_strcmp0 (profile, \"power-saver\") == 0)\n    return CC_POWER_PROFILE_POWER_SAVER;\n  if (g_strcmp0 (profile, \"balanced\") == 0)\n    return CC_POWER_PROFILE_BALANCED;\n  if (g_strcmp0 (profile, \"performance\") == 0)\n    return CC_POWER_PROFILE_PERFORMANCE;\n  if (g_strcmp0 (profile, \"quiet\") == 0)\n    return CC_POWER_PROFILE_QUIET;\n""",
+        "control-center-profile-from-string",
+    )
+
+    cs = replace_once(
+        cs,
+        """const char *\ncc_power_profile_to_str (CcPowerProfile profile)\n{\n  switch (profile)\n  {\n  case CC_POWER_PROFILE_POWER_SAVER:\n    return \"power-saver\";\n  case CC_POWER_PROFILE_BALANCED:\n    return \"balanced\";\n  case CC_POWER_PROFILE_PERFORMANCE:\n    return \"performance\";\n""",
+        """const char *\ncc_power_profile_to_str (CcPowerProfile profile)\n{\n  switch (profile)\n  {\n  case CC_POWER_PROFILE_FULL_SPEED:\n    return \"full-speed\";\n  case CC_POWER_PROFILE_POWER_SAVER:\n    return \"power-saver\";\n  case CC_POWER_PROFILE_BALANCED:\n    return \"balanced\";\n  case CC_POWER_PROFILE_PERFORMANCE:\n    return \"performance\";\n  case CC_POWER_PROFILE_QUIET:\n    return \"quiet\";\n""",
+        "control-center-profile-to-string",
+    )
+
+    required_h = (
+        "CC_POWER_PROFILE_FULL_SPEED",
+        "CC_POWER_PROFILE_QUIET",
+        "NUM_CC_POWER_PROFILES",
+    )
+    required_c = (
+        "a14-power-profile-quiet-symbolic",
+        "a14-power-profile-full-speed-symbolic",
+        'g_strcmp0 (profile, "quiet")',
+        'g_strcmp0 (profile, "full-speed")',
+        'return "quiet";',
+        'return "full-speed";',
+        "gtk_image_set_from_icon_name",
+    )
+    required_b = ("Image icon {", "CheckButton button {")
+    if any(token not in hs for token in required_h):
+        raise RuntimeError("GNOME Control Center enum semantic edit incomplete")
+    if any(token not in cs for token in required_c):
+        raise RuntimeError("GNOME Control Center C semantic edit incomplete")
+    if any(token not in bs for token in required_b):
+        raise RuntimeError("GNOME Control Center Blueprint semantic edit incomplete")
+
+    h.write_text(hs, encoding="utf-8")
+    c.write_text(cs, encoding="utf-8")
+    blp.write_text(bs, encoding="utf-8")
+    print("gnome_control_center_five_profile_semantic=applied")
 
 
 def localize_version(src: Path) -> None:
@@ -131,15 +240,32 @@ def install_icons() -> None:
         ICON_DIR / "a14-power-profile-quiet-symbolic.svg",
         ICON_DIR / "a14-power-profile-full-speed-symbolic.svg",
     ):
+        if not icon.is_file():
+            raise RuntimeError(f"missing symbolic icon: {icon}")
         run(["sudo", "install", "-m", "0644", str(icon), str(dest / icon.name)])
     if shutil.which("gtk-update-icon-cache"):
         run(["sudo", "gtk-update-icon-cache", "-f", "-t", "/usr/share/icons/hicolor"], check=False)
 
 
+def disable_old_extension() -> None:
+    uuid = "asus-a14-modes@omerfaruknehir"
+    if shutil.which("gnome-extensions"):
+        run(["gnome-extensions", "disable", uuid], check=False)
+    # Prevent the obsolete second tile from coming back in later sessions. The
+    # files can remain installed by the DKMS package for rollback/debugging;
+    # the native rebuilt Shell owns Power Mode after this point.
+    if shutil.which("gsettings"):
+        current = output(["gsettings", "get", "org.gnome.shell", "enabled-extensions"])
+        if uuid in current:
+            print("old_a14_extension_still_listed=true")
+        else:
+            print("old_a14_extension_enabled=false")
+
+
 def main() -> int:
     for cmd in (
         "gnome-shell", "gnome-control-center", "apt-get", "dpkg-buildpackage",
-        "dpkg-parsechangelog", "dpkg-deb", "patch", "dch", "sudo",
+        "dpkg-parsechangelog", "dpkg-deb", "dch", "sudo",
     ):
         require(cmd)
 
@@ -149,20 +275,12 @@ def main() -> int:
     print(f"gnome_control_center={cc_version}")
 
     if version_major(shell_version) != 50 or version_major(cc_version) != 50:
-        raise RuntimeError("the current source patches are intentionally pinned to GNOME 50.x")
+        raise RuntimeError("the current semantic edits are intentionally pinned to GNOME 50.x")
 
-    if not SHELL_PATCH.is_file() or not CC_PATCH.is_file():
-        raise RuntimeError("GNOME patch payload is missing from the repository")
-
-    # Always start from freshly unpacked distro sources. A failed previous build
-    # must never leave a half-patched source tree that changes the next result.
     if WORK.exists():
         shutil.rmtree(WORK)
     WORK.mkdir(parents=True, exist_ok=True)
 
-    # Building distro sources is deliberate here: Shell imports powerProfiles.js
-    # from resource:/// and Control Center compiles the profile enum into its
-    # binary, so dropping replacement files under /usr/share is not sufficient.
     run(["sudo", "apt-get", "build-dep", "-y", "gnome-shell", "gnome-control-center"])
     run(["apt-get", "source", "gnome-shell", "gnome-control-center"], cwd=WORK)
 
@@ -171,10 +289,20 @@ def main() -> int:
     print(f"gnome_shell_source={shell_src}")
     print(f"gnome_control_center_source={cc_src}")
 
-    patch_source(shell_src, SHELL_PATCH)
-    patch_source(cc_src, CC_PATCH)
+    patch_shell_semantic(shell_src)
+    patch_control_center_semantic(cc_src)
     localize_version(shell_src)
     localize_version(cc_src)
+
+    # Cheap pre-build validation: catch syntax/format mistakes before launching
+    # two full distro builds.
+    if shutil.which("git"):
+        run(["git", "diff", "--check", "--no-index", "/dev/null",
+             str(shell_src / "js/ui/status/powerProfiles.js")], check=False)
+    run(["grep", "-n", "-E", "quiet|full-speed|a14-power-profile",
+         str(shell_src / "js/ui/status/powerProfiles.js")], check=True)
+    run(["grep", "-n", "-E", "QUIET|FULL_SPEED|a14-power-profile",
+         str(cc_src / "panels/power/cc-power-profile-row.c")], check=True)
 
     build_source(shell_src)
     build_source(cc_src)
@@ -194,15 +322,12 @@ def main() -> int:
         raise RuntimeError("missing built packages: " + ", ".join(sorted(missing)))
 
     run(["sudo", "apt-get", "install", "-y", *[str(d) for d in debs]])
-
-    # The former A14 extension is now obsolete: patched stock GNOME Shell owns
-    # the single Power Mode tile. Disable it in the current user session.
-    if shutil.which("gnome-extensions"):
-        run(["gnome-extensions", "disable", "asus-a14-modes@omerfaruknehir"], check=False)
-
+    disable_old_extension()
     run(["sudo", "systemctl", "restart", "asus-zenbook-a14-ppd-bridge.service"], check=False)
 
     print("A14_GNOME_NATIVE_FIVE_PROFILE_INSTALL=PASS")
+    print("single_power_mode_control=true")
+    print("gnome_settings_five_profiles=true")
     print("logout_login_required=true")
     print("note=Wayland GNOME Shell must restart to load its rebuilt resource bundle")
     return 0
