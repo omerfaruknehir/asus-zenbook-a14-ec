@@ -6,6 +6,7 @@ cd "$repo"
 sh -n install.sh scripts/build-deb.sh scripts/asus-a14-control \
   scripts/asus-zenbook-a14-ec-load scripts/asus-zenbook-a14-ec-unload \
   scripts/asus-zenbook-a14-profile-integration \
+  scripts/asus-zenbook-a14-enable-gnome-extension \
   scripts/a14-ec-runtime-validation.sh scripts/a14-ec-profile-load-validation.sh \
   scripts/a14-platform-profile-dt-validation.sh scripts/a14-quiet-emergency-validation.sh \
   scripts/a14-aos-kernel-probe.sh scripts/verify-a14-aos-firmware.sh \
@@ -19,8 +20,10 @@ python3 -m py_compile \
   scripts/apply-a14-native-fan-telemetry.py \
   scripts/apply-a14-profile-policy-v2.py \
   scripts/apply-a14-profile-emergency-notify.py \
+  scripts/apply-a14-profile-transactional.py \
   scripts/apply-a14-hid-fnlock.py \
   scripts/asus-zenbook-a14-ppd-bridge.py \
+  scripts/asus-zenbook-a14-profile-service.py \
   scripts/asus-zenbook-a14-emergency-notify.py \
   desktop/resources/apply-a14-cpu-info.py \
   desktop/resources/repair-a14-cpu-info.py \
@@ -38,6 +41,7 @@ python3 desktop/resources/test-gpu-metrics-repair.py
 
 version=$(cat VERSION)
 grep -q "PACKAGE_VERSION=\"$version\"" dkms.conf
+
 test -s AOS-KERNEL-BRINGUP.md
 test -s docs/aos/ARCHITECTURE.md
 test -s docs/aos/PROBE-20260804.md
@@ -60,6 +64,30 @@ test -s kernel/aos/PROTOCOL.md
 test -s udev/90-asus-zenbook-a14-ec.rules
 test -s scripts/asus-zenbook-a14-emergency-notify.py
 test -s scripts/asus-zenbook-a14-profile-integration
+test -s scripts/asus-zenbook-a14-profile-service.py
+test -s systemd/asus-zenbook-a14-profile.service
+test -s dbus-1/system.d/io.github.omerfaruknehir.AsusA14.conf
+test -s gnome-shell/asus-a14-modes@omerfaruknehir/metadata.json
+test -s gnome-shell/asus-a14-modes@omerfaruknehir/extension.js
+test -s xdg/autostart/asus-zenbook-a14-gnome-extension.desktop
+
+python3 - <<'PY'
+import json
+from pathlib import Path
+m = json.loads(Path('gnome-shell/asus-a14-modes@omerfaruknehir/metadata.json').read_text())
+assert m['uuid'] == 'asus-a14-modes@omerfaruknehir'
+assert set(m['shell-version']) >= {'45', '46', '47', '48', '49', '50'}
+PY
+
+grep -q "io.github.omerfaruknehir.AsusA14.Profile1" scripts/asus-zenbook-a14-profile-service.py
+grep -q "PROFILES = (\"quiet\", \"power-saver\", \"balanced\", \"performance\", \"full-speed\")" scripts/asus-zenbook-a14-profile-service.py
+grep -q "local logged-in user session is required" scripts/asus-zenbook-a14-profile-service.py
+grep -q "send_destination=\"io.github.omerfaruknehir.AsusA14\"" dbus-1/system.d/io.github.omerfaruknehir.AsusA14.conf
+grep -q "QuickSettings.QuickMenuToggle" gnome-shell/asus-a14-modes@omerfaruknehir/extension.js
+grep -q "addExternalIndicator" gnome-shell/asus-a14-modes@omerfaruknehir/extension.js
+for profile in quiet power-saver balanced performance full-speed; do
+  grep -q "'$profile'" gnome-shell/asus-a14-modes@omerfaruknehir/extension.js
+done
 
 grep -q 'read_only=true' scripts/a14-aos-kernel-probe.sh
 grep -q 'remoteproc_restart=false' scripts/a14-aos-kernel-probe.sh
@@ -96,7 +124,6 @@ fi
 grep -q 'presence activation failed: %d; recycling SSC client' kernel/aos/qcom_ssc_hpd.c
 grep -A12 'ret = a14_ssc_enable_hpd' kernel/aos/qcom_ssc_hpd.c | grep -q 'disconnect_client(hpd)'
 grep -A14 'ret = a14_ssc_enable_hpd' kernel/aos/qcom_ssc_hpd.c | grep -q 'reconnect_client_if_possible(hpd)'
-# Quiesce before suspend/unload and restart service discovery after resume.
 grep -q 'DEFINE_SIMPLE_DEV_PM_OPS' kernel/aos/qcom_ssc_hpd.c
 grep -q 'suspend: SSC client quiesced' kernel/aos/qcom_ssc_hpd.c
 grep -q 'resume: SSC rediscovery scheduled' kernel/aos/qcom_ssc_hpd.c
@@ -109,10 +136,12 @@ grep -q 'failed activation tears down that client immediately' kernel/aos/PROTOC
 make prepare
 grep -q 'A14_PROFILE_POLICY_V2' asus_zenbook_a14_ec.c
 grep -q 'A14_PROFILE_EMERGENCY_NOTIFY' asus_zenbook_a14_ec.c
+grep -q 'A14_PROFILE_TRANSACTIONAL' asus_zenbook_a14_ec.c
 grep -q 'ASUS_EC_PROFILE_POWER_SAVER' asus_zenbook_a14_ec.c
 grep -q 'quiet power-saver balanced performance full-speed' asus_zenbook_a14_ec.c
 grep -q 'PLATFORM_PROFILE_LOW_POWER' asus_zenbook_a14_ec.c
-grep -q 'asus_ec_enter_manual_locked(ec, 255)' asus_zenbook_a14_ec.c
+grep -q 'asus_ec_set_pwm_both(ec, 255)' asus_zenbook_a14_ec.c
+grep -q 'asus_ec_restore_profile_locked' asus_zenbook_a14_ec.c
 grep -q 'A14_QUIET_EMERGENCY=' asus_zenbook_a14_ec.c
 grep -q 'DEVICE_ATTR_RO(quiet_emergency)' asus_zenbook_a14_ec.c
 if grep -q 'quiet_max_khz' asus_zenbook_a14_ec.c; then
@@ -153,12 +182,20 @@ contents=$(dpkg-deb --contents "dist/asus-zenbook-a14-ec-dkms_${version}_all.deb
 printf '%s\n' "$contents" | grep -q "usr/src/asus-zenbook-a14-ec-${version}/asus_zenbook_a14_ec.c"
 printf '%s\n' "$contents" | grep -q "usr/src/asus-zenbook-a14-ec-${version}/scripts/apply-a14-profile-policy-v2.py"
 printf '%s\n' "$contents" | grep -q "usr/src/asus-zenbook-a14-ec-${version}/scripts/apply-a14-profile-emergency-notify.py"
+printf '%s\n' "$contents" | grep -q "usr/src/asus-zenbook-a14-ec-${version}/scripts/apply-a14-profile-transactional.py"
 printf '%s\n' "$contents" | grep -q "usr/lib/systemd/system/asus-zenbook-a14-ec.service"
 printf '%s\n' "$contents" | grep -q "usr/lib/systemd/system/asus-zenbook-a14-ppd-bridge.service"
+printf '%s\n' "$contents" | grep -q "usr/lib/systemd/system/asus-zenbook-a14-profile.service"
 printf '%s\n' "$contents" | grep -q "usr/libexec/asus-zenbook-a14-ppd-bridge"
+printf '%s\n' "$contents" | grep -q "usr/libexec/asus-zenbook-a14-profile-service"
 printf '%s\n' "$contents" | grep -q "usr/libexec/asus-zenbook-a14-profile-integration"
 printf '%s\n' "$contents" | grep -q "usr/libexec/asus-zenbook-a14-emergency-notify"
+printf '%s\n' "$contents" | grep -q "usr/libexec/asus-zenbook-a14-enable-gnome-extension"
 printf '%s\n' "$contents" | grep -q "usr/lib/udev/rules.d/90-asus-zenbook-a14-ec.rules"
+printf '%s\n' "$contents" | grep -q "usr/share/dbus-1/system.d/io.github.omerfaruknehir.AsusA14.conf"
+printf '%s\n' "$contents" | grep -q "usr/share/gnome-shell/extensions/asus-a14-modes@omerfaruknehir/metadata.json"
+printf '%s\n' "$contents" | grep -q "usr/share/gnome-shell/extensions/asus-a14-modes@omerfaruknehir/extension.js"
+printf '%s\n' "$contents" | grep -q "etc/xdg/autostart/asus-zenbook-a14-gnome-extension.desktop"
 
 if printf '%s\n' "$contents" | grep -q 'kernel/aos\|qcom_ssc_hpd\|desktop/resources\|apply-a14-cpu-info'; then
   echo "Development drivers and desktop source patches must not be included in the EC package" >&2
