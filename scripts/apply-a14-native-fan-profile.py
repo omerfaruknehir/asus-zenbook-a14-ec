@@ -33,6 +33,25 @@ fixed_wait = (
 if legacy_wait in s:
     s = s.replace(legacy_wait, fixed_wait, 1)
 
+# Older composed trees labelled a failed native switch as CUSTOM even though
+# the low-level fan controller had already been returned to AUTO.  Preserve the
+# last successfully established profile instead; CUSTOM is reserved for manual
+# PWM ownership.
+legacy_native_failure = (
+    '\tret = asus_ec_set_native_fan_profile(ec, marker);\n'
+    '\tif (ret) {\n'
+    '\t\tec->active_profile = ASUS_EC_PROFILE_CUSTOM;\n'
+    '\t\treturn ret;\n'
+    '\t}\n'
+)
+fixed_native_failure = (
+    '\tret = asus_ec_set_native_fan_profile(ec, marker);\n'
+    '\tif (ret)\n'
+    '\t\treturn ret;\n'
+)
+if legacy_native_failure in s:
+    s = s.replace(legacy_native_failure, fixed_native_failure, 1)
+
 
 once(
     '#define EC_REG_FAN_MODE_MAJ             0x01\n',
@@ -92,7 +111,7 @@ if helper not in s:
 
 once(
 '''static int asus_ec_apply_profile_locked(struct asus_ec *ec,\n\t\t\t\t\tenum asus_ec_profile profile)\n{\n\tint ret;\n\n\tswitch (profile) {\n\tcase ASUS_EC_PROFILE_QUIET:\n\t\tret = asus_ec_leave_manual_locked(ec);\n\t\tif (ret)\n\t\t\treturn ret;\n\t\tasus_ec_freq_qos_set(ec, quiet_max_khz);\n\t\tbreak;\n\tcase ASUS_EC_PROFILE_BALANCED:\n\t\tret = asus_ec_leave_manual_locked(ec);\n\t\tif (ret)\n\t\t\treturn ret;\n\t\tasus_ec_freq_qos_set(ec, FREQ_QOS_MAX_DEFAULT_VALUE);\n\t\tbreak;\n\tcase ASUS_EC_PROFILE_PERFORMANCE:\n\t\tif (performance_pwm < EC_PWM_SPIN_FLOOR || performance_pwm > 255)\n\t\t\treturn -EINVAL;\n\t\tasus_ec_freq_qos_set(ec, FREQ_QOS_MAX_DEFAULT_VALUE);\n\t\tret = asus_ec_enter_manual_locked(ec, performance_pwm);\n\t\tif (ret)\n\t\t\treturn ret;\n\t\tbreak;\n\tdefault:\n\t\treturn -EOPNOTSUPP;\n\t}\n\n\tec->active_profile = profile;\n\tec->temp_failures = 0;\n\tif (ec->manual_active && !ec->shutting_down)\n\t\tmod_delayed_work(system_freezable_wq, &ec->safety_work,\n\t\t\t\t msecs_to_jiffies(PROFILE_SAFETY_PERIOD_MS));\n\telse\n\t\tcancel_delayed_work(&ec->safety_work);\n\treturn 0;\n}\n''',
-'''static int asus_ec_apply_profile_locked(struct asus_ec *ec,\n\t\t\t\t\tenum asus_ec_profile profile)\n{\n\tu8 marker;\n\tint ret;\n\n\tret = asus_ec_native_profile_marker(profile, &marker);\n\tif (ret)\n\t\treturn ret;\n\n\t/* Native firmware profiles own the fan curve; manual PWM is separate. */\n\tret = asus_ec_force_auto_locked(ec);\n\tif (ret)\n\t\treturn ret;\n\tasus_ec_freq_qos_set(ec, FREQ_QOS_MAX_DEFAULT_VALUE);\n\n\tret = asus_ec_set_native_fan_profile(ec, marker);\n\tif (ret) {\n\t\tec->active_profile = ASUS_EC_PROFILE_CUSTOM;\n\t\treturn ret;\n\t}\n\n\tec->active_profile = profile;\n\tec->temp_failures = 0;\n\tcancel_delayed_work(&ec->safety_work);\n\treturn 0;\n}\n''',
+'''static int asus_ec_apply_profile_locked(struct asus_ec *ec,\n\t\t\t\t\tenum asus_ec_profile profile)\n{\n\tu8 marker;\n\tint ret;\n\n\tret = asus_ec_native_profile_marker(profile, &marker);\n\tif (ret)\n\t\treturn ret;\n\n\t/* Native firmware profiles own the fan curve; manual PWM is separate. */\n\tret = asus_ec_force_auto_locked(ec);\n\tif (ret)\n\t\treturn ret;\n\tasus_ec_freq_qos_set(ec, FREQ_QOS_MAX_DEFAULT_VALUE);\n\n\tret = asus_ec_set_native_fan_profile(ec, marker);\n\tif (ret)\n\t\treturn ret;\n\n\tec->active_profile = profile;\n\tec->temp_failures = 0;\n\tcancel_delayed_work(&ec->safety_work);\n\treturn 0;\n}\n''',
     'native profile application',
 )
 
