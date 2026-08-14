@@ -13,6 +13,7 @@ import os
 import pwd
 import subprocess
 import sys
+import syslog
 
 APP = "ASUS Zenbook A14"
 REPLACE_ID = "3407"
@@ -28,15 +29,15 @@ def parse_temp(raw: str | None) -> str:
     return f"{value / 1000:.1f} °C"
 
 
-def notify_user(uid: int, summary: str, body: str, urgency: str, timeout_ms: int) -> None:
+def notify_user(uid: int, summary: str, body: str, urgency: str, timeout_ms: int) -> bool:
     try:
         user = pwd.getpwuid(uid).pw_name
     except KeyError:
-        return
+        return False
 
     bus = f"/run/user/{uid}/bus"
     if not os.path.exists(bus):
-        return
+        return False
 
     env = [
         f"DBUS_SESSION_BUS_ADDRESS=unix:path={bus}",
@@ -53,7 +54,7 @@ def notify_user(uid: int, summary: str, body: str, urgency: str, timeout_ms: int
         body,
     ]
     try:
-        subprocess.run(
+        proc = subprocess.run(
             cmd,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
@@ -61,13 +62,15 @@ def notify_user(uid: int, summary: str, body: str, urgency: str, timeout_ms: int
             timeout=3,
             check=False,
         )
+        return proc.returncode == 0
     except (OSError, subprocess.TimeoutExpired):
-        pass
+        return False
 
 
 def main() -> int:
     state = sys.argv[1] if len(sys.argv) > 1 else ""
-    temp = parse_temp(sys.argv[2] if len(sys.argv) > 2 else None)
+    temp_raw = sys.argv[2] if len(sys.argv) > 2 else None
+    temp = parse_temp(temp_raw)
 
     if state == "engage":
         summary = "Quiet mode: emergency cooling active"
@@ -88,6 +91,7 @@ def main() -> int:
     else:
         return os.EX_USAGE
 
+    delivered = 0
     seen: set[int] = set()
     for bus in glob.glob("/run/user/[0-9]*/bus"):
         try:
@@ -97,8 +101,14 @@ def main() -> int:
         if uid == 0 or uid in seen:
             continue
         seen.add(uid)
-        notify_user(uid, summary, body, urgency, timeout_ms)
+        if notify_user(uid, summary, body, urgency, timeout_ms):
+            delivered += 1
 
+    syslog.openlog("asus-a14-emergency-notify")
+    syslog.syslog(
+        syslog.LOG_NOTICE,
+        f"quiet_emergency={state} temp_mc={temp_raw or 'unknown'} desktop_notifications={delivered}",
+    )
     return 0
 
 
