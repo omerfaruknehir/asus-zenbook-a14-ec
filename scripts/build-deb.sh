@@ -10,8 +10,11 @@ work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT INT TERM
 root="$work/root"
 src="$root/usr/src/asus-zenbook-a14-ec-$version"
+ext_uuid=asus-a14-modes@omerfaruknehir
+ext_dir="$root/usr/share/gnome-shell/extensions/$ext_uuid"
 mkdir -p "$root/DEBIAN" "$src/scripts" "$root/usr/sbin" "$root/usr/libexec" \
   "$root/usr/lib/systemd/system" "$root/usr/lib/udev/rules.d" \
+  "$root/usr/share/dbus-1/system.d" "$ext_dir" "$root/etc/xdg/autostart" \
   "$root/etc/modprobe.d" "$root/usr/share/doc/$package" "$repo/dist"
 
 install -m 0644 "$repo/asus_zenbook_a14_ec.c" "$repo/hid_asus_ec.c" \
@@ -39,13 +42,22 @@ install -m 0755 "$repo/scripts/asus-zenbook-a14-ec-load" "$root/usr/libexec/asus
 install -m 0755 "$repo/scripts/asus-zenbook-a14-ec-unload" "$root/usr/libexec/asus-zenbook-a14-ec-unload"
 install -m 0755 "$repo/scripts/asus-zenbook-a14-ppd-bridge.py" "$root/usr/libexec/asus-zenbook-a14-ppd-bridge"
 install -m 0755 "$repo/scripts/asus-zenbook-a14-profile-integration" "$root/usr/libexec/asus-zenbook-a14-profile-integration"
+install -m 0755 "$repo/scripts/asus-zenbook-a14-profile-service.py" "$root/usr/libexec/asus-zenbook-a14-profile-service"
 install -m 0755 "$repo/scripts/asus-zenbook-a14-emergency-notify.py" "$root/usr/libexec/asus-zenbook-a14-emergency-notify"
+install -m 0755 "$repo/scripts/asus-zenbook-a14-enable-gnome-extension" "$root/usr/libexec/asus-zenbook-a14-enable-gnome-extension"
+
 install -m 0644 "$repo/systemd/asus-zenbook-a14-ec.service" "$root/usr/lib/systemd/system/"
 install -m 0644 "$repo/systemd/asus-zenbook-a14-ppd-bridge.service" "$root/usr/lib/systemd/system/"
+install -m 0644 "$repo/systemd/asus-zenbook-a14-profile.service" "$root/usr/lib/systemd/system/"
 install -m 0644 "$repo/udev/90-asus-zenbook-a14-ec.rules" "$root/usr/lib/udev/rules.d/"
+install -m 0644 "$repo/dbus-1/system.d/io.github.omerfaruknehir.AsusA14.conf" "$root/usr/share/dbus-1/system.d/"
+install -m 0644 "$repo/gnome-shell/$ext_uuid/metadata.json" "$ext_dir/metadata.json"
+install -m 0644 "$repo/gnome-shell/$ext_uuid/extension.js" "$ext_dir/extension.js"
+install -m 0644 "$repo/xdg/autostart/asus-zenbook-a14-gnome-extension.desktop" "$root/etc/xdg/autostart/"
 install -m 0644 "$repo/modprobe.d/asus-zenbook-a14-ec.conf" "$root/etc/modprobe.d/"
 install -m 0644 "$repo/README.md" "$root/usr/share/doc/$package/README.md"
 gzip -9n -c "$repo/CHANGELOG.md" >"$root/usr/share/doc/$package/changelog.gz"
+
 cat >"$root/usr/share/doc/$package/copyright" <<'COPYRIGHT'
 Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
 Upstream-Name: asus-zenbook-a14-ec
@@ -61,7 +73,7 @@ Copyright: 2025 Alexandru Marc Serdeliuc <serdeliuk@yahoo.com>
            2026 Ömer Faruk Nehir <omerfaruknehir@gmail.com>
 License: GPL-2.0-or-later
 
-Files: scripts/asus-zenbook-a14-ppd-bridge.py scripts/asus-zenbook-a14-emergency-notify.py
+Files: scripts/asus-zenbook-a14-ppd-bridge.py scripts/asus-zenbook-a14-profile-service.py scripts/asus-zenbook-a14-emergency-notify.py gnome-shell/*/extension.js
 Copyright: 2026 Sombre-Osmoze <sombre@osmoze.xyz>
            2026 Ömer Faruk Nehir <omerfaruknehir@gmail.com>
 License: GPL-2.0-or-later
@@ -76,14 +88,15 @@ Priority: optional
 Architecture: all
 Maintainer: Ömer Faruk Nehir <omerfaruknehir@gmail.com>
 Depends: dkms, kmod, systemd, build-essential, python3, python3-dbus, python3-gi, libnotify-bin
-Recommends: power-profiles-daemon, initramfs-tools
+Recommends: power-profiles-daemon, gnome-shell, initramfs-tools
 Installed-Size: $installed_size
 Homepage: https://github.com/omerfaruknehir/asus-zenbook-a14-ec
 Description: ASUS Zenbook A14 EC, keyboard and desktop integration (DKMS)
  Dual-fan monitoring/control, Quiet/Power Saver/Balanced/Performance/Full Speed
  policies, keyboard backlight and Fn hotkeys for ASUS Zenbook A14 UX3407RA/
- UX3407QA Snapdragon systems. Includes GNOME power-profile integration and
- desktop notifications when Quiet requires emergency cooling.
+ UX3407QA Snapdragon systems. Includes standard Linux platform-profile mapping,
+ a five-mode GNOME Quick Settings menu, and critical desktop notifications when
+ Quiet requires emergency cooling.
 CONTROL
 
 cat >"$root/DEBIAN/postinst" <<POSTINST
@@ -92,6 +105,8 @@ set -e
 version='$version'
 module='asus-zenbook-a14-ec'
 kernel="\$(uname -r)"
+ext_uuid='asus-a14-modes@omerfaruknehir'
+
 if [ ! -e "/lib/modules/\$kernel/build/Makefile" ]; then
   echo "Missing headers for \$kernel." >&2
   echo "Install the exact headers for the running kernel, then run: sudo dpkg --configure $package" >&2
@@ -124,12 +139,36 @@ systemctl daemon-reload >/dev/null 2>&1 || true
 if command -v udevadm >/dev/null 2>&1; then
   udevadm control --reload-rules >/dev/null 2>&1 || true
 fi
+if command -v busctl >/dev/null 2>&1; then
+  busctl call org.freedesktop.DBus /org/freedesktop/DBus org.freedesktop.DBus ReloadConfig >/dev/null 2>&1 || true
+fi
+
 systemctl enable asus-zenbook-a14-ec.service >/dev/null 2>&1 || true
+systemctl enable asus-zenbook-a14-profile.service >/dev/null 2>&1 || true
 if [ "\${1:-}" = configure ]; then
   systemctl restart asus-zenbook-a14-ec.service >/dev/null 2>&1 || \
     echo "Driver installed but could not be started; inspect: journalctl -u asus-zenbook-a14-ec" >&2
+  systemctl restart asus-zenbook-a14-profile.service >/dev/null 2>&1 || \
+    echo "A14 profile D-Bus service could not start; inspect: journalctl -u asus-zenbook-a14-profile" >&2
 fi
+
 /usr/libexec/asus-zenbook-a14-profile-integration || true
+
+# Best effort for an already-running GNOME session. A system-wide XDG autostart
+# entry retries this automatically on every future GNOME login, so a package
+# install does not depend on Shell noticing a new extension mid-session.
+for bus in /run/user/[0-9]*/bus; do
+  [ -S "\$bus" ] || continue
+  uid=\$(printf '%s' "\$bus" | cut -d/ -f4)
+  case "\$uid" in ''|*[!0-9]*|0) continue ;; esac
+  user=\$(getent passwd "\$uid" 2>/dev/null | cut -d: -f1)
+  [ -n "\$user" ] || continue
+  runuser -u "\$user" -- env \
+    DBUS_SESSION_BUS_ADDRESS="unix:path=\$bus" \
+    XDG_RUNTIME_DIR="/run/user/\$uid" \
+    /usr/libexec/asus-zenbook-a14-enable-gnome-extension >/dev/null 2>&1 || true
+done
+
 exit 0
 POSTINST
 
@@ -143,6 +182,7 @@ if [ "\${1:-}" = remove ] || [ "\${1:-}" = deconfigure ]; then
      systemctl is-active --quiet asus-zenbook-a14-ppd-bridge.service 2>/dev/null; then
     bridge_enabled=true
   fi
+  systemctl disable --now asus-zenbook-a14-profile.service >/dev/null 2>&1 || true
   systemctl disable --now asus-zenbook-a14-ppd-bridge.service >/dev/null 2>&1 || true
   systemctl disable --now asus-zenbook-a14-ec.service >/dev/null 2>&1 || true
   modprobe -r hid_asus_ec >/dev/null 2>&1 || true
@@ -162,6 +202,9 @@ kernel="$(uname -r)"
 systemctl daemon-reload >/dev/null 2>&1 || true
 if command -v udevadm >/dev/null 2>&1; then
   udevadm control --reload-rules >/dev/null 2>&1 || true
+fi
+if command -v busctl >/dev/null 2>&1; then
+  busctl call org.freedesktop.DBus /org/freedesktop/DBus org.freedesktop.DBus ReloadConfig >/dev/null 2>&1 || true
 fi
 depmod -a "$kernel" >/dev/null 2>&1 || true
 if command -v update-initramfs >/dev/null 2>&1; then
