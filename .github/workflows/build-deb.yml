@@ -15,7 +15,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Validate scripts and package
         run: ./scripts/test-package.sh
-      - name: Verify native A14 EC profile package
+      - name: Verify A14 EC profile policy package
         shell: bash
         run: |
           deb=$(find dist -maxdepth 1 -name 'asus-zenbook-a14-ec-dkms_*_all.deb' -print -quit)
@@ -25,21 +25,32 @@ jobs:
           src=$(find "$root/usr/src" -maxdepth 1 -type d -name 'asus-zenbook-a14-ec-*' -print -quit)
           test -n "$src"
           ec="$src/asus_zenbook_a14_ec.c"
+
           grep -q '#define EC_FW_FAN_PROFILE_COMMAND        0x11' "$ec"
           grep -q '#define EC_FW_FAN_PROFILE_NORMAL         0x01' "$ec"
           grep -q '#define EC_FW_FAN_PROFILE_QUIET          0x02' "$ec"
           grep -q '#define EC_FW_FAN_PROFILE_TURBO          0x04' "$ec"
           grep -q '#define EC_FW_FAN_PROFILE_FULL_SPEED     0x10' "$ec"
-          grep -q 'quiet balanced performance full-speed' "$ec"
+          grep -q 'A14_PROFILE_POLICY_V2' "$ec"
+          grep -q 'A14_PROFILE_EMERGENCY_NOTIFY' "$ec"
+          grep -q 'ASUS_EC_PROFILE_POWER_SAVER' "$ec"
+          grep -q 'quiet power-saver balanced performance full-speed' "$ec"
+          grep -q 'PLATFORM_PROFILE_LOW_POWER' "$ec"
           grep -q 'PLATFORM_PROFILE_MAX_POWER' "$ec"
-          grep -q 'KERNEL_VERSION(6, 19, 0)' "$ec"
+          grep -q 'asus_ec_enter_manual_locked(ec, 255)' "$ec"
+          grep -q 'A14_QUIET_EMERGENCY=' "$ec"
+          grep -q 'DEVICE_ATTR_RO(quiet_emergency)' "$ec"
+
           if grep -q 'quiet_max_khz' "$ec"; then
-            echo 'synthetic quiet CPU cap leaked into packaged EC source' >&2
+            echo 'obsolete hard-coded quiet GHz cap leaked into packaged EC source' >&2
             false
           fi
-          test ! -e "$src/scripts/apply-a14-native-fan-profile.py"
-          test ! -e "$src/scripts/apply-a14-native-hardening-compat.py"
-          test ! -e "$src/scripts/apply-a14-native-max-power.py"
+
+          test -x "$src/scripts/apply-a14-profile-policy-v2.py"
+          test -x "$src/scripts/apply-a14-profile-emergency-notify.py"
+          test -x "$root/usr/libexec/asus-zenbook-a14-emergency-notify"
+          test -x "$root/usr/libexec/asus-zenbook-a14-profile-integration"
+          test -s "$root/usr/lib/udev/rules.d/90-asus-zenbook-a14-ec.rules"
           make -C "$src" prepare
       - uses: actions/upload-artifact@v4
         with:
