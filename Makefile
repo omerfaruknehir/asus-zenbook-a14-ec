@@ -5,34 +5,48 @@ PWD  := $(shell pwd)
 all modules: prepare
 	$(MAKE) -C $(KDIR) M=$(PWD) modules
 
-# Compose only when the source is stale or pristine. The transforms intentionally
-# build on one another. POLICY_V2 distinguishes acoustic Quiet from desktop
-# Power Saver; emergency notifications expose escalation; TRANSACTIONAL makes
-# firmware fan ownership, native policy, CPU QoS and emergency state switch as
-# one coherent unit with rollback on failure.
+# The root C files are deliberately materialized by transforms. Developers can
+# therefore carry a generated source from an older branch across git pulls.
+# Compose by semantic layer instead of blindly replaying every historical
+# transform: this lets an old four-profile tree upgrade to policy-v2 without
+# forcing older transforms to match code that they already generated.
 prepare:
+	@if grep -q 'static int asus_ec_force_auto_locked' asus_zenbook_a14_ec.c; then \
+		echo 'a14_ec_hardening=current'; \
+	else \
+		python3 scripts/apply-a14-ec-hardening.py; \
+	fi
 	@if grep -Eq '^#define EC_FW_WAIT_MIN_US[[:space:]]+100000$$' asus_zenbook_a14_ec.c && \
 	   grep -Eq '^#define EC_FW_WAIT_MAX_US[[:space:]]+110000$$' asus_zenbook_a14_ec.c && \
 	   grep -q 'EC_FW_FAN_PROFILE_FULL_SPEED' asus_zenbook_a14_ec.c && \
-	   grep -q 'EC_NATIVE_FAN1_RPM_LO' asus_zenbook_a14_ec.c && \
-	   grep -q 'PLATFORM_PROFILE_MAX_POWER' asus_zenbook_a14_ec.c && \
+	   grep -q 'static int asus_ec_set_native_fan_profile' asus_zenbook_a14_ec.c; then \
+		echo 'a14_native_fan_profile=current'; \
+	else \
+		python3 scripts/apply-a14-native-fan-profile.py; \
+	fi
+	python3 scripts/apply-a14-native-hardening-compat.py
+	python3 scripts/apply-a14-native-max-power.py
+	@if grep -q 'EC_NATIVE_FAN1_RPM_LO' asus_zenbook_a14_ec.c; then \
+		echo 'a14_native_fan_telemetry=current'; \
+	else \
+		python3 scripts/apply-a14-native-fan-telemetry.py; \
+	fi
+	python3 scripts/apply-a14-profile-policy-v2.py
+	python3 scripts/apply-a14-profile-emergency-notify.py
+	python3 scripts/apply-a14-profile-transactional.py
+	python3 scripts/apply-a14-hid-fnlock.py
+	@if grep -Eq '^#define EC_FW_WAIT_MIN_US[[:space:]]+100000$$' asus_zenbook_a14_ec.c && \
+	   grep -Eq '^#define EC_FW_WAIT_MAX_US[[:space:]]+110000$$' asus_zenbook_a14_ec.c && \
 	   grep -q 'A14_PROFILE_POLICY_V2' asus_zenbook_a14_ec.c && \
 	   grep -q 'A14_PROFILE_EMERGENCY_NOTIFY' asus_zenbook_a14_ec.c && \
 	   grep -q 'A14_PROFILE_TRANSACTIONAL' asus_zenbook_a14_ec.c && \
 	   grep -q 'ASUS_EC_PROFILE_POWER_SAVER' asus_zenbook_a14_ec.c && \
+	   grep -q 'PLATFORM_PROFILE_MAX_POWER' asus_zenbook_a14_ec.c && \
 	   grep -q 'asus_ec_set_pwm_both(ec, 255)' asus_zenbook_a14_ec.c; then \
 		echo 'a14_ec_stack=current'; \
 	else \
-		python3 scripts/apply-a14-ec-hardening.py && \
-		python3 scripts/apply-a14-native-fan-profile.py && \
-		python3 scripts/apply-a14-native-hardening-compat.py && \
-		python3 scripts/apply-a14-native-max-power.py && \
-		python3 scripts/apply-a14-native-fan-telemetry.py && \
-		python3 scripts/apply-a14-profile-policy-v2.py && \
-		python3 scripts/apply-a14-profile-emergency-notify.py && \
-		python3 scripts/apply-a14-profile-transactional.py; \
+		echo 'a14_ec_stack=incomplete' >&2; false; \
 	fi
-	python3 scripts/apply-a14-hid-fnlock.py
 
 mainline-check:
 	@test -n "$(KERNEL_SRC)" || { echo "Usage: make mainline-check KERNEL_SRC=/path/to/linux" >&2; exit 2; }
