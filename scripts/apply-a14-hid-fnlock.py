@@ -5,12 +5,17 @@ from pathlib import Path
 # build-deb.sh already invokes the EC hardener before this packaged preparer.
 # When invoked directly from a clean checkout, finish the repository-only native
 # fan-profile composition here.  The generated DKMS source already contains the
-# native marker, so it never depends on the repository-only transformer.
+# native marker, so it never depends on the repository-only transformers.
 ec_path = Path('asus_zenbook_a14_ec.c')
 if 'EC_FW_FAN_PROFILE_COMMAND' not in ec_path.read_text():
-    native = Path('scripts/apply-a14-native-fan-profile.py')
-    if native.is_file():
-        runpy.run_path(str(native), run_name='__main__')
+    transforms = [
+        Path('scripts/apply-a14-native-fan-profile.py'),
+        Path('scripts/apply-a14-native-hardening-compat.py'),
+        Path('scripts/apply-a14-native-max-power.py'),
+    ]
+    for transform in transforms:
+        if transform.is_file():
+            runpy.run_path(str(transform), run_name='__main__')
 
 p = Path('hid_asus_ec.c')
 s = p.read_text()
