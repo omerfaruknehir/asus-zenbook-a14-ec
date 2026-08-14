@@ -15,6 +15,25 @@ def once(old: str, new: str, label: str) -> None:
     s = s.replace(old, new, 1)
 
 
+# Upgrade trees that were already composed with the first native-profile
+# transform.  That version mistranslated DSDT Sleep(100) as 100-200 us rather
+# than 100 ms.  Repair it before the normal idempotence checks so rerunning the
+# transform updates an existing working tree instead of inserting duplicates.
+legacy_wait = (
+    '#define EC_FW_WAIT_ATTEMPTS              200\n'
+    '#define EC_FW_WAIT_MIN_US                100\n'
+    '#define EC_FW_WAIT_MAX_US                200\n'
+)
+fixed_wait = (
+    '#define EC_FW_WAIT_ATTEMPTS              200\n'
+    '/* DSDT WEBC uses Sleep(100): 100 ms per busy poll, not 100 us. */\n'
+    '#define EC_FW_WAIT_MIN_US                100000\n'
+    '#define EC_FW_WAIT_MAX_US                110000\n'
+)
+if legacy_wait in s:
+    s = s.replace(legacy_wait, fixed_wait, 1)
+
+
 once(
     '#define EC_REG_FAN_MODE_MAJ             0x01\n',
     '/* A14 DSDT I2C6.WEBC firmware mailbox (major 0xc9). */\n'
