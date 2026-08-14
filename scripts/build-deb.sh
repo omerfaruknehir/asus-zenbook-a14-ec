@@ -3,7 +3,11 @@ set -eu
 
 repo=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$repo"
-make prepare
+
+# stdout is the public machine-readable API of this helper: exactly one line,
+# the absolute path of the generated .deb. Human/build chatter goes to stderr
+# so callers may safely use: deb=$(./scripts/build-deb.sh)
+make prepare >&2
 version=$(cat "$repo/VERSION")
 package=asus-zenbook-a14-ec-dkms
 work=$(mktemp -d)
@@ -155,9 +159,6 @@ fi
 
 /usr/libexec/asus-zenbook-a14-profile-integration || true
 
-# Best effort for an already-running GNOME session. A system-wide XDG autostart
-# entry retries this automatically on every future GNOME login, so a package
-# install does not depend on Shell noticing a new extension mid-session.
 for bus in /run/user/[0-9]*/bus; do
   [ -S "\$bus" ] || continue
   uid=\$(printf '%s' "\$bus" | cut -d/ -f4)
@@ -218,5 +219,5 @@ POSTRM
 
 chmod 0755 "$root/DEBIAN/postinst" "$root/DEBIAN/prerm" "$root/DEBIAN/postrm"
 out="$repo/dist/${package}_${version}_all.deb"
-dpkg-deb --root-owner-group --build "$root" "$out"
-echo "$out"
+dpkg-deb --root-owner-group --build "$root" "$out" >&2
+printf '%s\n' "$out"
