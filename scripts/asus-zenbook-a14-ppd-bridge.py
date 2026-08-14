@@ -2,8 +2,10 @@
 """Optional power-profiles-daemon-compatible bridge for ASUS Zenbook A14.
 
 This service is a fallback for DT kernels that cannot expose the driver's
-platform_profile class device. It maps the desktop's three standard profile
-names to the driver's always-available local profile sysfs attribute.
+platform_profile class device. It maps GNOME/power-profiles-daemon's three
+standard profile names to the driver's always-available local profile sysfs
+attribute. Acoustic Quiet and literal Full Speed remain separate A14 policies
+and are intentionally not collapsed into the standard three-profile ABI.
 """
 
 from __future__ import annotations
@@ -33,7 +35,7 @@ PROFILE_PATH = Path("/sys/devices/platform/asus_zenbook_a14_ec/profile")
 STATE_PATH = Path("/var/lib/asus-zenbook-a14-ec/profile")
 PROFILE_ORDER = ("power-saver", "balanced", "performance")
 PROFILE_TO_DRIVER = {
-    "power-saver": "quiet",
+    "power-saver": "power-saver",
     "balanced": "balanced",
     "performance": "performance",
 }
@@ -210,7 +212,7 @@ class PowerProfilesBridge(dbus.service.Object):
         if prop == "ActiveProfileHolds":
             return self._holds_property()
         if prop == "Version":
-            return dbus.String("0.2.0-a14-bridge")
+            return dbus.String("0.3.0-a14-bridge")
         if prop == "BatteryAware":
             return dbus.Boolean(self._battery_aware)
         raise dbus.exceptions.DBusException(
