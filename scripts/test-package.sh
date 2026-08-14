@@ -2,12 +2,26 @@
 set -eu
 repo=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$repo"
+
 sh -n install.sh scripts/build-deb.sh scripts/asus-a14-control \
   scripts/asus-zenbook-a14-ec-load scripts/asus-zenbook-a14-ec-unload \
+  scripts/asus-zenbook-a14-profile-integration \
+  scripts/a14-ec-runtime-validation.sh scripts/a14-ec-profile-load-validation.sh \
+  scripts/a14-platform-profile-dt-validation.sh scripts/a14-quiet-emergency-validation.sh \
   scripts/a14-aos-kernel-probe.sh scripts/verify-a14-aos-firmware.sh \
   desktop/resources/apply-a14-cpu-info-safe.sh
+
 python3 -m py_compile \
+  scripts/apply-a14-ec-hardening.py \
+  scripts/apply-a14-native-fan-profile.py \
+  scripts/apply-a14-native-hardening-compat.py \
+  scripts/apply-a14-native-max-power.py \
+  scripts/apply-a14-native-fan-telemetry.py \
+  scripts/apply-a14-profile-policy-v2.py \
+  scripts/apply-a14-profile-emergency-notify.py \
+  scripts/apply-a14-hid-fnlock.py \
   scripts/asus-zenbook-a14-ppd-bridge.py \
+  scripts/asus-zenbook-a14-emergency-notify.py \
   desktop/resources/apply-a14-cpu-info.py \
   desktop/resources/repair-a14-cpu-info.py \
   desktop/resources/repair-a14-cpu-topology.py \
@@ -16,15 +30,19 @@ python3 -m py_compile \
   desktop/resources/test-repair.py \
   desktop/resources/test-topology-repair.py \
   desktop/resources/test-gpu-metrics-repair.py
+
 python3 desktop/resources/test-patcher.py
 python3 desktop/resources/test-repair.py
 python3 desktop/resources/test-topology-repair.py
 python3 desktop/resources/test-gpu-metrics-repair.py
+
 version=$(cat VERSION)
 grep -q "PACKAGE_VERSION=\"$version\"" dkms.conf
 test -s AOS-KERNEL-BRINGUP.md
 test -s docs/aos/ARCHITECTURE.md
 test -s docs/aos/PROBE-20260804.md
+test -s docs/ec/2026-08-14-native-profile-validation.md
+test -s docs/suspend/2026-08-14-deep-suspend-battery.md
 test -s firmware/aos/manifest.sha256
 test -s kernel-patches/aos/README.md
 test -s desktop/README.md
@@ -39,6 +57,10 @@ test -s kernel/aos/qcom_ssc_hpd_protocol.c
 test -s kernel/aos/qcom_ssc_hpd_transport.c
 test -s kernel/aos/qcom_ssc_hpd_internal.h
 test -s kernel/aos/PROTOCOL.md
+test -s udev/90-asus-zenbook-a14-ec.rules
+test -s scripts/asus-zenbook-a14-emergency-notify.py
+test -s scripts/asus-zenbook-a14-profile-integration
+
 grep -q 'read_only=true' scripts/a14-aos-kernel-probe.sh
 grep -q 'remoteproc_restart=false' scripts/a14-aos-kernel-probe.sh
 grep -q 'A14_SSC_QMI_SERVICE.*400' kernel/aos/qcom_ssc_hpd_internal.h
@@ -54,6 +76,7 @@ grep -q 'qcom,x1e80100' desktop/resources/apply-a14-cpu-info.py
 grep -q '#\[template_child\]' desktop/resources/repair-a14-cpu-info.py
 grep -q 'thread_siblings_list' desktop/resources/repair-a14-cpu-topology.py
 grep -q 'Unsupported video-engine usage will now be N/A' desktop/resources/repair-a14-gpu-metrics.py
+
 # SSC control Data is an opaque, already-framed byte TLV. A QMI_DATA_LEN
 # request descriptor would insert a second u16 length and suppress events.
 grep -q 'elem_len = (u32)len' kernel/aos/qcom_ssc_hpd_transport.c
@@ -68,6 +91,7 @@ if printf '%s\n' "$send_control_body" | grep -Eq '^[[:space:]]*\.data_type = QMI
   echo "SSC control request must not encode another array length" >&2
   exit 1
 fi
+
 # Failed camera acquisition must not require a later disable write or reboot.
 grep -q 'presence activation failed: %d; recycling SSC client' kernel/aos/qcom_ssc_hpd.c
 grep -A12 'ret = a14_ssc_enable_hpd' kernel/aos/qcom_ssc_hpd.c | grep -q 'disconnect_client(hpd)'
@@ -80,6 +104,22 @@ grep -q '\.pm = pm_sleep_ptr' kernel/aos/qcom_ssc_hpd.c
 grep -q 'A14_SSC_MSG_HANDSHAKE_RELEASE.*577' kernel/aos/qcom_ssc_hpd_internal.h
 grep -q 'A14_SSC_MSG_HANDSHAKE_REVOKE.*579' kernel/aos/qcom_ssc_hpd_internal.h
 grep -q 'failed activation tears down that client immediately' kernel/aos/PROTOCOL.md
+
+# Compose the final EC policy even on CI systems that cannot load it.
+make prepare
+grep -q 'A14_PROFILE_POLICY_V2' asus_zenbook_a14_ec.c
+grep -q 'A14_PROFILE_EMERGENCY_NOTIFY' asus_zenbook_a14_ec.c
+grep -q 'ASUS_EC_PROFILE_POWER_SAVER' asus_zenbook_a14_ec.c
+grep -q 'quiet power-saver balanced performance full-speed' asus_zenbook_a14_ec.c
+grep -q 'PLATFORM_PROFILE_LOW_POWER' asus_zenbook_a14_ec.c
+grep -q 'asus_ec_enter_manual_locked(ec, 255)' asus_zenbook_a14_ec.c
+grep -q 'A14_QUIET_EMERGENCY=' asus_zenbook_a14_ec.c
+grep -q 'DEVICE_ATTR_RO(quiet_emergency)' asus_zenbook_a14_ec.c
+if grep -q 'quiet_max_khz' asus_zenbook_a14_ec.c; then
+  echo "obsolete hard-coded quiet frequency cap remains" >&2
+  exit 1
+fi
+
 if [ -e "/lib/modules/$(uname -r)/build/Makefile" ]; then
   kdir="/lib/modules/$(uname -r)/build"
   make clean >/dev/null 2>&1 || true
@@ -99,25 +139,30 @@ if [ -e "/lib/modules/$(uname -r)/build/Makefile" ]; then
        grep -Eq '^CONFIG_IIO=[ym]$' "$config"; then
       make aos-module
     else
-      # Generic CI kernels may ship the public headers without exporting the
-      # Qualcomm QMI/IIO symbols. Still compile every translation unit with
-      # W=1; relax only modpost's target-kernel symbol availability check.
       make -C kernel/aos KDIR="$kdir" W=1 KBUILD_MODPOST_WARN=1
     fi
     test -s kernel/aos/qcom_ssc_hpd.ko
     make aos-module-clean >/dev/null
   fi
 fi
+
 ./scripts/build-deb.sh >/dev/null
 test -s "dist/asus-zenbook-a14-ec-dkms_${version}_all.deb"
 dpkg-deb --info "dist/asus-zenbook-a14-ec-dkms_${version}_all.deb" >/dev/null
 contents=$(dpkg-deb --contents "dist/asus-zenbook-a14-ec-dkms_${version}_all.deb")
 printf '%s\n' "$contents" | grep -q "usr/src/asus-zenbook-a14-ec-${version}/asus_zenbook_a14_ec.c"
+printf '%s\n' "$contents" | grep -q "usr/src/asus-zenbook-a14-ec-${version}/scripts/apply-a14-profile-policy-v2.py"
+printf '%s\n' "$contents" | grep -q "usr/src/asus-zenbook-a14-ec-${version}/scripts/apply-a14-profile-emergency-notify.py"
 printf '%s\n' "$contents" | grep -q "usr/lib/systemd/system/asus-zenbook-a14-ec.service"
 printf '%s\n' "$contents" | grep -q "usr/lib/systemd/system/asus-zenbook-a14-ppd-bridge.service"
 printf '%s\n' "$contents" | grep -q "usr/libexec/asus-zenbook-a14-ppd-bridge"
+printf '%s\n' "$contents" | grep -q "usr/libexec/asus-zenbook-a14-profile-integration"
+printf '%s\n' "$contents" | grep -q "usr/libexec/asus-zenbook-a14-emergency-notify"
+printf '%s\n' "$contents" | grep -q "usr/lib/udev/rules.d/90-asus-zenbook-a14-ec.rules"
+
 if printf '%s\n' "$contents" | grep -q 'kernel/aos\|qcom_ssc_hpd\|desktop/resources\|apply-a14-cpu-info'; then
   echo "Development drivers and desktop source patches must not be included in the EC package" >&2
   exit 1
 fi
+
 echo "Validation passed"
