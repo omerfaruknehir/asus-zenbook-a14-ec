@@ -6,13 +6,16 @@ all modules: prepare
 	$(MAKE) -C $(KDIR) M=$(PWD) modules
 
 prepare:
-	@if grep -q 'EC_FW_FAN_PROFILE_COMMAND' asus_zenbook_a14_ec.c; then \
+	@if grep -q 'EC_FW_FAN_PROFILE_COMMAND' asus_zenbook_a14_ec.c && \
+	   grep -q 'EC_NATIVE_FAN1_RPM_LO' asus_zenbook_a14_ec.c && \
+	   grep -q 'KERNEL_VERSION(6, 19, 0)' asus_zenbook_a14_ec.c; then \
 		echo 'a14_ec_stack=already-composed'; \
 	else \
 		python3 scripts/apply-a14-ec-hardening.py && \
 		python3 scripts/apply-a14-native-fan-profile.py && \
 		python3 scripts/apply-a14-native-hardening-compat.py && \
-		python3 scripts/apply-a14-native-max-power.py; \
+		python3 scripts/apply-a14-native-max-power.py && \
+		python3 scripts/apply-a14-native-fan-telemetry.py; \
 	fi
 	python3 scripts/apply-a14-hid-fnlock.py
 
