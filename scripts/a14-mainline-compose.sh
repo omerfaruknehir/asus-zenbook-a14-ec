@@ -1,30 +1,63 @@
 #!/usr/bin/env bash
-set -euo pipefail
 
 repo=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 K=${1:-}
-[ -n "$K" ] || { echo "usage: $0 /path/to/linux" >&2; exit 2; }
-K=$(CDPATH= cd -- "$K" && pwd)
+ok=1
 
-"$repo/scripts/a14-mainline-check.sh" "$K"
-"$repo/kernel-patches/camera/check-kernel-prereqs.sh" "$K"
-
-for patch in "$repo"/kernel-patches/camera/000*.patch; do
-  [ -s "$patch" ] || continue
-  if git -C "$K" apply --reverse --check "$patch" >/dev/null 2>&1; then
-    echo "already applied: $(basename "$patch")"
-  else
-    git -C "$K" apply --check "$patch"
-    git -C "$K" apply "$patch"
-    echo "applied: $(basename "$patch")"
+if [ -z "$K" ]; then
+  echo "usage: $0 /path/to/linux" >&2
+  ok=0
+else
+  K=$(CDPATH= cd -- "$K" 2>/dev/null && pwd)
+  if [ -z "$K" ]; then
+    echo "kernel source path is not accessible" >&2
+    ok=0
   fi
-done
-
-if [ "${A14_ENABLE_AOS:-0}" = 1 ]; then
-  "$repo/kernel-patches/aos/cpas-handoff/apply.sh" "$K"
 fi
 
-printf '%s\n' 'mainline_source_composition=ready'
-printf '%s\n' 'platform_modules=build-from-repository-root'
-printf '%s\n' 'camera_board_stack=applied'
-printf 'aos_stack=%s\n' "${A14_ENABLE_AOS:-0}"
+if [ "$ok" -eq 1 ]; then
+  "$repo/scripts/a14-mainline-check.sh" "$K" || ok=0
+fi
+
+if [ "$ok" -eq 1 ]; then
+  "$repo/kernel-patches/camera/check-kernel-prereqs.sh" "$K" || ok=0
+fi
+
+if [ "$ok" -eq 1 ]; then
+  python3 "$repo/scripts/apply-mainline-platform-profile-dt.py" "$K" || ok=0
+fi
+
+if [ "$ok" -eq 1 ]; then
+  for patch in "$repo"/kernel-patches/camera/000*.patch; do
+    [ -s "$patch" ] || continue
+    if git -C "$K" apply --reverse --check "$patch" >/dev/null 2>&1; then
+      echo "already applied: $(basename "$patch")"
+    elif git -C "$K" apply --check "$patch"; then
+      if git -C "$K" apply "$patch"; then
+        echo "applied: $(basename "$patch")"
+      else
+        ok=0
+        break
+      fi
+    else
+      ok=0
+      break
+    fi
+  done
+fi
+
+if [ "$ok" -eq 1 ] && [ "${A14_ENABLE_AOS:-0}" = 1 ]; then
+  "$repo/kernel-patches/aos/cpas-handoff/apply.sh" "$K" || ok=0
+fi
+
+if [ "$ok" -eq 1 ]; then
+  printf '%s\n' 'mainline_source_composition=ready'
+  printf '%s\n' 'platform_profile_dt=enabled'
+  printf '%s\n' 'platform_modules=build-from-repository-root'
+  printf '%s\n' 'camera_board_stack=applied'
+  printf 'aos_stack=%s\n' "${A14_ENABLE_AOS:-0}"
+else
+  printf '%s\n' 'mainline_source_composition=failed' >&2
+fi
+
+test "$ok" -eq 1
