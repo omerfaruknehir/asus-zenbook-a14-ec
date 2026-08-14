@@ -25,6 +25,7 @@ for script in \
   apply-a14-native-fan-telemetry.py \
   apply-a14-profile-policy-v2.py \
   apply-a14-profile-emergency-notify.py \
+  apply-a14-profile-transactional.py \
   apply-a14-hid-fnlock.py
 do
   install -m 0755 "$repo/scripts/$script" "$src/scripts/$script"
