@@ -15,6 +15,28 @@ jobs:
       - uses: actions/checkout@v4
       - name: Validate scripts and package
         run: ./scripts/test-package.sh
+      - name: Verify native A14 EC profile package
+        shell: bash
+        run: |
+          deb=$(find dist -maxdepth 1 -name 'asus-zenbook-a14-ec-dkms_*_all.deb' -print -quit)
+          test -n "$deb"
+          root=$(mktemp -d)
+          dpkg-deb -x "$deb" "$root"
+          src=$(find "$root/usr/src" -maxdepth 1 -type d -name 'asus-zenbook-a14-ec-*' -print -quit)
+          test -n "$src"
+          grep -q '#define EC_FW_FAN_PROFILE_COMMAND        0x11' "$src/asus_zenbook_a14_ec.c"
+          grep -q '#define EC_FW_FAN_PROFILE_NORMAL         0x01' "$src/asus_zenbook_a14_ec.c"
+          grep -q '#define EC_FW_FAN_PROFILE_QUIET          0x02' "$src/asus_zenbook_a14_ec.c"
+          grep -q '#define EC_FW_FAN_PROFILE_TURBO          0x04' "$src/asus_zenbook_a14_ec.c"
+          grep -q '#define EC_FW_FAN_PROFILE_FULL_SPEED     0x10' "$src/asus_zenbook_a14_ec.c"
+          grep -q 'quiet balanced performance full-speed' "$src/asus_zenbook_a14_ec.c"
+          if grep -q 'quiet_max_khz' "$src/asus_zenbook_a14_ec.c"; then
+            echo 'synthetic quiet CPU cap leaked into packaged EC source' >&2
+            false
+          fi
+          test ! -e "$src/scripts/apply-a14-native-fan-profile.py"
+          test ! -e "$src/scripts/apply-a14-native-hardening-compat.py"
+          make -C "$src" prepare
       - uses: actions/upload-artifact@v4
         with:
           name: asus-zenbook-a14-ec-deb
