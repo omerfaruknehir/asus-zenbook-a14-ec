@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
-"""Optional power-profiles-daemon-compatible bridge for ASUS Zenbook A14.
+"""Five-mode power-profiles-daemon-compatible bridge for ASUS Zenbook A14.
 
-This service is a fallback for DT kernels that cannot expose the driver's
-platform_profile class device. It maps GNOME/power-profiles-daemon's three
-standard profile names to the driver's always-available local profile sysfs
-attribute. Acoustic Quiet and literal Full Speed remain separate A14 policies
-and are intentionally not collapsed into the standard three-profile ABI.
+GNOME, powerprofilesctl, the Shell extension and the A14 driver all use this
+single D-Bus backend.  The standard PPD profile-hold API intentionally remains
+limited to power-saver/performance, while direct user-selected profiles expose
+all five validated A14 policies.
 """
 
 from __future__ import annotations
@@ -32,14 +31,20 @@ PROPERTIES_INTERFACE = "org.freedesktop.DBus.Properties"
 KNOWN_INTERFACES = {INTERFACE, LEGACY_INTERFACE}
 
 PROFILE_PATH = Path("/sys/devices/platform/asus_zenbook_a14_ec/profile")
+EMERGENCY_PATH = Path("/sys/devices/platform/asus_zenbook_a14_ec/quiet_emergency")
 STATE_PATH = Path("/var/lib/asus-zenbook-a14-ec/profile")
-PROFILE_ORDER = ("power-saver", "balanced", "performance")
-PROFILE_TO_DRIVER = {
-    "power-saver": "power-saver",
-    "balanced": "balanced",
-    "performance": "performance",
-}
+
+# Low-noise/low-power -> high-performance/high-cooling order.
+PROFILE_ORDER = (
+    "quiet",
+    "power-saver",
+    "balanced",
+    "performance",
+    "full-speed",
+)
+PROFILE_TO_DRIVER = {profile: profile for profile in PROFILE_ORDER}
 DRIVER_TO_PROFILE = {value: key for key, value in PROFILE_TO_DRIVER.items()}
+HOLD_PROFILES = ("power-saver", "performance")
 
 
 class BridgeError(dbus.DBusException):
@@ -51,7 +56,7 @@ class InvalidProfileError(dbus.DBusException):
 
 
 class PowerProfilesBridge(dbus.service.Object):
-    """Small, current PPD-compatible D-Bus service backed by driver sysfs."""
+    """PPD-compatible D-Bus service backed by the A14 driver profile sysfs."""
 
     SUPPORTS_MULTIPLE_OBJECT_PATHS = True
 
@@ -68,6 +73,7 @@ class PowerProfilesBridge(dbus.service.Object):
         self._next_cookie = 1
         self._battery_aware = False
         self._active_profile = self._load_initial_profile()
+        self._last_emergency = self._read_emergency()
         self._apply_effective_profile()
 
         bus.add_signal_receiver(
@@ -77,10 +83,11 @@ class PowerProfilesBridge(dbus.service.Object):
             bus_name="org.freedesktop.DBus",
             path="/org/freedesktop/DBus",
         )
+        GLib.timeout_add_seconds(1, self._poll_driver_state)
 
     @staticmethod
-    def _validate_profile(profile: str, *, allow_balanced: bool = True) -> str:
-        valid = PROFILE_ORDER if allow_balanced else ("power-saver", "performance")
+    def _validate_profile(profile: str, *, hold: bool = False) -> str:
+        valid = HOLD_PROFILES if hold else PROFILE_ORDER
         if profile not in valid:
             raise InvalidProfileError(f"Invalid profile: {profile}")
         return profile
@@ -88,9 +95,37 @@ class PowerProfilesBridge(dbus.service.Object):
     @staticmethod
     def _read_driver_profile() -> str | None:
         try:
-            return DRIVER_TO_PROFILE.get(PROFILE_PATH.read_text().strip())
+            raw = PROFILE_PATH.read_text().strip()
         except OSError:
             return None
+        return DRIVER_TO_PROFILE.get(raw)
+
+    @staticmethod
+    def _read_emergency() -> bool:
+        try:
+            return EMERGENCY_PATH.read_text().strip() == "1"
+        except OSError:
+            return False
+
+    def _poll_driver_state(self) -> bool:
+        changed: list[str] = []
+
+        # Keep D-Bus in sync with kernel-side profile changes (for example a
+        # hotkey or direct sysfs write) when no temporary PPD hold is active.
+        driver_profile = self._read_driver_profile()
+        if not self._holds and driver_profile and driver_profile != self._active_profile:
+            self._active_profile = driver_profile
+            self._save_profile()
+            changed.append("ActiveProfile")
+
+        emergency = self._read_emergency()
+        if emergency != self._last_emergency:
+            self._last_emergency = emergency
+            changed.append("A14QuietEmergency")
+
+        if changed:
+            self._emit_properties(tuple(changed))
+        return GLib.SOURCE_CONTINUE
 
     def _load_initial_profile(self) -> str:
         try:
@@ -124,6 +159,14 @@ class PowerProfilesBridge(dbus.service.Object):
             raise BridgeError(
                 f"Cannot apply {profile} through {PROFILE_PATH}: {exc}"
             ) from exc
+
+        # A successful sysfs write is expected to be synchronous.  Refuse to
+        # publish a D-Bus state that the kernel did not actually accept.
+        applied = self._read_driver_profile()
+        if applied != profile:
+            raise BridgeError(
+                f"Driver reported {applied or 'unknown'} after requesting {profile}"
+            )
 
     def _apply_effective_profile(self) -> None:
         effective = self._effective_profile()
@@ -212,9 +255,11 @@ class PowerProfilesBridge(dbus.service.Object):
         if prop == "ActiveProfileHolds":
             return self._holds_property()
         if prop == "Version":
-            return dbus.String("0.3.0-a14-bridge")
+            return dbus.String("0.4.0-a14-bridge")
         if prop == "BatteryAware":
             return dbus.Boolean(self._battery_aware)
+        if prop == "A14QuietEmergency":
+            return dbus.Boolean(self._read_emergency())
         raise dbus.exceptions.DBusException(
             f"Unknown property: {prop}",
             name="org.freedesktop.DBus.Error.UnknownProperty",
@@ -246,6 +291,7 @@ class PowerProfilesBridge(dbus.service.Object):
             "ActiveProfileHolds",
             "Version",
             "BatteryAware",
+            "A14QuietEmergency",
         )
         return dbus.Dictionary(
             {name: self._get_property(name) for name in names}, signature="sv"
@@ -261,10 +307,15 @@ class PowerProfilesBridge(dbus.service.Object):
         if prop == "ActiveProfile":
             profile = self._validate_profile(str(value))
             self._release_holds(emit=True)
+            previous = self._active_profile
             self._active_profile = profile
+            try:
+                self._apply_effective_profile()
+            except BridgeError:
+                self._active_profile = previous
+                raise
             self._save_profile()
-            self._apply_effective_profile()
-            self._emit_properties(("ActiveProfile", "ActiveProfileHolds"))
+            self._emit_properties(("ActiveProfile", "ActiveProfileHolds", "A14QuietEmergency"))
             return
         if prop == "BatteryAware":
             self._battery_aware = bool(value)
@@ -290,7 +341,7 @@ class PowerProfilesBridge(dbus.service.Object):
     def HoldProfile(
         self, profile: str, reason: str, application_id: str, sender: str
     ) -> dbus.UInt32:
-        profile = self._validate_profile(str(profile), allow_balanced=False)
+        profile = self._validate_profile(str(profile), hold=True)
         cookie = self._next_cookie
         self._next_cookie += 1
         self._holds[cookie] = {
@@ -351,6 +402,9 @@ def main() -> int:
         bridge = PowerProfilesBridge(bus)
     except dbus.DBusException as exc:
         print(f"ppd-bridge: cannot claim D-Bus service: {exc}", file=sys.stderr)
+        return os.EX_UNAVAILABLE
+    except BridgeError as exc:
+        print(f"ppd-bridge: driver profile setup failed: {exc}", file=sys.stderr)
         return os.EX_UNAVAILABLE
 
     loop = GLib.MainLoop()
