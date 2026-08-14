@@ -7,7 +7,9 @@ all modules: prepare
 
 # Compose only when the source is stale or pristine. The transforms intentionally
 # build on one another. POLICY_V2 distinguishes acoustic Quiet from desktop
-# Power Saver; the emergency layer exports Quiet thermal escalation to userspace.
+# Power Saver; emergency notifications expose escalation; TRANSACTIONAL makes
+# firmware fan ownership, native policy, CPU QoS and emergency state switch as
+# one coherent unit with rollback on failure.
 prepare:
 	@if grep -Eq '^#define EC_FW_WAIT_MIN_US[[:space:]]+100000$$' asus_zenbook_a14_ec.c && \
 	   grep -Eq '^#define EC_FW_WAIT_MAX_US[[:space:]]+110000$$' asus_zenbook_a14_ec.c && \
@@ -16,8 +18,9 @@ prepare:
 	   grep -q 'PLATFORM_PROFILE_MAX_POWER' asus_zenbook_a14_ec.c && \
 	   grep -q 'A14_PROFILE_POLICY_V2' asus_zenbook_a14_ec.c && \
 	   grep -q 'A14_PROFILE_EMERGENCY_NOTIFY' asus_zenbook_a14_ec.c && \
+	   grep -q 'A14_PROFILE_TRANSACTIONAL' asus_zenbook_a14_ec.c && \
 	   grep -q 'ASUS_EC_PROFILE_POWER_SAVER' asus_zenbook_a14_ec.c && \
-	   grep -q 'asus_ec_enter_manual_locked(ec, 255)' asus_zenbook_a14_ec.c; then \
+	   grep -q 'asus_ec_set_pwm_both(ec, 255)' asus_zenbook_a14_ec.c; then \
 		echo 'a14_ec_stack=current'; \
 	else \
 		python3 scripts/apply-a14-ec-hardening.py && \
@@ -26,7 +29,8 @@ prepare:
 		python3 scripts/apply-a14-native-max-power.py && \
 		python3 scripts/apply-a14-native-fan-telemetry.py && \
 		python3 scripts/apply-a14-profile-policy-v2.py && \
-		python3 scripts/apply-a14-profile-emergency-notify.py; \
+		python3 scripts/apply-a14-profile-emergency-notify.py && \
+		python3 scripts/apply-a14-profile-transactional.py; \
 	fi
 	python3 scripts/apply-a14-hid-fnlock.py
 
