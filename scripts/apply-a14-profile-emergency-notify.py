@@ -38,6 +38,15 @@ if s.count(anchor) != 1:
     raise SystemExit("emergency helper: insertion anchor missing")
 s = s.replace(anchor, helper + anchor, 1)
 
+# Re-selecting Quiet while emergency cooling is already active must be
+# idempotent: do not briefly drop the Turbo emergency curve just because a UI
+# wrote the same profile again.
+once(
+    '''\tret = asus_ec_native_profile_marker(profile, &marker);\n\tif (ret)\n\t\treturn ret;\n\t(void)asus_ec_native_profile_marker(previous, &previous_marker);\n\n\t/* Every named policy starts from firmware-owned AUTO. Full Speed takes\n''',
+    '''\tif (profile == ASUS_EC_PROFILE_QUIET &&\n\t    previous == ASUS_EC_PROFILE_QUIET &&\n\t    ec->quiet_emergency_active) {\n\t\tasus_ec_freq_qos_set_percent(ec, quiet_max_percent);\n\t\treturn 0;\n\t}\n\n\tret = asus_ec_native_profile_marker(profile, &marker);\n\tif (ret)\n\t\treturn ret;\n\t(void)asus_ec_native_profile_marker(previous, &previous_marker);\n\n\t/* Every named policy starts from firmware-owned AUTO. Full Speed takes\n''',
+    'idempotent repeated Quiet write',
+)
+
 # If the user leaves Quiet while emergency cooling is active, explicitly send
 # the clear event before changing policies so desktop state never gets stuck.
 once(
@@ -84,6 +93,7 @@ required = (
     'DEVICE_ATTR_RO(quiet_emergency)',
     'asus_ec_emit_quiet_emergency(ec, true, temp)',
     'asus_ec_emit_quiet_emergency(ec, false, temp)',
+    'previous == ASUS_EC_PROFILE_QUIET',
 )
 missing = [token for token in required if token not in s]
 if missing:
