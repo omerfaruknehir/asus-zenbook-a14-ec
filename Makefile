@@ -10,7 +10,7 @@ prepare:
 
 mainline-check:
 	@test -n "$(KERNEL_SRC)" || { echo "Usage: make mainline-check KERNEL_SRC=/path/to/linux" >&2; exit 2; }
-	./scripts/a14-mainline-check.sh "$(KERNEL_SRC)"
+	sh ./scripts/a14-mainline-check.sh "$(KERNEL_SRC)"
 
 clean:
 	$(MAKE) -C $(KDIR) M=$(PWD) clean
@@ -29,13 +29,22 @@ unload-ec:
 reload-ec: unload-ec load-ec
 
 install-deb: prepare
-	./install.sh
+	sh ./install.sh
 
 deb: prepare
-	./scripts/build-deb.sh
+	sh ./scripts/build-deb.sh
+
+gnome-validate:
+	sh ./scripts/a14-gnome-profile-validation.sh
+
+quiet-emergency-validate:
+	sudo sh ./scripts/a14-quiet-emergency-validation.sh
+
+unify-normal-dtb:
+	sh ./scripts/a14-unify-normal-dtb.sh
 
 aos-probe:
-	sudo ./scripts/a14-aos-kernel-probe.sh
+	sudo sh ./scripts/a14-aos-kernel-probe.sh
 
 aos-module:
 	$(MAKE) -C kernel/aos KDIR=$(KDIR) W=1
@@ -45,9 +54,9 @@ aos-module-clean:
 
 aos-firmware-verify:
 	@test -n "$(DIR)" || { echo "Usage: make aos-firmware-verify DIR=/path/to/extracted/files" >&2; exit 2; }
-	./scripts/verify-a14-aos-firmware.sh "$(DIR)"
+	sh ./scripts/verify-a14-aos-firmware.sh "$(DIR)"
 
 dmesg:
 	dmesg --ctime | grep -E 'asus_zenbook_a14_ec|hid_asus_zenbook_a14_ec|asus::kbd_backlight|Fn-lock' | tail -n 80
 
-.PHONY: all modules prepare mainline-check clean load-hid load-ec unload-ec reload-ec install-deb deb aos-probe aos-module aos-module-clean aos-firmware-verify dmesg
+.PHONY: all modules prepare mainline-check clean load-hid load-ec unload-ec reload-ec install-deb deb gnome-validate quiet-emergency-validate unify-normal-dtb aos-probe aos-module aos-module-clean aos-firmware-verify dmesg
