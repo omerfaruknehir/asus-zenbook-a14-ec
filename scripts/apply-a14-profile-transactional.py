@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 from pathlib import Path
-import re
 
 p = Path("asus_zenbook_a14_ec.c")
 s = p.read_text()
@@ -101,17 +100,14 @@ static int asus_ec_apply_profile_locked(struct asus_ec *ec,
 	int restore_ret;
 	int ret;
 
-	/* Repeated writes from desktop tools are common. Keep them idempotent,
-	 * especially while Quiet emergency Turbo cooling is active. */
-	if (profile == previous && profile != ASUS_EC_PROFILE_CUSTOM) {
-		if (profile == ASUS_EC_PROFILE_FULL_SPEED) {
-			asus_ec_freq_qos_set(ec, FREQ_QOS_MAX_DEFAULT_VALUE);
-			if (ec->manual_active)
-				return asus_ec_set_pwm_both(ec, 255);
-		} else {
-			asus_ec_set_qos_for_profile(ec, profile);
-			return 0;
-		}
+	/* A repeated Quiet write while emergency Turbo cooling is active must not
+	 * drop the emergency firmware curve. All other named writes are replayed
+	 * fully: resume uses this same function and firmware policy may need to be
+	 * re-established after sleep even when the logical profile did not change. */
+	if (profile == ASUS_EC_PROFILE_QUIET &&
+	    previous == ASUS_EC_PROFILE_QUIET && previous_quiet_emergency) {
+		asus_ec_set_qos_for_profile(ec, profile);
+		return 0;
 	}
 
 	ret = asus_ec_native_profile_marker(profile, &marker);
@@ -177,6 +173,7 @@ required = (
     'asus_ec_set_qos_for_profile',
     'previous_quiet_emergency',
     'asus_ec_set_pwm_both(ec, 255)',
+    'firmware policy may need to be',
     'profile switch failed',
 )
 missing = [token for token in required if token not in s]
