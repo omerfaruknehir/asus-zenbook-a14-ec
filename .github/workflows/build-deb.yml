@@ -25,6 +25,7 @@ jobs:
           src=$(find "$root/usr/src" -maxdepth 1 -type d -name 'asus-zenbook-a14-ec-*' -print -quit)
           test -n "$src"
           ec="$src/asus_zenbook_a14_ec.c"
+          modconf="$root/etc/modprobe.d/asus-zenbook-a14-ec.conf"
 
           grep -q '#define EC_FW_FAN_PROFILE_COMMAND        0x11' "$ec"
           grep -q '#define EC_FW_FAN_PROFILE_NORMAL         0x01' "$ec"
@@ -41,10 +42,21 @@ jobs:
           grep -q 'asus_ec_set_pwm_both(ec, 255)' "$ec"
           grep -q 'asus_ec_restore_profile_locked' "$ec"
           grep -q 'A14_QUIET_EMERGENCY=' "$ec"
+          grep -q 'A14_EMERGENCY_REASON=' "$ec"
+          grep -q 'qos-unavailable' "$ec"
           grep -q 'DEVICE_ATTR_RO(quiet_emergency)' "$ec"
 
           if grep -q 'quiet_max_khz' "$ec"; then
             echo 'obsolete hard-coded quiet GHz cap leaked into packaged EC source' >&2
+            false
+          fi
+          test -s "$modconf"
+          grep -q 'quiet_max_percent=45' "$modconf"
+          grep -q 'power_saver_max_percent=70' "$modconf"
+          grep -q 'quiet_emergency_mc=90000' "$modconf"
+          grep -q 'quiet_recover_mc=75000' "$modconf"
+          if grep -q 'quiet_max_khz' "$modconf"; then
+            echo 'obsolete quiet_max_khz leaked into packaged modprobe configuration' >&2
             false
           fi
 
