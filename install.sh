@@ -15,7 +15,16 @@ else
   sudo apt-get install -y dkms build-essential dpkg-dev
 fi
 
-deb=$($repo/scripts/build-deb.sh)
+deb=$("$repo/scripts/build-deb.sh")
+if [ -z "$deb" ] || [ ! -f "$deb" ]; then
+  echo "build-deb.sh did not return a valid .deb path: ${deb:-<empty>}" >&2
+  exit 1
+fi
+case "$deb" in
+  *.deb) ;;
+  *) echo "build-deb.sh returned a non-DEB path: $deb" >&2; exit 1;;
+esac
+
 sudo apt-get install -y "$deb"
 echo
 echo "Installed. Current status:"
