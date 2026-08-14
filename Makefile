@@ -5,24 +5,26 @@ PWD  := $(shell pwd)
 all modules: prepare
 	$(MAKE) -C $(KDIR) M=$(PWD) modules
 
-# Compose only when the source is stale or pristine.  The transforms intentionally
-# build on one another, so rerunning the whole chain over an already-current
-# composed source is unnecessary and can make an upstream transform see a valid
-# downstream rewrite as a missing anchor.
+# Compose only when the source is stale or pristine. The transforms intentionally
+# build on one another. POLICY_V2 is the final layer and distinguishes acoustic
+# Quiet from desktop Power Saver while making Full Speed literal max-fan.
 prepare:
 	@if grep -Eq '^#define EC_FW_WAIT_MIN_US[[:space:]]+100000$$' asus_zenbook_a14_ec.c && \
 	   grep -Eq '^#define EC_FW_WAIT_MAX_US[[:space:]]+110000$$' asus_zenbook_a14_ec.c && \
 	   grep -q 'EC_FW_FAN_PROFILE_FULL_SPEED' asus_zenbook_a14_ec.c && \
 	   grep -q 'EC_NATIVE_FAN1_RPM_LO' asus_zenbook_a14_ec.c && \
 	   grep -q 'PLATFORM_PROFILE_MAX_POWER' asus_zenbook_a14_ec.c && \
-	   grep -q 'asus_ec_apply_profile_locked(ec, ASUS_EC_PROFILE_BALANCED)' asus_zenbook_a14_ec.c; then \
+	   grep -q 'A14_PROFILE_POLICY_V2' asus_zenbook_a14_ec.c && \
+	   grep -q 'ASUS_EC_PROFILE_POWER_SAVER' asus_zenbook_a14_ec.c && \
+	   grep -q 'asus_ec_enter_manual_locked(ec, 255)' asus_zenbook_a14_ec.c; then \
 		echo 'a14_ec_stack=current'; \
 	else \
 		python3 scripts/apply-a14-ec-hardening.py && \
 		python3 scripts/apply-a14-native-fan-profile.py && \
 		python3 scripts/apply-a14-native-hardening-compat.py && \
 		python3 scripts/apply-a14-native-max-power.py && \
-		python3 scripts/apply-a14-native-fan-telemetry.py; \
+		python3 scripts/apply-a14-native-fan-telemetry.py && \
+		python3 scripts/apply-a14-profile-policy-v2.py; \
 	fi
 	python3 scripts/apply-a14-hid-fnlock.py
 
