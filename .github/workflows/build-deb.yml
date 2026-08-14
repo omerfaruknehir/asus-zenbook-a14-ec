@@ -39,7 +39,7 @@ jobs:
           grep -q 'quiet power-saver balanced performance full-speed' "$ec"
           grep -q 'PLATFORM_PROFILE_LOW_POWER' "$ec"
           grep -q 'PLATFORM_PROFILE_MAX_POWER' "$ec"
-          grep -q 'asus_ec_set_pwm_both(ec, 255)' "$ec"
+          grep -q 'asus_ec_enter_manual_locked(ec, 255)' "$ec"
           grep -q 'asus_ec_restore_profile_locked' "$ec"
           grep -q 'A14_QUIET_EMERGENCY=' "$ec"
           grep -q 'A14_EMERGENCY_REASON=' "$ec"
