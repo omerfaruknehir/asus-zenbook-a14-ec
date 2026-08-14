@@ -4,6 +4,12 @@
 # The upstream 7.1.5 module exports the class API but refuses module init when
 # acpi_disabled is true. The repository transform keeps the class API usable
 # while leaving ACPI-only legacy aggregate sysfs disabled on a DT boot.
+#
+# Ubuntu/mainline ARM64 header packages can contain a non-native
+# scripts/gendwarfksyms/gendwarfksyms host binary. For this temporary runtime
+# validation module only, fall back to the kernel's legacy genksyms path when
+# that host tool cannot execute. The production/in-tree kernel build should use
+# its configured symbol-versioning implementation normally.
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." 2>/dev/null && pwd)
 USER_HOME=$HOME
@@ -19,10 +25,13 @@ BUILD_DIR=$ROOT/.platform-profile-dt-build
 PP_SRC=$KERNEL_SRC/drivers/acpi/platform_profile.c
 PP_KO=$BUILD_DIR/platform_profile.ko
 EC_KO=$ROOT/asus_zenbook_a14_ec.ko
+GENDWARFKSYMS=$KBUILD/scripts/gendwarfksyms/gendwarfksyms
+GENKSYMS=$KBUILD/scripts/genksyms/genksyms
 ok=1
 loaded_pp=0
 loaded_ec=0
 PP_NODE=""
+SYMVERS_MODE=kernel-default
 
 say()
 {
@@ -90,6 +99,7 @@ if [ "$ok" -eq 1 ]; then
     say ""
     say "===== RUNNING KERNEL CONFIG ====="
     cfg=""
+    config_gendwarf=unknown
     if [ -r "/boot/config-$(uname -r)" ]; then
         cfg=/boot/config-$(uname -r)
     elif [ -r /proc/config.gz ]; then
@@ -99,14 +109,47 @@ if [ "$ok" -eq 1 ]; then
     if [ -n "$cfg" ]; then
         if [ "$cfg" = /proc/config.gz ]; then
             zcat "$cfg" 2>/dev/null | grep '^CONFIG_ACPI_PLATFORM_PROFILE=' || true
+            if zcat "$cfg" 2>/dev/null | grep -q '^CONFIG_GENDWARFKSYMS=y'; then
+                config_gendwarf=y
+            else
+                config_gendwarf=n
+            fi
         else
             grep '^CONFIG_ACPI_PLATFORM_PROFILE=' "$cfg" || true
+            if grep -q '^CONFIG_GENDWARFKSYMS=y' "$cfg"; then
+                config_gendwarf=y
+            else
+                config_gendwarf=n
+            fi
         fi
     else
         say "kernel_config=unavailable"
     fi
 
     modinfo platform_profile 2>/dev/null | grep -E '^(filename|vermagic):' || true
+
+    say ""
+    say "===== SYMBOL VERSION HOST TOOL ====="
+    say "config_gendwarfksyms=$config_gendwarf"
+    if command -v file >/dev/null 2>&1 && [ -e "$GENDWARFKSYMS" ]; then
+        file "$GENDWARFKSYMS" 2>/dev/null || true
+    fi
+
+    if [ "$config_gendwarf" = y ]; then
+        "$GENDWARFKSYMS" --help >/dev/null 2>&1
+        gdw_rc=$?
+        say "gendwarfksyms_exec_rc=$gdw_rc"
+        if [ "$gdw_rc" -ne 0 ]; then
+            # platform_profile exports symbols, which is why this tool is hit
+            # while the A14 EC/HID modules themselves built successfully.
+            # For this disposable validation module, genksyms is sufficient:
+            # the EC driver resolves the profile API dynamically with
+            # symbol_get(), so it does not carry a static modversion dependency
+            # on these newly exported symbols.
+            SYMVERS_MODE=genksyms-validation-fallback
+        fi
+    fi
+    say "symbol_version_mode=$SYMVERS_MODE"
 fi
 
 if [ "$ok" -eq 1 ]; then
@@ -150,8 +193,20 @@ EOF
 
     say ""
     say "===== BUILD PATCHED PLATFORM_PROFILE ====="
-    make -C "$KBUILD" M="$BUILD_DIR" modules
-    rc=$?
+    if [ "$SYMVERS_MODE" = genksyms-validation-fallback ]; then
+        if [ ! -x "$GENKSYMS" ]; then
+            say "ERROR: genksyms fallback binary is missing: $GENKSYMS"
+            ok=0
+            rc=127
+        else
+            make -C "$KBUILD" M="$BUILD_DIR" \
+                CONFIG_GENDWARFKSYMS= CONFIG_GENKSYMS=y modules
+            rc=$?
+        fi
+    else
+        make -C "$KBUILD" M="$BUILD_DIR" modules
+        rc=$?
+    fi
     say "platform_profile_build_rc=$rc"
     if [ "$rc" -ne 0 ] || [ ! -r "$PP_KO" ]; then
         ok=0
@@ -262,6 +317,7 @@ if [ "$ok" -eq 1 ]; then
 else
     say "A14_PLATFORM_PROFILE_DT_VALIDATION=FAIL"
 fi
+say "symbol_version_mode=$SYMVERS_MODE"
 say "patched_platform_profile_left_loaded=$loaded_pp"
 say "local_ec_left_loaded=$loaded_ec"
 say "final_profile=balanced_requested"
