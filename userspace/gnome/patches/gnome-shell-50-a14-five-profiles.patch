@@ -1,0 +1,34 @@
+From: ASUS Zenbook A14 Linux support
+Subject: [PATCH] power-profiles: understand A14 Quiet and Full Speed
+
+GNOME Shell 50 filters power profiles through PROFILE_PARAMS, so profiles
+advertised by the PPD-compatible backend but absent from that table never
+appear in Quick Settings.  Teach the existing Power Mode tile about the two
+additional validated A14 policies.  The standard three retain GNOME's stock
+icons; Quiet and Full Speed use package-installed symbolic icons.
+
+--- a/js/ui/status/powerProfiles.js
++++ b/js/ui/status/powerProfiles.js
+@@ -14,6 +14,12 @@ const PowerProfilesProxy = Gio.DBusProxy.makeProxyWrapper(PowerProfilesIface);
+ 
+ const PROFILE_PARAMS = {
++    'full-speed': {
++        name: C_('Power profile', 'Full Speed'),
++        iconName: 'a14-power-profile-full-speed-symbolic',
++    },
++
+     'performance': {
+         name: C_('Power profile', 'Performance'),
+         iconName: 'power-profile-performance-symbolic',
+@@ -28,6 +34,11 @@ const PROFILE_PARAMS = {
+         name: C_('Power profile', 'Power Saver'),
+         iconName: 'power-profile-power-saver-symbolic',
+     },
++
++    'quiet': {
++        name: C_('Power profile', 'Quiet'),
++        iconName: 'a14-power-profile-quiet-symbolic',
++    },
+ };
+ 
+ const FALLBACK_PARAMS = {
