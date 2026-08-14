@@ -33,6 +33,12 @@ The canonical source is this repository. Downloaded Linux source trees are dispo
 
 The final workflow should be one command that checks the upstream tree, applies the required backports and A14 patches in dependency order, builds the affected DTB/modules, and emits a manifest. Rebuilding the complete kernel image is optional unless a required change cannot be delivered as a module/DTB.
 
+## Validation records
+
+Keep hardware observations in the repository so later changes can be compared against an explicit baseline.
+
+- [`docs/suspend/2026-08-14-deep-suspend-battery.md`](../suspend/2026-08-14-deep-suspend-battery.md) — approximately one hour in `deep` suspend, 50% → 42% battery, with no immediate auto-resume.
+
 ## Privacy rule
 
 `KEY_CAMERA_ACCESS_TOGGLE` means the shortcut was decoded. It does **not** prove capture is blocked. The integration must only report an enforced camera privacy lock once a kernel/V4L2/firmware mechanism has been implemented and tested to reject capture.
