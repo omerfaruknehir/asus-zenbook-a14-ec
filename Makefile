@@ -11,7 +11,8 @@ prepare:
 	else \
 		python3 scripts/apply-a14-ec-hardening.py && \
 		python3 scripts/apply-a14-native-fan-profile.py && \
-		python3 scripts/apply-a14-native-hardening-compat.py; \
+		python3 scripts/apply-a14-native-hardening-compat.py && \
+		python3 scripts/apply-a14-native-max-power.py; \
 	fi
 	python3 scripts/apply-a14-hid-fnlock.py
 
