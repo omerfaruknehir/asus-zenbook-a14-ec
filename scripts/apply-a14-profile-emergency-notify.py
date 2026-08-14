@@ -30,44 +30,40 @@ once(
 )
 
 # Emit both a pollable sysfs notification and a normal KOBJ_CHANGE uevent.
-# The uevent is intentionally generic so a udev rule can notify any logged-in
-# desktop session without coupling the kernel driver to GNOME or D-Bus.
+# Include a reason so userspace never claims CPU throttling is active if the
+# emergency was caused by unavailable cpufreq QoS rather than temperature.
 anchor = '''static int asus_ec_apply_profile_locked(struct asus_ec *ec,\n'''
-helper = '''static void asus_ec_emit_quiet_emergency(struct asus_ec *ec,\n\t\t\t\t\t bool active, int temp_mc)\n{\n\tchar state_env[32];\n\tchar temp_env[32];\n\tchar *envp[] = { state_env, temp_env, "A14_PROFILE=quiet", NULL };\n\n\tsnprintf(state_env, sizeof(state_env), "A14_QUIET_EMERGENCY=%u", active ? 1 : 0);\n\tsnprintf(temp_env, sizeof(temp_env), "A14_TEMP_MC=%d", temp_mc);\n\tsysfs_notify(&ec->dev->kobj, NULL, "quiet_emergency");\n\tkobject_uevent_env(&ec->dev->kobj, KOBJ_CHANGE, envp);\n}\n\n'''
+helper = '''static void asus_ec_emit_quiet_emergency(struct asus_ec *ec,\n\t\t\t\t\t bool active, int temp_mc,\n\t\t\t\t\t const char *reason)\n{\n\tchar state_env[32];\n\tchar temp_env[32];\n\tchar reason_env[64];\n\tchar *envp[] = { state_env, temp_env, reason_env, "A14_PROFILE=quiet", NULL };\n\n\tsnprintf(state_env, sizeof(state_env), "A14_QUIET_EMERGENCY=%u", active ? 1 : 0);\n\tsnprintf(temp_env, sizeof(temp_env), "A14_TEMP_MC=%d", temp_mc);\n\tsnprintf(reason_env, sizeof(reason_env), "A14_EMERGENCY_REASON=%s", reason ?: "unknown");\n\tsysfs_notify(&ec->dev->kobj, NULL, "quiet_emergency");\n\tkobject_uevent_env(&ec->dev->kobj, KOBJ_CHANGE, envp);\n}\n\n'''
 if s.count(anchor) != 1:
     raise SystemExit("emergency helper: insertion anchor missing")
 s = s.replace(anchor, helper + anchor, 1)
 
-# Re-selecting Quiet while emergency cooling is already active must be
-# idempotent: do not briefly drop the Turbo emergency curve just because a UI
-# wrote the same profile again.
+# This temporary idempotence guard is superseded by the final transactional
+# layer. It is still useful if the transforms are inspected individually.
 once(
     '''\tret = asus_ec_native_profile_marker(profile, &marker);\n\tif (ret)\n\t\treturn ret;\n\t(void)asus_ec_native_profile_marker(previous, &previous_marker);\n\n\t/* Every named policy starts from firmware-owned AUTO. Full Speed takes\n''',
     '''\tif (profile == ASUS_EC_PROFILE_QUIET &&\n\t    previous == ASUS_EC_PROFILE_QUIET &&\n\t    ec->quiet_emergency_active) {\n\t\tasus_ec_freq_qos_set_percent(ec, quiet_max_percent);\n\t\treturn 0;\n\t}\n\n\tret = asus_ec_native_profile_marker(profile, &marker);\n\tif (ret)\n\t\treturn ret;\n\t(void)asus_ec_native_profile_marker(previous, &previous_marker);\n\n\t/* Every named policy starts from firmware-owned AUTO. Full Speed takes\n''',
     'idempotent repeated Quiet write',
 )
 
-# If the user leaves Quiet while emergency cooling is active, explicitly send
-# the clear event before changing policies so desktop state never gets stuck.
 once(
     '''\tec->quiet_emergency_active = false;\n\tswitch (profile) {\n''',
-    '''\tif (ec->quiet_emergency_active && profile != ASUS_EC_PROFILE_QUIET)\n\t\tasus_ec_emit_quiet_emergency(ec, false, asus_ec_max_temp_mc(ec));\n\tec->quiet_emergency_active = false;\n\tswitch (profile) {\n''',
+    '''\tif (ec->quiet_emergency_active && profile != ASUS_EC_PROFILE_QUIET)\n\t\tasus_ec_emit_quiet_emergency(ec, false, asus_ec_max_temp_mc(ec),\n\t\t\t\t\t     "profile-change");\n\tec->quiet_emergency_active = false;\n\tswitch (profile) {\n''',
     'profile-switch emergency clear',
 )
 
 once(
     '''\t\t\tif (!ret) {\n\t\t\t\tec->quiet_emergency_active = true;\n\t\t\t\tdev_warn(ec->dev,\n''',
-    '''\t\t\tif (!ret) {\n\t\t\t\tec->quiet_emergency_active = true;\n\t\t\t\tasus_ec_emit_quiet_emergency(ec, true, temp);\n\t\t\t\tdev_warn(ec->dev,\n''',
+    '''\t\t\tif (!ret) {\n\t\t\t\tec->quiet_emergency_active = true;\n\t\t\t\tasus_ec_emit_quiet_emergency(ec, true, temp, "thermal");\n\t\t\t\tdev_warn(ec->dev,\n''',
     'emergency engaged event',
 )
 
 once(
     '''\t\t\tif (!ret) {\n\t\t\t\tec->quiet_emergency_active = false;\n\t\t\t\tdev_info(ec->dev,\n''',
-    '''\t\t\tif (!ret) {\n\t\t\t\tec->quiet_emergency_active = false;\n\t\t\t\tasus_ec_emit_quiet_emergency(ec, false, temp);\n\t\t\t\tdev_info(ec->dev,\n''',
+    '''\t\t\tif (!ret) {\n\t\t\t\tec->quiet_emergency_active = false;\n\t\t\t\tasus_ec_emit_quiet_emergency(ec, false, temp, "recovered");\n\t\t\t\tdev_info(ec->dev,\n''',
     'emergency cleared event',
 )
 
-# Expose the current emergency state in the driver's normal device sysfs.
 profile_show_anchor = '''static ssize_t profile_show(struct device *dev,\n'''
 emergency_show = '''static ssize_t quiet_emergency_show(struct device *dev,\n\t\t\t\t    struct device_attribute *attr, char *buf)\n{\n\tstruct asus_ec *ec = dev_get_drvdata(dev);\n\n\treturn sysfs_emit(buf, "%u\\n", ec->quiet_emergency_active ? 1 : 0);\n}\n\n'''
 if s.count(profile_show_anchor) != 1:
@@ -90,10 +86,10 @@ required = (
     'A14_PROFILE_EMERGENCY_NOTIFY',
     'kobject_uevent_env',
     'A14_QUIET_EMERGENCY=',
+    'A14_EMERGENCY_REASON=',
     'DEVICE_ATTR_RO(quiet_emergency)',
-    'asus_ec_emit_quiet_emergency(ec, true, temp)',
-    'asus_ec_emit_quiet_emergency(ec, false, temp)',
-    'previous == ASUS_EC_PROFILE_QUIET',
+    'asus_ec_emit_quiet_emergency(ec, true, temp, "thermal")',
+    'asus_ec_emit_quiet_emergency(ec, false, temp, "recovered")',
 )
 missing = [token for token in required if token not in s]
 if missing:
