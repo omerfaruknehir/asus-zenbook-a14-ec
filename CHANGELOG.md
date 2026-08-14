@@ -15,8 +15,13 @@
 - Added Quiet emergency cooling hysteresis. At the emergency threshold the
   strong CPU cap remains active while the firmware cooling curve is temporarily
   promoted to Turbo; it automatically returns to native Quiet after recovery.
+- Added a fail-safe for missing cpufreq QoS: Quiet never silently becomes a
+  hot/minimal-fan mode when throttling control is unavailable. It immediately
+  forces Turbo cooling, remains visibly selected as Quiet, and emits an
+  emergency notification explaining that CPU throttling control is unavailable.
 - Added a pollable `quiet_emergency` sysfs state and kernel `KOBJ_CHANGE` uevents
-  carrying the emergency state and temperature.
+  carrying emergency state, temperature, and reason (`thermal`, `recovered`,
+  `profile-change`, or `qos-unavailable`).
 - Added GNOME desktop notifications when Quiet emergency cooling engages and
   when it clears. The engage notification is critical/persistent and the clear
   notification replaces it.
@@ -24,6 +29,9 @@
   native Full Speed firmware mode, remove artificial CPU caps, and command both
   fans to PWM 255 while retaining the SoC/kernel's normal hardware thermal
   protection.
+- Made profile transitions transactional across low-level fan ownership, native
+  firmware marker, CPU QoS and Quiet-emergency state, with coherent rollback on
+  partial failure and full hardware-policy replay after resume.
 - Exposed `PLATFORM_PROFILE_LOW_POWER` separately from `PLATFORM_PROFILE_QUIET`;
   retained `PLATFORM_PROFILE_PERFORMANCE` and `PLATFORM_PROFILE_MAX_POWER` for
   the corresponding high-power policies.
@@ -34,6 +42,15 @@
   when the A14 handler is available, otherwise enable the packaged compatible
   fallback bridge and restore the distribution daemon when native support is
   present again.
+- Added a narrow root-owned A14 system D-Bus profile service exposing only the
+  five named modes and emergency state; it deliberately exposes no raw EC,
+  register, PWM, mailbox, or MMIO API to the desktop.
+- Added the GNOME Shell **A14 Mode** Quick Settings menu for Quiet / Power Saver /
+  Balanced / Performance / Full Speed. The extra top-bar indicator stays hidden
+  normally and appears only while Quiet emergency cooling is active.
+- Added system-wide GNOME extension installation/auto-enable integration; a
+  newly installed extension may require one logout/login for an already-running
+  Wayland Shell session to discover it.
 - Added a safe Quiet-emergency validation that lowers the temporary threshold
   instead of heating the machine to the real emergency temperature, verifies
   sysfs/uevents/desktop delivery, then restores the original thresholds.
@@ -44,10 +61,14 @@
   `gendwarfksyms` from the exact 7.1.5 source when Ubuntu/mainline ARM64 headers
   contain the wrong x86-64 host executable. The validator no longer changes the
   configured symbol-versioning algorithm as a workaround.
+- Fixed the installed modprobe configuration to remove the obsolete
+  `quiet_max_khz=1440000` parameter and install the new percentage/hysteresis
+  parameters instead, preventing the new module from rejecting its own package
+  configuration.
 - Recorded the complete hardware load capture establishing the real firmware
   ordering `quiet < balanced << performance < full-speed`.
 - Added package/CI coverage for the five-mode policy, emergency notification
-  path, udev integration and GNOME backend selection.
+  path, udev integration, narrow profile D-Bus service and GNOME Quick Settings.
 - Bumped the DKMS/DEB package version so existing 0.2.0 installs are actually
   upgraded to the new policy stack.
 
