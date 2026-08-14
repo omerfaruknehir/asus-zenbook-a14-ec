@@ -3,8 +3,7 @@ set -eu
 
 repo=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$repo"
-python3 scripts/apply-a14-ec-hardening.py
-python3 scripts/apply-a14-hid-fnlock.py
+make prepare
 version=$(cat "$repo/VERSION")
 package=asus-zenbook-a14-ec-dkms
 work=$(mktemp -d)
@@ -12,21 +11,37 @@ trap 'rm -rf "$work"' EXIT INT TERM
 root="$work/root"
 src="$root/usr/src/asus-zenbook-a14-ec-$version"
 mkdir -p "$root/DEBIAN" "$src/scripts" "$root/usr/sbin" "$root/usr/libexec" \
-  "$root/usr/lib/systemd/system" "$root/etc/modprobe.d" \
-  "$root/usr/share/doc/$package" "$repo/dist"
+  "$root/usr/lib/systemd/system" "$root/usr/lib/udev/rules.d" \
+  "$root/etc/modprobe.d" "$root/usr/share/doc/$package" "$repo/dist"
 
 install -m 0644 "$repo/asus_zenbook_a14_ec.c" "$repo/hid_asus_ec.c" \
   "$repo/Kbuild" "$repo/Makefile" "$src/"
-install -m 0755 "$repo/scripts/apply-a14-ec-hardening.py" "$src/scripts/apply-a14-ec-hardening.py"
-install -m 0755 "$repo/scripts/apply-a14-hid-fnlock.py" "$src/scripts/apply-a14-hid-fnlock.py"
+
+for script in \
+  apply-a14-ec-hardening.py \
+  apply-a14-native-fan-profile.py \
+  apply-a14-native-hardening-compat.py \
+  apply-a14-native-max-power.py \
+  apply-a14-native-fan-telemetry.py \
+  apply-a14-profile-policy-v2.py \
+  apply-a14-profile-emergency-notify.py \
+  apply-a14-hid-fnlock.py
+do
+  install -m 0755 "$repo/scripts/$script" "$src/scripts/$script"
+done
+
 sed "s/PACKAGE_VERSION=\"[^\"]*\"/PACKAGE_VERSION=\"$version\"/" \
   "$repo/dkms.conf" >"$src/dkms.conf"
+
 install -m 0755 "$repo/scripts/asus-a14-control" "$root/usr/sbin/asus-a14-control"
 install -m 0755 "$repo/scripts/asus-zenbook-a14-ec-load" "$root/usr/libexec/asus-zenbook-a14-ec-load"
 install -m 0755 "$repo/scripts/asus-zenbook-a14-ec-unload" "$root/usr/libexec/asus-zenbook-a14-ec-unload"
 install -m 0755 "$repo/scripts/asus-zenbook-a14-ppd-bridge.py" "$root/usr/libexec/asus-zenbook-a14-ppd-bridge"
+install -m 0755 "$repo/scripts/asus-zenbook-a14-profile-integration" "$root/usr/libexec/asus-zenbook-a14-profile-integration"
+install -m 0755 "$repo/scripts/asus-zenbook-a14-emergency-notify.py" "$root/usr/libexec/asus-zenbook-a14-emergency-notify"
 install -m 0644 "$repo/systemd/asus-zenbook-a14-ec.service" "$root/usr/lib/systemd/system/"
 install -m 0644 "$repo/systemd/asus-zenbook-a14-ppd-bridge.service" "$root/usr/lib/systemd/system/"
+install -m 0644 "$repo/udev/90-asus-zenbook-a14-ec.rules" "$root/usr/lib/udev/rules.d/"
 install -m 0644 "$repo/modprobe.d/asus-zenbook-a14-ec.conf" "$root/etc/modprobe.d/"
 install -m 0644 "$repo/README.md" "$root/usr/share/doc/$package/README.md"
 gzip -9n -c "$repo/CHANGELOG.md" >"$root/usr/share/doc/$package/changelog.gz"
@@ -45,7 +60,7 @@ Copyright: 2025 Alexandru Marc Serdeliuc <serdeliuk@yahoo.com>
            2026 Ömer Faruk Nehir <omerfaruknehir@gmail.com>
 License: GPL-2.0-or-later
 
-Files: scripts/asus-zenbook-a14-ppd-bridge.py
+Files: scripts/asus-zenbook-a14-ppd-bridge.py scripts/asus-zenbook-a14-emergency-notify.py
 Copyright: 2026 Sombre-Osmoze <sombre@osmoze.xyz>
            2026 Ömer Faruk Nehir <omerfaruknehir@gmail.com>
 License: GPL-2.0-or-later
@@ -59,14 +74,15 @@ Section: kernel
 Priority: optional
 Architecture: all
 Maintainer: Ömer Faruk Nehir <omerfaruknehir@gmail.com>
-Depends: dkms, kmod, systemd, build-essential, python3, python3-dbus, python3-gi
+Depends: dkms, kmod, systemd, build-essential, python3, python3-dbus, python3-gi, libnotify-bin
 Recommends: power-profiles-daemon, initramfs-tools
 Installed-Size: $installed_size
 Homepage: https://github.com/omerfaruknehir/asus-zenbook-a14-ec
-Description: ASUS Zenbook A14 EC and keyboard drivers (DKMS)
- Dual-fan monitoring/control, safe power profiles, keyboard backlight and Fn
- hotkeys for ASUS Zenbook A14 UX3407RA/UX3407QA Snapdragon systems. Includes
- an optional systemd D-Bus fallback for kernels without platform_profile.
+Description: ASUS Zenbook A14 EC, keyboard and desktop integration (DKMS)
+ Dual-fan monitoring/control, Quiet/Power Saver/Balanced/Performance/Full Speed
+ policies, keyboard backlight and Fn hotkeys for ASUS Zenbook A14 UX3407RA/
+ UX3407QA Snapdragon systems. Includes GNOME power-profile integration and
+ desktop notifications when Quiet requires emergency cooling.
 CONTROL
 
 cat >"$root/DEBIAN/postinst" <<POSTINST
@@ -81,9 +97,6 @@ if [ ! -e "/lib/modules/\$kernel/build/Makefile" ]; then
   exit 1
 fi
 
-# Remove stale DKMS versions left by earlier package upgrades. If the old
-# /usr/src tree has already vanished, dkms remove cannot clean its state, so
-# remove only that orphaned /var/lib/dkms entry after the normal attempt.
 for old_dir in /var/lib/dkms/\$module/*; do
   [ -d "\$old_dir" ] || continue
   old_version=\${old_dir##*/}
@@ -100,8 +113,6 @@ dkms build -m "\$module" -v "\$version" -k "\$kernel"
 dkms install -m "\$module" -v "\$version" -k "\$kernel" --force
 depmod -a "\$kernel"
 
-# hid_asus_ec can be present in the initramfs. Refresh it so a reboot cannot
-# resurrect a previous module after a package upgrade.
 if command -v update-initramfs >/dev/null 2>&1; then
   update-initramfs -u -k "\$kernel"
 elif command -v dracut >/dev/null 2>&1; then
@@ -109,11 +120,15 @@ elif command -v dracut >/dev/null 2>&1; then
 fi
 
 systemctl daemon-reload >/dev/null 2>&1 || true
+if command -v udevadm >/dev/null 2>&1; then
+  udevadm control --reload-rules >/dev/null 2>&1 || true
+fi
 systemctl enable asus-zenbook-a14-ec.service >/dev/null 2>&1 || true
 if [ "\${1:-}" = configure ]; then
   systemctl restart asus-zenbook-a14-ec.service >/dev/null 2>&1 || \
     echo "Driver installed but could not be started; inspect: journalctl -u asus-zenbook-a14-ec" >&2
 fi
+/usr/libexec/asus-zenbook-a14-profile-integration || true
 exit 0
 POSTINST
 
@@ -144,6 +159,9 @@ cat >"$root/DEBIAN/postrm" <<'POSTRM'
 set -e
 kernel="$(uname -r)"
 systemctl daemon-reload >/dev/null 2>&1 || true
+if command -v udevadm >/dev/null 2>&1; then
+  udevadm control --reload-rules >/dev/null 2>&1 || true
+fi
 depmod -a "$kernel" >/dev/null 2>&1 || true
 if command -v update-initramfs >/dev/null 2>&1; then
   update-initramfs -u -k "$kernel" >/dev/null 2>&1 || true
