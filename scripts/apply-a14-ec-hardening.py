@@ -5,9 +5,9 @@ p = Path("asus_zenbook_a14_ec.c")
 s = p.read_text()
 
 
-def once(old: str, new: str, label: str) -> None:
+def once(old: str, new: str, label: str, accepted=()) -> None:
     global s
-    if new in s:
+    if new in s or any(variant in s for variant in accepted):
         return
     count = s.count(old)
     if count != 1:
@@ -48,16 +48,22 @@ once(
     "manual entry rollback",
 )
 
+native_safety_fallback = '''\t\tret = asus_ec_force_auto_locked(ec);\n\t\tif (!ret)\n\t\t\tret = asus_ec_set_native_fan_profile(ec, EC_FW_FAN_PROFILE_NORMAL);\n\t\tif (!ret) {\n\t\t\tec->active_profile = ASUS_EC_PROFILE_BALANCED;\n\t\t\tasus_ec_freq_qos_set(ec, FREQ_QOS_MAX_DEFAULT_VALUE);\n\t\t\tsysfs_notify(&ec->dev->kobj, NULL, "profile");\n\t\t\tasus_ec_notify_profile(ec);\n\t\t\tgoto out;\n\t\t}\n\t\tec->active_profile = ASUS_EC_PROFILE_CUSTOM;\n'''
+
 once(
     '''\tif (fallback) {\n\t\tdev_warn(ec->dev,\n\t\t\t "manual fan mode safety fallback (temp=%d, read failures=%u)\\n",\n\t\t\t temp, ec->temp_failures);\n\t\tif (!asus_ec_leave_manual_locked(ec)) {\n\t\t\tec->active_profile = ASUS_EC_PROFILE_BALANCED;\n\t\t\tasus_ec_freq_qos_set(ec, FREQ_QOS_MAX_DEFAULT_VALUE);\n\t\t\tsysfs_notify(&ec->dev->kobj, NULL, "profile");\n\t\t\tasus_ec_notify_profile(ec);\n\t\t}\n\t\tgoto out;\n\t}\n''',
     '''\tif (fallback) {\n\t\tint ret;\n\n\t\tdev_warn(ec->dev,\n\t\t\t "manual fan mode safety fallback (temp=%d, read failures=%u)\\n",\n\t\t\t temp, ec->temp_failures);\n\t\tret = asus_ec_force_auto_locked(ec);\n\t\tif (!ret) {\n\t\t\tec->active_profile = ASUS_EC_PROFILE_BALANCED;\n\t\t\tasus_ec_freq_qos_set(ec, FREQ_QOS_MAX_DEFAULT_VALUE);\n\t\t\tsysfs_notify(&ec->dev->kobj, NULL, "profile");\n\t\t\tasus_ec_notify_profile(ec);\n\t\t\tgoto out;\n\t\t}\n\n\t\tdev_err(ec->dev,\n\t\t\t"failed to restore automatic fan mode during safety fallback: %d\\n",\n\t\t\tret);\n\t\tif (!ec->shutting_down)\n\t\t\tmod_delayed_work(system_freezable_wq, &ec->safety_work,\n\t\t\t\t\t msecs_to_jiffies(500));\n\t\tgoto out;\n\t}\n''',
     "safety fallback retry",
+    accepted=(native_safety_fallback,),
 )
+
+native_hwmon_auto = '''\t\telse if (value == 2)\n\t\t\tret = asus_ec_apply_profile_locked(ec, ASUS_EC_PROFILE_BALANCED);\n'''
 
 once(
     '''\t\telse if (value == 2)\n\t\t\tret = asus_ec_leave_manual_locked(ec);\n''',
     '''\t\telse if (value == 2)\n\t\t\tret = asus_ec_force_auto_locked(ec);\n''',
     "hwmon force auto",
+    accepted=(native_hwmon_auto,),
 )
 
 once(
