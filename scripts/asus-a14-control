@@ -14,6 +14,7 @@ find_hwmon() {
 }
 
 profile_path=/sys/devices/platform/asus_zenbook_a14_ec/profile
+emergency_path=/sys/devices/platform/asus_zenbook_a14_ec/quiet_emergency
 hwmon=$(find_hwmon 2>/dev/null || true)
 
 need_driver() {
@@ -45,6 +46,13 @@ standard_platform_profile_present() {
 show_status() {
   need_driver
   printf 'profile: %s\n' "$(cat "$profile_path")"
+  if [ -r "$emergency_path" ]; then
+    if [ "$(cat "$emergency_path" 2>/dev/null)" = 1 ]; then
+      echo 'quiet emergency cooling: ACTIVE'
+    else
+      echo 'quiet emergency cooling: inactive'
+    fi
+  fi
   [ -r "$hwmon/temp1_input" ] && awk '{printf "EC temperature: %.1f C\n", $1/1000}' "$hwmon/temp1_input"
   [ -r "$hwmon/fan1_input" ] && printf 'left fan: %s RPM (PWM %s)\n' "$(cat "$hwmon/fan1_input")" "$(cat "$hwmon/pwm1")"
   [ -r "$hwmon/fan2_input" ] && printf 'right fan: %s RPM (PWM %s)\n' "$(cat "$hwmon/fan2_input")" "$(cat "$hwmon/pwm2")"
@@ -56,11 +64,11 @@ show_status() {
   fi
   printf 'EC service: %s\n' "$(unit_state "$EC_SERVICE")"
   printf 'system power-profiles-daemon: %s\n' "$(unit_state "$PPD_SERVICE")"
-  printf 'A14 PPD bridge: %s\n' "$(unit_state "$BRIDGE_SERVICE")"
+  printf 'A14 PPD fallback bridge: %s\n' "$(unit_state "$BRIDGE_SERVICE")"
   if standard_platform_profile_present; then
-    echo 'standard platform_profile backend: available'
+    echo 'GNOME profile backend: native Linux platform_profile'
   else
-    echo 'standard platform_profile backend: unavailable (optional bridge can be enabled)'
+    echo 'GNOME profile backend: A14 PPD-compatible fallback (when installed/enabled)'
   fi
 }
 
@@ -81,7 +89,6 @@ bridge_enable() {
     exit 1
   }
   need_driver
-  echo "Enabling the fallback replaces power-profiles-daemon while active."
   systemctl mask --now "$PPD_SERVICE" 2>/dev/null || true
   systemctl unmask "$BRIDGE_SERVICE" 2>/dev/null || true
   systemctl enable --now "$BRIDGE_SERVICE"
@@ -96,25 +103,49 @@ bridge_disable() {
   bridge_status
 }
 
+refresh_backend() {
+  need_root
+  if [ -x /usr/libexec/asus-zenbook-a14-profile-integration ]; then
+    /usr/libexec/asus-zenbook-a14-profile-integration
+  elif [ -x "$(dirname "$0")/asus-zenbook-a14-profile-integration" ]; then
+    "$(dirname "$0")/asus-zenbook-a14-profile-integration"
+  else
+    echo 'A14 profile integration helper is not installed.' >&2
+    exit 1
+  fi
+}
+
 usage() {
   cat <<'USAGE'
 Usage:
   asus-a14-control status
-  sudo asus-a14-control profile quiet|balanced|performance
+  sudo asus-a14-control profile quiet|power-saver|balanced|performance|full-speed
   sudo asus-a14-control auto
   sudo asus-a14-control manual PWM
   sudo asus-a14-control fan left|right PWM
   sudo asus-a14-control backlight 0|1|2|3
+  sudo asus-a14-control profile-backend refresh
   asus-a14-control ppd-bridge status
   sudo asus-a14-control ppd-bridge enable
   sudo asus-a14-control ppd-bridge disable
 
-Manual PWM values are 75-255. A kernel safety monitor restores automatic
-fan control if temperatures become unsafe or temperature readings fail.
+Named policies:
+  quiet       Acoustic-first: strong CPU QoS cap + native Quiet fan curve.
+              If temperature becomes genuinely unsafe, CPU throttling remains
+              active while firmware cooling is temporarily promoted to Turbo.
+  power-saver Normal firmware fan curve + moderate CPU QoS cap; maps to GNOME
+              Power Saver / Linux low-power.
+  balanced    Native Normal curve with no artificial CPU cap.
+  performance Native Turbo curve with no artificial CPU cap.
+  full-speed  Native Full Speed policy + literal PWM 255, with no artificial
+              CPU cap. Hardware thermal protection remains in force.
 
-The PPD bridge is only a fallback for kernels that cannot expose this driver's
-standard platform_profile device. It conflicts with power-profiles-daemon and
-is never enabled automatically.
+Direct manual PWM values are 75-255 and are treated as CUSTOM. A kernel safety
+monitor returns CUSTOM manual control to firmware AUTO if temperatures become
+unsafe or temperature readings repeatedly fail.
+
+The installer automatically selects native Linux platform_profile for GNOME
+when available and otherwise enables the PPD-compatible fallback bridge.
 USAGE
 }
 
@@ -125,7 +156,12 @@ case "$cmd" in
     ;;
   profile)
     need_driver; need_root
-    case "${2:-}" in quiet|balanced|performance) printf '%s\n' "$2" >"$profile_path";; *) usage; exit 2;; esac
+    case "${2:-}" in
+      quiet|power-saver|balanced|performance|full-speed)
+        printf '%s\n' "$2" >"$profile_path"
+        ;;
+      *) usage; exit 2 ;;
+    esac
     show_status
     ;;
   auto)
@@ -160,6 +196,9 @@ case "$cmd" in
     need_root
     level=${2:-}
     case "$level" in 0|1|2|3) printf '%s\n' "$level" >/sys/class/leds/asus::kbd_backlight/brightness;; *) usage; exit 2;; esac
+    ;;
+  profile-backend)
+    case "${2:-}" in refresh) refresh_backend;; *) usage; exit 2;; esac
     ;;
   ppd-bridge)
     case "${2:-status}" in
