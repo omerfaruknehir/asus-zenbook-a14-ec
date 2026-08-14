@@ -3,14 +3,22 @@
 # Compare the recovered A14 native firmware profiles under a controlled CPU
 # load. This touches only the driver's profile sysfs interface and reads
 # hwmon/cpufreq/thermal state. It performs no raw EC/MMIO access.
+#
+# Each profile gets a fresh load interval from a cooled balanced baseline. This
+# avoids the previous continuous-load temperature ramp, which reached 85.1 C
+# during quiet before performance/full-speed could be tested.
 
 PROFILE=""
 HWMON=""
 LOAD_PIDS=""
-STOPPED=0
-CUTOFF_MC=85000
-SAMPLES_PER_PROFILE=5
-SAMPLE_INTERVAL=2
+CUTOFF_MC=${A14_CUTOFF_MC:-82000}
+COOLDOWN_TARGET_MC=${A14_COOLDOWN_TARGET_MC:-65000}
+COOLDOWN_MAX_S=${A14_COOLDOWN_MAX_S:-60}
+SAMPLES_PER_PROFILE=${A14_SAMPLES_PER_PROFILE:-4}
+SAMPLE_INTERVAL=${A14_SAMPLE_INTERVAL:-2}
+LOAD_THREADS=${A14_LOAD_THREADS:-6}
+ATTEMPTED=0
+CUTOFF_COUNT=0
 
 say()
 {
@@ -70,7 +78,8 @@ hottest_thermal()
 cpu_freq_summary()
 {
     vals=""
-    for f in /sys/devices/system/cpu/cpufreq/policy*/scaling_cur_freq; do
+    for f in /sys/devices/system/cpu/cpufreq/policy*/scaling_cur_freq \
+             /sys/devices/system/cpu/cpu*/cpufreq/scaling_cur_freq; do
         if [ -r "$f" ]; then
             v=$(cat "$f" 2>/dev/null)
             case "$v" in
@@ -98,15 +107,25 @@ cpu_freq_summary()
 
 stop_load()
 {
-    if [ "$STOPPED" -eq 0 ]; then
-        for p in $LOAD_PIDS; do
-            kill "$p" 2>/dev/null || true
-        done
-        for p in $LOAD_PIDS; do
-            wait "$p" 2>/dev/null || true
-        done
-        STOPPED=1
-    fi
+    for p in $LOAD_PIDS; do
+        kill "$p" 2>/dev/null || true
+    done
+    for p in $LOAD_PIDS; do
+        wait "$p" 2>/dev/null || true
+    done
+    LOAD_PIDS=""
+}
+
+start_load()
+{
+    stop_load
+    i=0
+    while [ "$i" -lt "$LOAD_THREADS" ]; do
+        yes >/dev/null &
+        LOAD_PIDS="$LOAD_PIDS $!"
+        i=$((i + 1))
+    done
+    say "load_started=true threads=$LOAD_THREADS"
 }
 
 restore_balanced()
@@ -155,18 +174,53 @@ sample()
     esac
 
     if [ "$hottest" -ge "$CUTOFF_MC" ]; then
-        say "thermal_cutoff=true hottest_mc=$hottest cutoff_mc=$CUTOFF_MC"
+        say "thermal_cutoff=true profile=$requested hottest_mc=$hottest cutoff_mc=$CUTOFF_MC"
         return 1
     fi
     return 0
+}
+
+wait_for_cool_baseline()
+{
+    stop_load
+    restore_balanced
+
+    waited=0
+    while [ "$waited" -le "$COOLDOWN_MAX_S" ]; do
+        thermal=$(hottest_thermal)
+        system_temp=$(printf '%s' "$thermal" | awk '{print $1}')
+        system_zone=$(printf '%s' "$thermal" | cut -d' ' -f2-)
+        case "$system_temp" in
+            ''|*[!0-9]*)
+                say "cooldown_temp_unavailable=true"
+                return 0
+                ;;
+        esac
+
+        if [ "$system_temp" -le "$COOLDOWN_TARGET_MC" ]; then
+            say "cooldown_ready=true temp_mc=$system_temp zone=$system_zone waited_s=$waited"
+            return 0
+        fi
+
+        if [ "$waited" -eq 0 ] || [ $((waited % 10)) -eq 0 ]; then
+            say "cooldown_wait temp_mc=$system_temp zone=$system_zone target_mc=$COOLDOWN_TARGET_MC waited_s=$waited"
+        fi
+        sleep 2
+        waited=$((waited + 2))
+    done
+
+    say "cooldown_ready=false target_mc=$COOLDOWN_TARGET_MC max_wait_s=$COOLDOWN_MAX_S"
+    return 1
 }
 
 run_profile()
 {
     requested=$1
 
+    wait_for_cool_baseline || return 2
+
     say ""
-    say "===== PROFILE $requested UNDER LOAD ====="
+    say "===== PROFILE $requested FRESH LOAD ====="
     printf '%s\n' "$requested" > "$PROFILE" 2>/dev/null
     rc=$?
     say "profile_write_rc=$rc"
@@ -174,12 +228,24 @@ run_profile()
         return 1
     fi
 
+    start_load
+    sleep 2
+
     n=1
     while [ "$n" -le "$SAMPLES_PER_PROFILE" ]; do
         sleep "$SAMPLE_INTERVAL"
-        sample "$requested" "$n" || return 1
+        sample "$requested" "$n"
+        sample_rc=$?
+        if [ "$sample_rc" -ne 0 ]; then
+            stop_load
+            restore_balanced
+            return 3
+        fi
         n=$((n + 1))
     done
+
+    stop_load
+    restore_balanced
     return 0
 }
 
@@ -200,33 +266,44 @@ if [ "$ok" -eq 1 ]; then
 fi
 
 if [ "$ok" -eq 1 ]; then
-    say "profile_choices=$(cat "$(dirname "$PROFILE")/profile_choices" 2>/dev/null)"
-    say "thermal_cutoff_mc=$CUTOFF_MC"
-
-    cpu_count=$(getconf _NPROCESSORS_ONLN 2>/dev/null)
-    case "$cpu_count" in
-        ''|*[!0-9]*) cpu_count=1 ;;
+    online=$(getconf _NPROCESSORS_ONLN 2>/dev/null)
+    case "$online" in
+        ''|*[!0-9]*) online=1 ;;
     esac
-    if [ "$cpu_count" -gt 12 ]; then
-        cpu_count=12
+    case "$LOAD_THREADS" in
+        ''|*[!0-9]*) LOAD_THREADS=6 ;;
+    esac
+    if [ "$LOAD_THREADS" -lt 1 ]; then
+        LOAD_THREADS=1
+    fi
+    if [ "$LOAD_THREADS" -gt "$online" ]; then
+        LOAD_THREADS=$online
     fi
 
-    say "load_threads=$cpu_count"
-    i=0
-    while [ "$i" -lt "$cpu_count" ]; do
-        yes >/dev/null &
-        LOAD_PIDS="$LOAD_PIDS $!"
-        i=$((i + 1))
-    done
+    say "profile_choices=$(cat "$(dirname "$PROFILE")/profile_choices" 2>/dev/null)"
+    say "thermal_cutoff_mc=$CUTOFF_MC"
+    say "cooldown_target_mc=$COOLDOWN_TARGET_MC"
+    say "samples_per_profile=$SAMPLES_PER_PROFILE interval_s=$SAMPLE_INTERVAL"
+    say "load_threads=$LOAD_THREADS online_cpus=$online"
 
-    say "load_started=true"
-    sleep 4
-
-    # Alternate every experimental policy with balanced. This reduces the
-    # chance that a simple temperature ramp is mistaken for a profile effect.
-    for requested in balanced quiet balanced performance balanced full-speed balanced; do
+    for requested in balanced quiet performance full-speed; do
         if [ "$ok" -eq 1 ]; then
-            run_profile "$requested" || ok=0
+            ATTEMPTED=$((ATTEMPTED + 1))
+            run_profile "$requested"
+            rc=$?
+            case "$rc" in
+                0)
+                    say "profile_capture=$requested complete"
+                    ;;
+                3)
+                    CUTOFF_COUNT=$((CUTOFF_COUNT + 1))
+                    say "profile_capture=$requested stopped_at_thermal_cutoff"
+                    ;;
+                *)
+                    say "profile_capture=$requested failed rc=$rc"
+                    ok=0
+                    ;;
+            esac
         fi
     done
 fi
@@ -246,9 +323,14 @@ fi
 thermal=$(hottest_thermal)
 say "final_system_max_temp_mc=$(printf '%s' "$thermal" | awk '{print $1}')"
 say "final_system_max_zone=$(printf '%s' "$thermal" | cut -d' ' -f2-)"
+say "profiles_attempted=$ATTEMPTED thermal_cutoff_profiles=$CUTOFF_COUNT"
 
-if [ "$ok" -eq 1 ]; then
-    say "A14_EC_PROFILE_LOAD_CAPTURE=COMPLETE"
+if [ "$ok" -eq 1 ] && [ "$ATTEMPTED" -eq 4 ]; then
+    if [ "$CUTOFF_COUNT" -eq 0 ]; then
+        say "A14_EC_PROFILE_LOAD_CAPTURE=COMPLETE"
+    else
+        say "A14_EC_PROFILE_LOAD_CAPTURE=COMPLETE_WITH_CUTOFF"
+    fi
 else
     say "A14_EC_PROFILE_LOAD_CAPTURE=STOPPED"
 fi
