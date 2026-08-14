@@ -120,8 +120,8 @@ replace_once(
     "platform low-power getter",
 )
 replace_once(
-    '''\tswitch (profile) {\n''',
-    '''\tswitch (profile) {\n\tcase PLATFORM_PROFILE_LOW_POWER:\n\t\tmapped = ASUS_EC_PROFILE_POWER_SAVER;\n\t\tbreak;\n''',
+    '''\tenum asus_ec_profile mapped;\n\tint ret;\n\n\tswitch (profile) {\n''',
+    '''\tenum asus_ec_profile mapped;\n\tint ret;\n\n\tswitch (profile) {\n\tcase PLATFORM_PROFILE_LOW_POWER:\n\t\tmapped = ASUS_EC_PROFILE_POWER_SAVER;\n\t\tbreak;\n''',
     "platform low-power setter",
 )
 
