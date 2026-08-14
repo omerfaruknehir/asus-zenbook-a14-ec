@@ -1,15 +1,15 @@
 #!/bin/sh
 
 # Compare the recovered A14 native firmware profiles under a controlled CPU
-# load.  This touches only the driver's profile sysfs interface and reads
-# hwmon/cpufreq/thermal state.  It performs no raw EC/MMIO access.
+# load. This touches only the driver's profile sysfs interface and reads
+# hwmon/cpufreq/thermal state. It performs no raw EC/MMIO access.
 
 PROFILE=""
 HWMON=""
 LOAD_PIDS=""
 STOPPED=0
 CUTOFF_MC=85000
-SAMPLES_PER_PROFILE=7
+SAMPLES_PER_PROFILE=5
 SAMPLE_INTERVAL=2
 
 say()
@@ -40,6 +40,31 @@ read_num()
     if [ -r "$1" ]; then
         cat "$1" 2>/dev/null
     fi
+}
+
+hottest_thermal()
+{
+    hottest=-1
+    hottest_name=none
+
+    for z in /sys/class/thermal/thermal_zone*; do
+        [ -r "$z/temp" ] || continue
+        t=$(cat "$z/temp" 2>/dev/null)
+        case "$t" in
+            ''|*[!0-9]*) continue ;;
+        esac
+
+        if [ "$t" -gt "$hottest" ]; then
+            hottest=$t
+            if [ -r "$z/type" ]; then
+                hottest_name=$(cat "$z/type" 2>/dev/null)
+            else
+                hottest_name=$(basename "$z")
+            fi
+        fi
+    done
+
+    printf '%s %s' "$hottest" "$hottest_name"
 }
 
 cpu_freq_summary()
@@ -106,21 +131,55 @@ sample()
     profile=$(cat "$PROFILE" 2>/dev/null)
     fan1=$(read_num "$HWMON/fan1_input")
     fan2=$(read_num "$HWMON/fan2_input")
-    temp=$(read_num "$HWMON/temp1_input")
+    ec_temp=$(read_num "$HWMON/temp1_input")
     pwm1=$(read_num "$HWMON/pwm1")
     pwm2=$(read_num "$HWMON/pwm2")
     freq=$(cpu_freq_summary)
+    thermal=$(hottest_thermal)
+    system_temp=$(printf '%s' "$thermal" | awk '{print $1}')
+    system_zone=$(printf '%s' "$thermal" | cut -d' ' -f2-)
 
-    say "sample profile_requested=$requested profile_reported=${profile:-?} n=$index temp_mc=${temp:-?} fan1_rpm=${fan1:-?} fan2_readout=${fan2:-?} pwm1=${pwm1:-?} pwm2=${pwm2:-?} $freq"
+    say "sample profile_requested=$requested profile_reported=${profile:-?} n=$index ec_temp_mc=${ec_temp:-?} system_max_temp_mc=${system_temp:-?} system_max_zone=${system_zone:-?} fan1_rpm=${fan1:-?} fan2_readout=${fan2:-?} pwm1=${pwm1:-?} pwm2=${pwm2:-?} $freq"
 
-    case "$temp" in
-        ''|*[!0-9]*) return 0 ;;
+    hottest=$system_temp
+    case "$hottest" in
+        ''|*[!0-9]*) hottest=-1 ;;
+    esac
+    case "$ec_temp" in
+        ''|*[!0-9]*) ;;
+        *)
+            if [ "$ec_temp" -gt "$hottest" ]; then
+                hottest=$ec_temp
+            fi
+            ;;
     esac
 
-    if [ "$temp" -ge "$CUTOFF_MC" ]; then
-        say "thermal_cutoff=true temp_mc=$temp cutoff_mc=$CUTOFF_MC"
+    if [ "$hottest" -ge "$CUTOFF_MC" ]; then
+        say "thermal_cutoff=true hottest_mc=$hottest cutoff_mc=$CUTOFF_MC"
         return 1
     fi
+    return 0
+}
+
+run_profile()
+{
+    requested=$1
+
+    say ""
+    say "===== PROFILE $requested UNDER LOAD ====="
+    printf '%s\n' "$requested" > "$PROFILE" 2>/dev/null
+    rc=$?
+    say "profile_write_rc=$rc"
+    if [ "$rc" -ne 0 ]; then
+        return 1
+    fi
+
+    n=1
+    while [ "$n" -le "$SAMPLES_PER_PROFILE" ]; do
+        sleep "$SAMPLE_INTERVAL"
+        sample "$requested" "$n" || return 1
+        n=$((n + 1))
+    done
     return 0
 }
 
@@ -163,27 +222,11 @@ if [ "$ok" -eq 1 ]; then
     say "load_started=true"
     sleep 4
 
-    for requested in quiet balanced performance full-speed balanced; do
+    # Alternate every experimental policy with balanced. This reduces the
+    # chance that a simple temperature ramp is mistaken for a profile effect.
+    for requested in balanced quiet balanced performance balanced full-speed balanced; do
         if [ "$ok" -eq 1 ]; then
-            say ""
-            say "===== PROFILE $requested UNDER LOAD ====="
-            printf '%s\n' "$requested" > "$PROFILE" 2>/dev/null
-            rc=$?
-            say "profile_write_rc=$rc"
-            if [ "$rc" -ne 0 ]; then
-                ok=0
-            else
-                n=1
-                while [ "$n" -le "$SAMPLES_PER_PROFILE" ] && [ "$ok" -eq 1 ]; do
-                    sleep "$SAMPLE_INTERVAL"
-                    sample "$requested" "$n"
-                    rc=$?
-                    if [ "$rc" -ne 0 ]; then
-                        ok=0
-                    fi
-                    n=$((n + 1))
-                done
-            fi
+            run_profile "$requested" || ok=0
         fi
     done
 fi
@@ -197,9 +240,12 @@ if [ -n "$PROFILE" ]; then
     say "final_profile=$(cat "$PROFILE" 2>/dev/null)"
 fi
 if [ -n "$HWMON" ]; then
-    say "final_temp_mc=$(read_num "$HWMON/temp1_input")"
+    say "final_ec_temp_mc=$(read_num "$HWMON/temp1_input")"
     say "final_fan1_rpm=$(read_num "$HWMON/fan1_input")"
 fi
+thermal=$(hottest_thermal)
+say "final_system_max_temp_mc=$(printf '%s' "$thermal" | awk '{print $1}')"
+say "final_system_max_zone=$(printf '%s' "$thermal" | cut -d' ' -f2-)"
 
 if [ "$ok" -eq 1 ]; then
     say "A14_EC_PROFILE_LOAD_CAPTURE=COMPLETE"
