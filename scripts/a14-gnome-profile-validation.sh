@@ -29,6 +29,8 @@ if command -v gnome-shell >/dev/null 2>&1; then
 else
     say "gnome_shell=not-installed"
 fi
+say "xdg_current_desktop=${XDG_CURRENT_DESKTOP:-unset}"
+say "xdg_session_type=${XDG_SESSION_TYPE:-unset}"
 
 if ! command -v busctl >/dev/null 2>&1; then
     say "ERROR: busctl is required"
@@ -110,28 +112,83 @@ say "===== A14 QUICK SETTINGS EXTENSION ====="
 extdir=/usr/share/gnome-shell/extensions/$UUID
 if [ -r "$extdir/metadata.json" ] && [ -r "$extdir/extension.js" ]; then
     say "extension_payload=installed"
+    say "extension_dir=$extdir"
+    ls -ld "$extdir" 2>/dev/null || true
+    ls -l "$extdir/metadata.json" "$extdir/extension.js" 2>/dev/null || true
+    if command -v python3 >/dev/null 2>&1; then
+        python3 - "$extdir/metadata.json" <<'PY' 2>&1 || true
+import json, sys
+p = sys.argv[1]
+try:
+    m = json.load(open(p, encoding='utf-8'))
+    print('extension_metadata_uuid=' + str(m.get('uuid')))
+    print('extension_metadata_shell_versions=' + ','.join(map(str, m.get('shell-version', []))))
+except Exception as e:
+    print('extension_metadata_error=' + repr(e))
+PY
+    fi
 else
     say "ERROR: extension payload missing"
     ok=0
 fi
 
+if command -v gsettings >/dev/null 2>&1; then
+    say "disable_user_extensions=$(gsettings get org.gnome.shell disable-user-extensions 2>/dev/null || echo unavailable)"
+    say "enabled_extensions=$(gsettings get org.gnome.shell enabled-extensions 2>/dev/null || echo unavailable)"
+fi
+
 if command -v gnome-extensions >/dev/null 2>&1; then
+    discovered=0
     if gnome-extensions list 2>/dev/null | grep -qx "$UUID"; then
+        discovered=1
         say "extension_discovered=true"
-        gnome-extensions enable "$UUID" >/dev/null 2>&1 || true
-        if gnome-extensions info "$UUID" 2>/dev/null | grep -q 'State: ENABLED'; then
-            say "extension_enabled=true"
-        else
-            say "extension_enabled=false"
-            say "extension_note=log_out_and_back_in_once_if_this_package_was_just_installed"
-        fi
     else
         say "extension_discovered=false"
-        say "extension_note=GNOME_Shell_must_start_a_new_session_once_to_scan_the_new_system_extension"
+    fi
+
+    say "----- gnome-extensions info BEFORE enable -----"
+    info_before=$(gnome-extensions info "$UUID" 2>&1)
+    info_before_rc=$?
+    say "info_before_rc=$info_before_rc"
+    printf '%s\n' "$info_before"
+
+    if [ "$discovered" -eq 1 ]; then
+        gnome-extensions enable "$UUID" >/tmp/a14-gnome-enable.$$ 2>&1
+        enable_rc=$?
+        say "extension_enable_rc=$enable_rc"
+        if [ -s /tmp/a14-gnome-enable.$$ ]; then
+            sed 's/^/extension_enable_output=/' /tmp/a14-gnome-enable.$$
+        fi
+        rm -f /tmp/a14-gnome-enable.$$
+        sleep 1
+
+        say "----- gnome-extensions info AFTER enable -----"
+        info_after=$(gnome-extensions info "$UUID" 2>&1)
+        info_after_rc=$?
+        say "info_after_rc=$info_after_rc"
+        printf '%s\n' "$info_after"
+
+        if [ "$enable_rc" -eq 0 ] && printf '%s\n' "$info_after" | grep -Eq 'State:[[:space:]]+ENABLED'; then
+            say "extension_enabled=true"
+        else
+            say "ERROR: extension is discovered but not enabled"
+            ok=0
+        fi
+    else
+        say "ERROR: GNOME Shell did not discover the installed system extension after login/reboot"
+        ok=0
     fi
 else
-    say "gnome_extensions_cli=unavailable"
+    say "ERROR: gnome_extensions_cli=unavailable"
+    ok=0
 fi
+
+say ""
+say "===== GNOME SHELL EXTENSION LOG ====="
+journalctl --user -b --no-pager -o cat 2>/dev/null | \
+    grep -Ei 'asus-a14-modes|AsusA14|A14 Mode|extension.*error|JS ERROR|Gjs-CRITICAL' | tail -n 100 || true
+journalctl -b --no-pager -o cat /usr/bin/gnome-shell 2>/dev/null | \
+    grep -Ei 'asus-a14-modes|AsusA14|A14 Mode|extension.*error|JS ERROR|Gjs-CRITICAL' | tail -n 100 || true
 
 say ""
 say "===== EMERGENCY STATE ====="
