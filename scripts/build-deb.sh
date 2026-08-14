@@ -21,6 +21,7 @@ install -m 0644 "$repo/asus_zenbook_a14_ec.c" "$repo/hid_asus_ec.c" \
   "$repo/Kbuild" "$repo/Makefile" "$src/"
 
 for script in \
+  prepare-a14-ec.py \
   apply-a14-ec-hardening.py \
   apply-a14-native-fan-profile.py \
   apply-a14-native-hardening-compat.py \
