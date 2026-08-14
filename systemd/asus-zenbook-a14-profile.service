@@ -1,0 +1,28 @@
+[Unit]
+Description=ASUS Zenbook A14 profile D-Bus service
+Documentation=https://github.com/omerfaruknehir/asus-zenbook-a14-ec
+Requires=asus-zenbook-a14-ec.service
+After=asus-zenbook-a14-ec.service dbus.service
+ConditionPathExists=/sys/devices/platform/asus_zenbook_a14_ec/profile
+
+[Service]
+Type=dbus
+BusName=io.github.omerfaruknehir.AsusA14
+ExecStart=/usr/libexec/asus-zenbook-a14-profile-service
+Restart=on-failure
+RestartSec=2
+TimeoutStopSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ProtectControlGroups=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+ReadWritePaths=/sys/devices/platform/asus_zenbook_a14_ec
+
+[Install]
+WantedBy=multi-user.target
