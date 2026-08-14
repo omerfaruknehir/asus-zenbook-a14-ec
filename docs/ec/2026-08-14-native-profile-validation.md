@@ -7,7 +7,7 @@ Permanent hardware-validation record for the ASUS Zenbook A14 UX3407RA.
 Using `scripts/a14-ec-runtime-validation.sh` on Linux `7.1.5-070105-generic`:
 
 - local `asus_zenbook_a14_ec.ko` inserted successfully;
-- private profile node exposed `quiet balanced performance full-speed`;
+- private profile node exposed `quiet balanced performance full-speed` at the time of this capture;
 - all four recovered native profile commands returned success and read back the requested state;
 - manual PWM round-trip succeeded;
 - returning manual mode to firmware AUTO succeeded;
@@ -46,9 +46,9 @@ A 12-thread CPU load reached the 85 C system-temperature safety cutoff while tes
 
 Balanced rose from approximately 70.6 C / 4418 RPM / PWM 86 to 79.1 C / 5170 RPM / PWM 116. Quiet then remained around 4.1–4.4k RPM and PWM ~79–86 even as the hottest system sensor climbed to 85.1 C. This was the first strong evidence that quiet is behaviorally distinct from balanced.
 
-## Complete fresh-load four-mode capture
+## Complete fresh-load four-native-mode capture
 
-The revised validator used six CPU load threads, an 82 C cutoff, and a fresh/cool start for every requested profile. All four recovered firmware modes completed without reaching the cutoff:
+The revised validator used six CPU load threads, an 82 C cutoff, and a fresh/cool start for every requested native firmware profile. All four recovered firmware modes completed without reaching the cutoff:
 
 ```text
 profiles_attempted=4 thermal_cutoff_profiles=0
@@ -99,26 +99,30 @@ The hardware ordering is therefore clearly established:
 quiet < balanced << performance < full-speed
 ```
 
-Full-speed is a genuine separate firmware mode, not an alias for performance. The native full-speed curve approached but did not reach PWM 255 in this short capture; if the Linux policy promises literal maximum fan, it should layer manual PWM 255 on top of the recovered full-speed firmware thermal mode while retaining hardware thermal protection.
+Full-speed is a genuine separate firmware mode, not an alias for performance. The native full-speed curve approached but did not reach PWM 255 in this short capture.
 
-## Desired Linux policy semantics after validation
+## Linux policy derived from the hardware capture
 
-The firmware modes and desktop power modes should not be conflated. The intended Linux-facing policy is:
+The firmware modes and desktop power modes must not be conflated. Version 0.3.0 implements the following Linux-facing policy on top of the validated firmware controls:
 
-- `quiet`: acoustic-first. Use native Quiet plus a strong CPU-frequency QoS cap. Keep fans minimal; if temperature becomes genuinely dangerous despite throttling, temporarily request a more aggressive firmware cooling curve while retaining the CPU cap.
-- `power-saver` / standard `low-power`: ordinary battery-saving behavior. Use the native Normal curve plus a moderate CPU-frequency QoS cap.
+- `quiet`: acoustic-first. Native Quiet plus a strong per-cpufreq-policy QoS cap (default 45%). At the emergency threshold, retain the CPU cap but temporarily request native Turbo cooling. If cpufreq QoS is unavailable entirely, immediately force Turbo cooling and notify rather than pretending throttle-first Quiet is safe.
+- `power-saver` / standard `low-power`: ordinary battery-saving behavior. Native Normal plus a moderate per-cpufreq-policy cap (default 70%).
 - `balanced`: native Normal with no artificial CPU cap.
 - `performance`: native Turbo with no artificial CPU cap.
-- `full-speed` / standard `max-power`: native Full Speed plus literal maximum fan where requested, with no artificial CPU cap. Hardware/thermal safety throttling must never be disabled.
+- `full-speed` / standard `max-power`: native Full Speed plus literal PWM 255 on both fans, with no artificial CPU cap. Hardware/firmware/kernel thermal protection remains intact.
 - `custom`: direct hwmon manual PWM only.
+
+The 0.3.0 implementation makes named profile transitions transactional across low-level fan ownership, native firmware marker, CPU QoS, and Quiet-emergency state. Failed transitions restore the previous coherent named policy; arbitrary `custom` PWM is not replayed after unsafe transitions or sleep.
 
 ## CPU-frequency control evidence
 
 Earlier A14 captures show working per-CPU cpufreq telemetry such as `/sys/devices/system/cpu/cpuN/cpufreq/cpuinfo_avg_freq`, including values from roughly 0.8 GHz to 3.4 GHz depending on core/load. Therefore Linux `freq_qos` is the appropriate kernel mechanism for the Quiet and Power Saver caps. The first load validator looked only for `policy*/scaling_cur_freq`, so its `cpu_freq_* = unavailable` output did not prove cpufreq was absent.
 
+The 0.3.0 validator now reads the A14's real per-CPU average-frequency telemetry and also records the effective `scaling_max_freq`/native maximum values so the percentage-based QoS policy can be verified on hardware.
+
 ## Standard Linux platform_profile validation
 
-The DT `platform_profile` source transform applies cleanly, but the temporary out-of-tree framework-module build is currently blocked by an Ubuntu/mainline header-package host-tool mismatch:
+The earlier DT `platform_profile` source transform applied cleanly, but the temporary out-of-tree framework-module build was blocked by an Ubuntu/mainline header-package host-tool mismatch:
 
 ```text
 CONFIG_ACPI_PLATFORM_PROFILE=m
@@ -127,9 +131,45 @@ CONFIG_GENDWARFKSYMS=y
 ... Exec format error
 ```
 
-A later fallback also found that the packaged headers do not contain an executable `scripts/genksyms/genksyms`. This is a host-tool packaging/architecture problem, not an EC source-code compile error. The correct validation fix is to build the native ARM64 host `gendwarfksyms` from the same Linux 7.1.5 source rather than changing the kernel's module-versioning algorithm.
+A later fallback also found that the packaged headers do not contain an executable `scripts/genksyms/genksyms`. This is a host-tool packaging/architecture problem, not an EC source-code compile error.
 
-## Status after the complete capture
+The current 0.3.0 validation script no longer changes symbol-versioning schemes. If the packaged tool is wrong-architecture, it builds a native ARM64 `gendwarfksyms` from the exact Linux 7.1.5 source in an isolated output tree and overrides Kbuild's host-tool command only for this disposable framework-module validation.
+
+Expected standard mapping after runtime validation:
+
+```text
+low-power   -> power-saver
+quiet       -> quiet
+balanced    -> balanced
+performance -> performance
+max-power   -> full-speed
+```
+
+## GNOME integration implemented in 0.3.0
+
+GNOME's stock three-mode power UI maps to Power Saver / Balanced / Performance. Quiet is deliberately not collapsed into Power Saver, and Full Speed is not collapsed into Performance.
+
+The package therefore also installs a narrow root-owned system D-Bus profile service and an **A14 Mode** GNOME Quick Settings menu exposing all five modes:
+
+```text
+Quiet
+Power Saver
+Balanced
+Performance
+Full Speed
+```
+
+The desktop API exposes only named profile selection and Quiet-emergency state; it exposes no raw EC registers, manual PWM, firmware mailbox, or MMIO access.
+
+Quiet emergency state is available at:
+
+```text
+/sys/devices/platform/asus_zenbook_a14_ec/quiet_emergency
+```
+
+and kernel uevents carry a reason (`thermal`, `recovered`, `profile-change`, or `qos-unavailable`) so desktop notifications accurately explain why cooling was escalated.
+
+## Status after implementation, before 0.3.0 hardware revalidation
 
 - EC byte transport: **validated**
 - firmware AUTO ownership: **validated**
@@ -139,7 +179,11 @@ A later fallback also found that the packaged headers do not contain an executab
 - performance native mode: **validated under load**
 - full-speed native mode: **validated under load**
 - ordering `quiet < balanced << performance < full-speed`: **validated**
-- Quiet vs Power Saver OS policy separation: **to implement**
-- literal PWM-255 Full Speed policy: **to implement/validate**
-- standard Linux `platform_profile` on DT boot: **source transform ready; runtime framework validation blocked by wrong-arch packaged host tool**
-- GNOME stock Power Saver/Balanced/Performance mapping: **fallback bridge exists; Power Saver must map to the new distinct `power-saver` policy, not Quiet**
+- Quiet vs Power Saver OS policy separation: **implemented in 0.3.0; hardware revalidation pending**
+- percentage-based Quiet/Power Saver CPU QoS: **implemented; hardware revalidation pending**
+- literal PWM-255 Full Speed policy: **implemented; hardware revalidation pending**
+- Quiet thermal emergency + desktop notification: **implemented; safe threshold-based validation pending**
+- Quiet missing-QoS fail-safe: **implemented; structural/CI validation pending, runtime fault injection optional**
+- standard Linux `platform_profile`: **implementation ready; runtime validation pending with native ARM64 host-tool workaround**
+- GNOME stock three-profile mapping: **implemented; runtime validation pending**
+- GNOME all-five-mode A14 Quick Settings menu: **implemented; runtime validation pending**
