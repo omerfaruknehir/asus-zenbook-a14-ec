@@ -140,7 +140,7 @@ grep -q 'A14_PROFILE_TRANSACTIONAL' asus_zenbook_a14_ec.c
 grep -q 'ASUS_EC_PROFILE_POWER_SAVER' asus_zenbook_a14_ec.c
 grep -q 'quiet power-saver balanced performance full-speed' asus_zenbook_a14_ec.c
 grep -q 'PLATFORM_PROFILE_LOW_POWER' asus_zenbook_a14_ec.c
-grep -q 'asus_ec_set_pwm_both(ec, 255)' asus_zenbook_a14_ec.c
+grep -q 'asus_ec_enter_manual_locked(ec, 255)' asus_zenbook_a14_ec.c
 grep -q 'asus_ec_restore_profile_locked' asus_zenbook_a14_ec.c
 grep -q 'A14_QUIET_EMERGENCY=' asus_zenbook_a14_ec.c
 grep -q 'DEVICE_ATTR_RO(quiet_emergency)' asus_zenbook_a14_ec.c
