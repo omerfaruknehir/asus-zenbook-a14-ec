@@ -1,0 +1,4 @@
+# ASUS Zenbook A14 EC Quiet emergency cooling notifications.
+# The kernel driver emits KOBJ_CHANGE with A14_QUIET_EMERGENCY and A14_TEMP_MC.
+ACTION=="change", SUBSYSTEM=="platform", KERNEL=="asus_zenbook_a14_ec", ENV{A14_QUIET_EMERGENCY}=="1", RUN+="/usr/libexec/asus-zenbook-a14-emergency-notify engage $env{A14_TEMP_MC}"
+ACTION=="change", SUBSYSTEM=="platform", KERNEL=="asus_zenbook_a14_ec", ENV{A14_QUIET_EMERGENCY}=="0", RUN+="/usr/libexec/asus-zenbook-a14-emergency-notify clear $env{A14_TEMP_MC}"
