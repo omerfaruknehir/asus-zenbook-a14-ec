@@ -10,7 +10,7 @@ for cmd in sudo apt-get python3; do
 done
 
 if [ "$ok" -eq 1 ]; then
-    sudo apt-get install -y devscripts dpkg-dev build-essential patch || ok=0
+    sudo apt-get install -y devscripts dpkg-dev build-essential || ok=0
 fi
 
 if [ "$ok" -eq 1 ]; then
