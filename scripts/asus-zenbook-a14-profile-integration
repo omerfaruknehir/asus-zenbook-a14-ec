@@ -1,0 +1,28 @@
+#!/bin/sh
+
+find_a14_platform_profile()
+{
+    for d in /sys/class/platform-profile/platform-profile-*; do
+        if [ -r "$d/name" ] && [ "$(cat "$d/name" 2>/dev/null)" = asus-zenbook-a14-ec ]; then
+            printf '%s\n' "$d"
+            return
+        fi
+    done
+}
+
+pp_node=$(find_a14_platform_profile)
+
+if [ -n "$pp_node" ]; then
+    systemctl disable --now asus-zenbook-a14-ppd-bridge.service >/dev/null 2>&1 || true
+    systemctl unmask power-profiles-daemon.service >/dev/null 2>&1 || true
+    systemctl enable --now power-profiles-daemon.service >/dev/null 2>&1 || true
+    printf 'a14_profile_backend=native-platform-profile\n'
+    printf 'a14_platform_profile_node=%s\n' "$pp_node"
+else
+    systemctl stop power-profiles-daemon.service >/dev/null 2>&1 || true
+    systemctl mask power-profiles-daemon.service >/dev/null 2>&1 || true
+    systemctl enable --now asus-zenbook-a14-ppd-bridge.service >/dev/null 2>&1 || true
+    printf 'a14_profile_backend=ppd-compatible-fallback\n'
+fi
+
+true
