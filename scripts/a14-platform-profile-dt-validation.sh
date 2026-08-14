@@ -1,15 +1,11 @@
 #!/bin/sh
 
 # Build and validate the Linux platform_profile class on the DT-booted A14.
-# The upstream 7.1.5 module exports the class API but refuses module init when
-# acpi_disabled is true. The repository transform keeps the class API usable
-# while leaving ACPI-only legacy aggregate sysfs disabled on a DT boot.
-#
-# Ubuntu/mainline ARM64 header packages can contain a non-native
-# scripts/gendwarfksyms/gendwarfksyms host binary. For this temporary runtime
-# validation module only, fall back to the kernel's legacy genksyms path when
-# that host tool cannot execute. The production/in-tree kernel build should use
-# its configured symbol-versioning implementation normally.
+# Ubuntu/mainline ARM64 headers can ship an x86-64 gendwarfksyms host binary.
+# When that happens, build the same host tool natively from the exact 7.1.5
+# source and override Kbuild's `gendwarfksyms` command for this disposable
+# framework-module validation. Do not change the kernel's configured symbol
+# versioning algorithm.
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." 2>/dev/null && pwd)
 USER_HOME=$HOME
@@ -19,19 +15,22 @@ if [ -n "${SUDO_USER:-}" ] && command -v getent >/dev/null 2>&1; then
         USER_HOME=$resolved_home
     fi
 fi
+
 KERNEL_SRC=${A14_KERNEL_SRC:-$USER_HOME/Downloads/linux-7.1.5-a14-mainline}
 KBUILD=/lib/modules/$(uname -r)/build
 BUILD_DIR=$ROOT/.platform-profile-dt-build
+HOST_BUILD=$ROOT/.platform-profile-host-build
 PP_SRC=$KERNEL_SRC/drivers/acpi/platform_profile.c
 PP_KO=$BUILD_DIR/platform_profile.ko
 EC_KO=$ROOT/asus_zenbook_a14_ec.ko
-GENDWARFKSYMS=$KBUILD/scripts/gendwarfksyms/gendwarfksyms
-GENKSYMS=$KBUILD/scripts/genksyms/genksyms
+PACKAGED_GDW=$KBUILD/scripts/gendwarfksyms/gendwarfksyms
+NATIVE_GDW=$HOST_BUILD/scripts/gendwarfksyms/gendwarfksyms
 ok=1
 loaded_pp=0
 loaded_ec=0
 PP_NODE=""
 SYMVERS_MODE=kernel-default
+GENDWARF_OVERRIDE=""
 
 say()
 {
@@ -90,16 +89,16 @@ if [ "$ok" -eq 1 ]; then
         ok=0
     fi
     if [ ! -r "$EC_KO" ]; then
-        say "ERROR: missing $EC_KO; build the EC modules first"
+        say "ERROR: missing $EC_KO; run make first"
         ok=0
     fi
 fi
 
+config_gendwarf=unknown
 if [ "$ok" -eq 1 ]; then
     say ""
     say "===== RUNNING KERNEL CONFIG ====="
     cfg=""
-    config_gendwarf=unknown
     if [ -r "/boot/config-$(uname -r)" ]; then
         cfg=/boot/config-$(uname -r)
     elif [ -r /proc/config.gz ]; then
@@ -131,22 +130,16 @@ if [ "$ok" -eq 1 ]; then
     say ""
     say "===== SYMBOL VERSION HOST TOOL ====="
     say "config_gendwarfksyms=$config_gendwarf"
-    if command -v file >/dev/null 2>&1 && [ -e "$GENDWARFKSYMS" ]; then
-        file "$GENDWARFKSYMS" 2>/dev/null || true
+    if command -v file >/dev/null 2>&1 && [ -e "$PACKAGED_GDW" ]; then
+        file "$PACKAGED_GDW" 2>/dev/null || true
     fi
 
     if [ "$config_gendwarf" = y ]; then
-        "$GENDWARFKSYMS" --help >/dev/null 2>&1
+        "$PACKAGED_GDW" --help >/dev/null 2>&1
         gdw_rc=$?
-        say "gendwarfksyms_exec_rc=$gdw_rc"
+        say "packaged_gendwarfksyms_exec_rc=$gdw_rc"
         if [ "$gdw_rc" -ne 0 ]; then
-            # platform_profile exports symbols, which is why this tool is hit
-            # while the A14 EC/HID modules themselves built successfully.
-            # For this disposable validation module, genksyms is sufficient:
-            # the EC driver resolves the profile API dynamically with
-            # symbol_get(), so it does not carry a static modversion dependency
-            # on these newly exported symbols.
-            SYMVERS_MODE=genksyms-validation-fallback
+            SYMVERS_MODE=native-gendwarfksyms
         fi
     fi
     say "symbol_version_mode=$SYMVERS_MODE"
@@ -183,6 +176,48 @@ if [ "$ok" -eq 1 ]; then
     fi
 fi
 
+if [ "$ok" -eq 1 ] && [ "$SYMVERS_MODE" = native-gendwarfksyms ]; then
+    say ""
+    say "===== BUILD NATIVE GENDWARFKSYMS ====="
+    rm -rf "$HOST_BUILD"
+    mkdir -p "$HOST_BUILD"
+
+    # An isolated O= build keeps generated configuration and host objects out
+    # of the camera/mainline source tree. The tool itself links libdw/libelf/z.
+    make -C "$KERNEL_SRC" O="$HOST_BUILD" ARCH=arm64 defconfig
+    cfg_rc=$?
+    say "host_tool_defconfig_rc=$cfg_rc"
+    if [ "$cfg_rc" -ne 0 ]; then
+        ok=0
+    fi
+
+    if [ "$ok" -eq 1 ]; then
+        make -C "$KERNEL_SRC" O="$HOST_BUILD" ARCH=arm64 \
+            scripts/gendwarfksyms/gendwarfksyms
+        tool_rc=$?
+        say "host_tool_build_rc=$tool_rc"
+        if [ "$tool_rc" -ne 0 ] || [ ! -x "$NATIVE_GDW" ]; then
+            say "ERROR: native gendwarfksyms build failed."
+            say "If the linker reports missing elfutils/zlib headers, install: libdw-dev libelf-dev zlib1g-dev"
+            ok=0
+        fi
+    fi
+
+    if [ "$ok" -eq 1 ]; then
+        "$NATIVE_GDW" --help >/dev/null 2>&1
+        native_rc=$?
+        say "native_gendwarfksyms_exec_rc=$native_rc"
+        if command -v file >/dev/null 2>&1; then
+            file "$NATIVE_GDW" 2>/dev/null || true
+        fi
+        if [ "$native_rc" -ne 0 ]; then
+            ok=0
+        else
+            GENDWARF_OVERRIDE=$NATIVE_GDW
+        fi
+    fi
+fi
+
 if [ "$ok" -eq 1 ]; then
     rm -rf "$BUILD_DIR"
     mkdir -p "$BUILD_DIR"
@@ -193,20 +228,13 @@ EOF
 
     say ""
     say "===== BUILD PATCHED PLATFORM_PROFILE ====="
-    if [ "$SYMVERS_MODE" = genksyms-validation-fallback ]; then
-        if [ ! -x "$GENKSYMS" ]; then
-            say "ERROR: genksyms fallback binary is missing: $GENKSYMS"
-            ok=0
-            rc=127
-        else
-            make -C "$KBUILD" M="$BUILD_DIR" \
-                CONFIG_GENDWARFKSYMS= CONFIG_GENKSYMS=y modules
-            rc=$?
-        fi
+    if [ -n "$GENDWARF_OVERRIDE" ]; then
+        make -C "$KBUILD" M="$BUILD_DIR" \
+            gendwarfksyms="$GENDWARF_OVERRIDE" modules
     else
         make -C "$KBUILD" M="$BUILD_DIR" modules
-        rc=$?
     fi
+    rc=$?
     say "platform_profile_build_rc=$rc"
     if [ "$rc" -ne 0 ] || [ ! -r "$PP_KO" ]; then
         ok=0
@@ -224,15 +252,13 @@ if [ "$ok" -eq 1 ]; then
     fi
 fi
 
-if [ "$ok" -eq 1 ]; then
-    if grep -q '^platform_profile ' /proc/modules 2>/dev/null; then
-        say "existing_platform_profile_module=true"
-        modprobe -r platform_profile 2>/dev/null
-        rc=$?
-        say "platform_profile_unload_rc=$rc"
-        if [ "$rc" -ne 0 ]; then
-            ok=0
-        fi
+if [ "$ok" -eq 1 ] && grep -q '^platform_profile ' /proc/modules 2>/dev/null; then
+    say "existing_platform_profile_module=true"
+    modprobe -r platform_profile 2>/dev/null
+    rc=$?
+    say "platform_profile_unload_rc=$rc"
+    if [ "$rc" -ne 0 ]; then
+        ok=0
     fi
 fi
 
@@ -250,7 +276,7 @@ fi
 
 if [ "$ok" -eq 1 ]; then
     say "loading_local_ec=$EC_KO"
-    insmod "$EC_KO" performance_pwm=160
+    insmod "$EC_KO"
     rc=$?
     say "ec_insmod_rc=$rc"
     if [ "$rc" -ne 0 ]; then
@@ -273,12 +299,22 @@ if [ "$ok" -eq 1 ]; then
     say ""
     say "===== STANDARD CLASS API ====="
     say "name=$(cat "$PP_NODE/name" 2>/dev/null)"
-    say "choices=$(cat "$PP_NODE/choices" 2>/dev/null)"
+    choices=$(cat "$PP_NODE/choices" 2>/dev/null)
+    say "choices=$choices"
     say "profile=$(cat "$PP_NODE/profile" 2>/dev/null)"
     say "legacy_acpi_platform_profile_present=$(test -e /sys/firmware/acpi/platform_profile && echo yes || echo no)"
 
+    for required in low-power quiet balanced performance max-power; do
+        case " $choices " in
+            *" $required "*) ;;
+            *) say "ERROR: standard choice missing: $required"; ok=0 ;;
+        esac
+    done
+fi
+
+if [ "$ok" -eq 1 ]; then
     private=/sys/devices/platform/asus_zenbook_a14_ec/profile
-    for standard in balanced quiet performance max-power balanced; do
+    for standard in low-power quiet balanced performance max-power balanced; do
         say ""
         say "----- standard profile: $standard -----"
         printf '%s\n' "$standard" > "$PP_NODE/profile" 2>/dev/null
@@ -287,16 +323,14 @@ if [ "$ok" -eq 1 ]; then
         class_value=$(cat "$PP_NODE/profile" 2>/dev/null)
         private_value=$(cat "$private" 2>/dev/null)
         say "write_rc=$rc class=$class_value private=$private_value"
-        if [ "$rc" -ne 0 ]; then
-            ok=0
-            break
-        fi
-        if [ "$standard" = max-power ]; then
-            expected=full-speed
-        else
-            expected=$standard
-        fi
-        if [ "$class_value" != "$standard" ] || [ "$private_value" != "$expected" ]; then
+
+        case "$standard" in
+            low-power) expected=power-saver ;;
+            max-power) expected=full-speed ;;
+            *) expected=$standard ;;
+        esac
+
+        if [ "$rc" -ne 0 ] || [ "$class_value" != "$standard" ] || [ "$private_value" != "$expected" ]; then
             say "ERROR: standard/private profile mapping mismatch expected_private=$expected"
             ok=0
             break
@@ -306,10 +340,16 @@ fi
 
 restore_balanced
 
+if [ "$ok" -eq 1 ] && [ -x "$ROOT/scripts/asus-zenbook-a14-profile-integration" ]; then
+    say ""
+    say "===== GNOME PROFILE BACKEND ====="
+    sh "$ROOT/scripts/asus-zenbook-a14-profile-integration" || true
+fi
+
 say ""
 say "===== KERNEL LOG ====="
-journalctl -k --since '-2 minutes' --no-pager 2>/dev/null | \
-    grep -Ei 'platform.profile|platform_profile|asus_zenbook_a14_ec' | tail -n 120 || true
+journalctl -k --since '-3 minutes' --no-pager 2>/dev/null | \
+    grep -Ei 'platform.profile|platform_profile|asus_zenbook_a14_ec|Quiet emergency' | tail -n 160 || true
 
 say ""
 if [ "$ok" -eq 1 ]; then
