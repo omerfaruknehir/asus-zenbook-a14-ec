@@ -1,0 +1,132 @@
+From: ASUS Zenbook A14 Linux support
+Subject: [PATCH] power: understand A14 Quiet and Full Speed profiles
+
+GNOME Control Center 50 hard-codes exactly three power-profile enum values and
+silently ignores unknown profile names returned by power-profiles-daemon.
+Extend the existing Power Mode section to support the A14's validated five
+profiles and give every row an icon.  Quiet and Full Speed use symbolic icons
+installed by the A14 package; the standard three use GNOME's existing icons.
+
+--- a/panels/power/cc-power-profile-row.h
++++ b/panels/power/cc-power-profile-row.h
+@@ -28,9 +28,11 @@ G_BEGIN_DECLS
+ 
+ typedef enum
+ {
++  CC_POWER_PROFILE_FULL_SPEED,
+   CC_POWER_PROFILE_PERFORMANCE,
+   CC_POWER_PROFILE_BALANCED,
+   CC_POWER_PROFILE_POWER_SAVER,
++  CC_POWER_PROFILE_QUIET,
+   NUM_CC_POWER_PROFILES,
+   /* The unknown profile is intentionally not counted as a profile. It exists to handle unsupported profiles. */
+   CC_POWER_PROFILE_UNKNOWN
+--- a/panels/power/cc-power-profile-row.blp
++++ b/panels/power/cc-power-profile-row.blp
+@@ -5,6 +5,12 @@ template $CcPowerProfileRow: Adw.ActionRow {
+   activatable-widget: button;
+   use-underline: true;
+ 
++  [prefix]
++  Image icon {
++    valign: center;
++    pixel-size: 18;
++  }
++
+   [prefix]
+   CheckButton button {
+     toggled => $cc_power_profile_row_button_toggled_cb(template);
+--- a/panels/power/cc-power-profile-row.c
++++ b/panels/power/cc-power-profile-row.c
+@@ -34,6 +34,7 @@ struct _CcPowerProfileRow
+ {
+   AdwActionRow parent_instance;
+ 
++  GtkImage *icon;
+   GtkCheckButton *button;
+ 
+   CcPowerProfile power_profile;
+@@ -56,6 +57,7 @@ cc_power_profile_row_class_init (CcPowerProfileRowClass *klass)
+ 
+   gtk_widget_class_set_template_from_resource (widget_class, "/org/gnome/control-center/power/cc-power-profile-row.ui");
+ 
++  gtk_widget_class_bind_template_child (widget_class, CcPowerProfileRow, icon);
+   gtk_widget_class_bind_template_child (widget_class, CcPowerProfileRow, button);
+ 
+   gtk_widget_class_bind_template_callback (widget_class, cc_power_profile_row_button_toggled_cb);
+@@ -102,11 +104,17 @@ cc_power_profile_row_new (CcPowerProfile power_profile)
+ {
+   CcPowerProfileRow *self;
+-  const char *text, *subtext;
++  const char *text, *subtext, *icon_name;
+ 
+   self = g_object_new (CC_TYPE_POWER_PROFILE_ROW, NULL);
+ 
+   self->power_profile = power_profile;
+   switch (self->power_profile)
+     {
++      case CC_POWER_PROFILE_FULL_SPEED:
++        text = C_("Power profile", "_Full Speed");
++        subtext = _("Maximum fan cooling and no artificial CPU limit");
++        icon_name = "a14-power-profile-full-speed-symbolic";
++        break;
+       case CC_POWER_PROFILE_PERFORMANCE:
+         text = C_("Power profile", "P_erformance");
+         subtext = _("High performance and power usage");
++        icon_name = "power-profile-performance-symbolic";
+         break;
+       case CC_POWER_PROFILE_BALANCED:
+         text = C_("Power profile", "Ba_lanced");
+         subtext = _("Standard performance and power usage");
++        icon_name = "power-profile-balanced-symbolic";
+         break;
+       case CC_POWER_PROFILE_POWER_SAVER:
+         text = C_("Power profile", "P_ower Saver");
+         subtext = _("Reduced performance and power usage");
++        icon_name = "power-profile-power-saver-symbolic";
++        break;
++      case CC_POWER_PROFILE_QUIET:
++        text = C_("Power profile", "_Quiet");
++        subtext = _("Acoustic-first mode with strong CPU throttling");
++        icon_name = "a14-power-profile-quiet-symbolic";
+         break;
+       default:
+         g_assert_not_reached ();
+     }
+ 
++  gtk_image_set_from_icon_name (self->icon, icon_name);
+   adw_preferences_row_set_title (ADW_PREFERENCES_ROW (self), text);
+   adw_action_row_set_subtitle (ADW_ACTION_ROW (self), subtext);
+ 
+@@ -117,12 +125,16 @@ cc_power_profile_from_str (const char *profile)
+ {
++  if (g_strcmp0 (profile, "full-speed") == 0)
++    return CC_POWER_PROFILE_FULL_SPEED;
+   if (g_strcmp0 (profile, "power-saver") == 0)
+     return CC_POWER_PROFILE_POWER_SAVER;
+   if (g_strcmp0 (profile, "balanced") == 0)
+     return CC_POWER_PROFILE_BALANCED;
+   if (g_strcmp0 (profile, "performance") == 0)
+     return CC_POWER_PROFILE_PERFORMANCE;
++  if (g_strcmp0 (profile, "quiet") == 0)
++    return CC_POWER_PROFILE_QUIET;
+ 
+   g_warning ("Unknown power profile: %s", profile);
+ 
+@@ -134,12 +146,16 @@ cc_power_profile_to_str (CcPowerProfile profile)
+ {
+   switch (profile)
+   {
++  case CC_POWER_PROFILE_FULL_SPEED:
++    return "full-speed";
+   case CC_POWER_PROFILE_POWER_SAVER:
+     return "power-saver";
+   case CC_POWER_PROFILE_BALANCED:
+     return "balanced";
+   case CC_POWER_PROFILE_PERFORMANCE:
+     return "performance";
++  case CC_POWER_PROFILE_QUIET:
++    return "quiet";
+   default:
+     g_assert_not_reached ();
+   }
