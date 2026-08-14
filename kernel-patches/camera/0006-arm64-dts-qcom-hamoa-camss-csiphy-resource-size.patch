@@ -19,7 +19,7 @@ Signed-off-by: Ömer Faruk Nehir <92220159+omerfaruknehir@users.noreply.github.c
 diff --git a/arch/arm64/boot/dts/qcom/hamoa.dtsi b/arch/arm64/boot/dts/qcom/hamoa.dtsi
 --- a/arch/arm64/boot/dts/qcom/hamoa.dtsi
 +++ b/arch/arm64/boot/dts/qcom/hamoa.dtsi
-@@ -5553,9 +5553,9 @@ camss: isp@acb7000 {
+@@ -5553,8 +5553,8 @@ camss: isp@acb7000 {
  			      <0 0x0acca000 0 0x1000>,
  			      <0 0x0acb6000 0 0x1000>,
 -			      <0 0x0ace4000 0 0x1000>,
