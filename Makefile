@@ -5,38 +5,49 @@ PWD  := $(shell pwd)
 all modules: prepare
 	$(MAKE) -C $(KDIR) M=$(PWD) modules
 
-# The root C files are deliberately materialized by transforms. Developers can
-# therefore carry a generated source from an older branch across git pulls.
-# Compose by semantic layer instead of blindly replaying every historical
-# transform: this lets an old four-profile tree upgrade to policy-v2 without
-# forcing older transforms to match code that they already generated.
+# The root C files are materialized by transforms. A developer may therefore
+# carry generated source from an older branch across pulls. Resume from the
+# highest completed semantic layer instead of replaying historical transforms
+# against newer generated code.
 prepare:
-	@if grep -q 'static int asus_ec_force_auto_locked' asus_zenbook_a14_ec.c; then \
-		echo 'a14_ec_hardening=current'; \
+	@if grep -q 'A14_PROFILE_TRANSACTIONAL' asus_zenbook_a14_ec.c; then \
+		echo 'a14_profile_transactional=current'; \
+	elif grep -q 'A14_PROFILE_EMERGENCY_NOTIFY' asus_zenbook_a14_ec.c; then \
+		echo 'a14_profile_emergency_notify=current'; \
+		python3 scripts/apply-a14-profile-transactional.py; \
+	elif grep -q 'A14_PROFILE_POLICY_V2' asus_zenbook_a14_ec.c; then \
+		echo 'a14_profile_policy_v2=current'; \
+		python3 scripts/apply-a14-profile-emergency-notify.py && \
+		python3 scripts/apply-a14-profile-transactional.py; \
 	else \
-		python3 scripts/apply-a14-ec-hardening.py; \
+		if grep -q 'static int asus_ec_force_auto_locked' asus_zenbook_a14_ec.c; then \
+			echo 'a14_ec_hardening=current'; \
+		else \
+			python3 scripts/apply-a14-ec-hardening.py || false; \
+		fi; \
+		if grep -Eq '^#define EC_FW_WAIT_MIN_US[[:space:]]+100000$$' asus_zenbook_a14_ec.c && \
+		   grep -Eq '^#define EC_FW_WAIT_MAX_US[[:space:]]+110000$$' asus_zenbook_a14_ec.c && \
+		   grep -q 'EC_FW_FAN_PROFILE_FULL_SPEED' asus_zenbook_a14_ec.c && \
+		   grep -q 'static int asus_ec_set_native_fan_profile' asus_zenbook_a14_ec.c; then \
+			echo 'a14_native_fan_profile=current'; \
+		else \
+			python3 scripts/apply-a14-native-fan-profile.py || false; \
+		fi; \
+		python3 scripts/apply-a14-native-hardening-compat.py && \
+		python3 scripts/apply-a14-native-max-power.py && \
+		if grep -q 'EC_NATIVE_FAN1_RPM_LO' asus_zenbook_a14_ec.c; then \
+			echo 'a14_native_fan_telemetry=current'; \
+		else \
+			python3 scripts/apply-a14-native-fan-telemetry.py; \
+		fi && \
+		python3 scripts/apply-a14-profile-policy-v2.py && \
+		python3 scripts/apply-a14-profile-emergency-notify.py && \
+		python3 scripts/apply-a14-profile-transactional.py; \
 	fi
-	@if grep -Eq '^#define EC_FW_WAIT_MIN_US[[:space:]]+100000$$' asus_zenbook_a14_ec.c && \
-	   grep -Eq '^#define EC_FW_WAIT_MAX_US[[:space:]]+110000$$' asus_zenbook_a14_ec.c && \
-	   grep -q 'EC_FW_FAN_PROFILE_FULL_SPEED' asus_zenbook_a14_ec.c && \
-	   grep -q 'static int asus_ec_set_native_fan_profile' asus_zenbook_a14_ec.c; then \
-		echo 'a14_native_fan_profile=current'; \
-	else \
-		python3 scripts/apply-a14-native-fan-profile.py; \
-	fi
-	python3 scripts/apply-a14-native-hardening-compat.py
-	python3 scripts/apply-a14-native-max-power.py
-	@if grep -q 'EC_NATIVE_FAN1_RPM_LO' asus_zenbook_a14_ec.c; then \
-		echo 'a14_native_fan_telemetry=current'; \
-	else \
-		python3 scripts/apply-a14-native-fan-telemetry.py; \
-	fi
-	python3 scripts/apply-a14-profile-policy-v2.py
-	python3 scripts/apply-a14-profile-emergency-notify.py
-	python3 scripts/apply-a14-profile-transactional.py
 	python3 scripts/apply-a14-hid-fnlock.py
 	@if grep -Eq '^#define EC_FW_WAIT_MIN_US[[:space:]]+100000$$' asus_zenbook_a14_ec.c && \
 	   grep -Eq '^#define EC_FW_WAIT_MAX_US[[:space:]]+110000$$' asus_zenbook_a14_ec.c && \
+	   grep -q 'EC_NATIVE_FAN1_RPM_LO' asus_zenbook_a14_ec.c && \
 	   grep -q 'A14_PROFILE_POLICY_V2' asus_zenbook_a14_ec.c && \
 	   grep -q 'A14_PROFILE_EMERGENCY_NOTIFY' asus_zenbook_a14_ec.c && \
 	   grep -q 'A14_PROFILE_TRANSACTIONAL' asus_zenbook_a14_ec.c && \
