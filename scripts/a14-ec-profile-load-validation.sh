@@ -1,12 +1,7 @@
 #!/bin/sh
 
-# Compare the recovered A14 native firmware profiles under a controlled CPU
-# load. This touches only the driver's profile sysfs interface and reads
-# hwmon/cpufreq/thermal state. It performs no raw EC/MMIO access.
-#
-# Each profile gets a fresh load interval from a cooled balanced baseline. This
-# avoids the previous continuous-load temperature ramp, which reached 85.1 C
-# during quiet before performance/full-speed could be tested.
+# Validate the five named A14 policies under controlled CPU load. This touches
+# only normal profile/hwmon/cpufreq/thermal interfaces; no raw EC/MMIO access.
 
 PROFILE=""
 HWMON=""
@@ -19,6 +14,7 @@ SAMPLE_INTERVAL=${A14_SAMPLE_INTERVAL:-2}
 LOAD_THREADS=${A14_LOAD_THREADS:-6}
 ATTEMPTED=0
 CUTOFF_COUNT=0
+FULL_SPEED_MAX_SEEN=0
 
 say()
 {
@@ -61,7 +57,6 @@ hottest_thermal()
         case "$t" in
             ''|*[!0-9]*) continue ;;
         esac
-
         if [ "$t" -gt "$hottest" ]; then
             hottest=$t
             if [ -r "$z/type" ]; then
@@ -75,33 +70,87 @@ hottest_thermal()
     printf '%s %s' "$hottest" "$hottest_name"
 }
 
+numeric_summary()
+{
+    if [ -n "$1" ]; then
+        printf '%s\n' "$1" | awk '{
+            n=0; sum=0; max=0; min=0;
+            for (i=1; i<=NF; i++) {
+                if ($i ~ /^[0-9]+$/) {
+                    n++; sum += $i;
+                    if ($i > max) max=$i;
+                    if (min == 0 || $i < min) min=$i;
+                }
+            }
+            if (n) printf "%d %d %d", sum/n, min, max;
+        }'
+    fi
+}
+
 cpu_freq_summary()
 {
     vals=""
-    for f in /sys/devices/system/cpu/cpufreq/policy*/scaling_cur_freq \
-             /sys/devices/system/cpu/cpu*/cpufreq/scaling_cur_freq; do
+
+    # Snapdragon X Elite exposes useful average-frequency telemetry per CPU.
+    for f in /sys/devices/system/cpu/cpu*/cpufreq/cpuinfo_avg_freq; do
         if [ -r "$f" ]; then
             v=$(cat "$f" 2>/dev/null)
-            case "$v" in
-                ''|*[!0-9]*) ;;
-                *) vals="$vals $v" ;;
-            esac
+            case "$v" in ''|*[!0-9]*) ;; *) vals="$vals $v" ;; esac
         fi
     done
 
-    if [ -n "$vals" ]; then
-        printf '%s\n' "$vals" | awk '{
-            n=0; sum=0; max=0;
-            for (i=1; i<=NF; i++) {
-                if ($i ~ /^[0-9]+$/) {
-                    n++; sum += $i; if ($i > max) max=$i;
-                }
-            }
-            if (n) printf "cpu_freq_avg_khz=%d cpu_freq_max_khz=%d", sum/n, max;
-            else printf "cpu_freq_avg_khz=unavailable cpu_freq_max_khz=unavailable";
-        }'
+    # Fall back to scaling_cur_freq only if cpuinfo_avg_freq is unavailable.
+    if [ -z "$vals" ]; then
+        for f in /sys/devices/system/cpu/cpu*/cpufreq/scaling_cur_freq \
+                 /sys/devices/system/cpu/cpufreq/policy*/scaling_cur_freq; do
+            if [ -r "$f" ]; then
+                v=$(cat "$f" 2>/dev/null)
+                case "$v" in ''|*[!0-9]*) ;; *) vals="$vals $v" ;; esac
+            fi
+        done
+    fi
+
+    summary=$(numeric_summary "$vals")
+    if [ -n "$summary" ]; then
+        avg=$(printf '%s' "$summary" | awk '{print $1}')
+        min=$(printf '%s' "$summary" | awk '{print $2}')
+        max=$(printf '%s' "$summary" | awk '{print $3}')
+        printf 'cpu_freq_avg_khz=%s cpu_freq_min_khz=%s cpu_freq_max_khz=%s' "$avg" "$min" "$max"
     else
-        printf '%s' 'cpu_freq_avg_khz=unavailable cpu_freq_max_khz=unavailable'
+        printf '%s' 'cpu_freq_avg_khz=unavailable cpu_freq_min_khz=unavailable cpu_freq_max_khz=unavailable'
+    fi
+}
+
+cpu_cap_summary()
+{
+    vals=""
+    native=""
+
+    for f in /sys/devices/system/cpu/cpufreq/policy*/scaling_max_freq; do
+        if [ -r "$f" ]; then
+            v=$(cat "$f" 2>/dev/null)
+            case "$v" in ''|*[!0-9]*) ;; *) vals="$vals $v" ;; esac
+        fi
+    done
+    for f in /sys/devices/system/cpu/cpufreq/policy*/cpuinfo_max_freq; do
+        if [ -r "$f" ]; then
+            v=$(cat "$f" 2>/dev/null)
+            case "$v" in ''|*[!0-9]*) ;; *) native="$native $v" ;; esac
+        fi
+    done
+
+    cap=$(numeric_summary "$vals")
+    hw=$(numeric_summary "$native")
+    if [ -n "$cap" ]; then
+        printf 'qos_scaling_max_avg_khz=%s qos_scaling_max_min_khz=%s qos_scaling_max_max_khz=%s' \
+            "$(printf '%s' "$cap" | awk '{print $1}')" \
+            "$(printf '%s' "$cap" | awk '{print $2}')" \
+            "$(printf '%s' "$cap" | awk '{print $3}')"
+    else
+        printf 'qos_scaling_max_avg_khz=unavailable'
+    fi
+    if [ -n "$hw" ]; then
+        printf ' cpu_native_max_avg_khz=%s' "$(printf '%s' "$hw" | awk '{print $1}')"
     fi
 }
 
@@ -153,24 +202,24 @@ sample()
     ec_temp=$(read_num "$HWMON/temp1_input")
     pwm1=$(read_num "$HWMON/pwm1")
     pwm2=$(read_num "$HWMON/pwm2")
+    pwm_enable=$(read_num "$HWMON/pwm1_enable")
     freq=$(cpu_freq_summary)
+    caps=$(cpu_cap_summary)
     thermal=$(hottest_thermal)
     system_temp=$(printf '%s' "$thermal" | awk '{print $1}')
     system_zone=$(printf '%s' "$thermal" | cut -d' ' -f2-)
 
-    say "sample profile_requested=$requested profile_reported=${profile:-?} n=$index ec_temp_mc=${ec_temp:-?} system_max_temp_mc=${system_temp:-?} system_max_zone=${system_zone:-?} fan1_rpm=${fan1:-?} fan2_readout=${fan2:-?} pwm1=${pwm1:-?} pwm2=${pwm2:-?} $freq"
+    say "sample profile_requested=$requested profile_reported=${profile:-?} n=$index ec_temp_mc=${ec_temp:-?} system_max_temp_mc=${system_temp:-?} system_max_zone=${system_zone:-?} fan1_rpm=${fan1:-?} fan2_readout=${fan2:-?} pwm1=${pwm1:-?} pwm2=${pwm2:-?} pwm1_enable=${pwm_enable:-?} $freq $caps"
+
+    if [ "$requested" = full-speed ] && [ "$pwm1" = 255 ] && [ "$pwm2" = 255 ]; then
+        FULL_SPEED_MAX_SEEN=1
+    fi
 
     hottest=$system_temp
-    case "$hottest" in
-        ''|*[!0-9]*) hottest=-1 ;;
-    esac
+    case "$hottest" in ''|*[!0-9]*) hottest=-1 ;; esac
     case "$ec_temp" in
         ''|*[!0-9]*) ;;
-        *)
-            if [ "$ec_temp" -gt "$hottest" ]; then
-                hottest=$ec_temp
-            fi
-            ;;
+        *) if [ "$ec_temp" -gt "$hottest" ]; then hottest=$ec_temp; fi ;;
     esac
 
     if [ "$hottest" -ge "$CUTOFF_MC" ]; then
@@ -184,24 +233,20 @@ wait_for_cool_baseline()
 {
     stop_load
     restore_balanced
-
     waited=0
+
     while [ "$waited" -le "$COOLDOWN_MAX_S" ]; do
         thermal=$(hottest_thermal)
         system_temp=$(printf '%s' "$thermal" | awk '{print $1}')
         system_zone=$(printf '%s' "$thermal" | cut -d' ' -f2-)
         case "$system_temp" in
-            ''|*[!0-9]*)
-                say "cooldown_temp_unavailable=true"
-                return 0
-                ;;
+            ''|*[!0-9]*) say "cooldown_temp_unavailable=true"; return 0 ;;
         esac
 
         if [ "$system_temp" -le "$COOLDOWN_TARGET_MC" ]; then
             say "cooldown_ready=true temp_mc=$system_temp zone=$system_zone waited_s=$waited"
             return 0
         fi
-
         if [ "$waited" -eq 0 ] || [ $((waited % 10)) -eq 0 ]; then
             say "cooldown_wait temp_mc=$system_temp zone=$system_zone target_mc=$COOLDOWN_TARGET_MC waited_s=$waited"
         fi
@@ -216,7 +261,6 @@ wait_for_cool_baseline()
 run_profile()
 {
     requested=$1
-
     wait_for_cool_baseline || return 2
 
     say ""
@@ -228,6 +272,7 @@ run_profile()
         return 1
     fi
 
+    say "after_write_caps=$(cpu_cap_summary)"
     start_load
     sleep 2
 
@@ -266,43 +311,38 @@ if [ "$ok" -eq 1 ]; then
 fi
 
 if [ "$ok" -eq 1 ]; then
-    online=$(getconf _NPROCESSORS_ONLN 2>/dev/null)
-    case "$online" in
-        ''|*[!0-9]*) online=1 ;;
-    esac
-    case "$LOAD_THREADS" in
-        ''|*[!0-9]*) LOAD_THREADS=6 ;;
-    esac
-    if [ "$LOAD_THREADS" -lt 1 ]; then
-        LOAD_THREADS=1
-    fi
-    if [ "$LOAD_THREADS" -gt "$online" ]; then
-        LOAD_THREADS=$online
-    fi
+    choices=$(cat "$(dirname "$PROFILE")/profile_choices" 2>/dev/null)
+    say "profile_choices=$choices"
+    for required in quiet power-saver balanced performance full-speed; do
+        case " $choices " in
+            *" $required "*) ;;
+            *) say "ERROR: missing profile choice: $required"; ok=0 ;;
+        esac
+    done
+fi
 
-    say "profile_choices=$(cat "$(dirname "$PROFILE")/profile_choices" 2>/dev/null)"
+if [ "$ok" -eq 1 ]; then
+    online=$(getconf _NPROCESSORS_ONLN 2>/dev/null)
+    case "$online" in ''|*[!0-9]*) online=1 ;; esac
+    case "$LOAD_THREADS" in ''|*[!0-9]*) LOAD_THREADS=6 ;; esac
+    if [ "$LOAD_THREADS" -lt 1 ]; then LOAD_THREADS=1; fi
+    if [ "$LOAD_THREADS" -gt "$online" ]; then LOAD_THREADS=$online; fi
+
     say "thermal_cutoff_mc=$CUTOFF_MC"
     say "cooldown_target_mc=$COOLDOWN_TARGET_MC"
     say "samples_per_profile=$SAMPLES_PER_PROFILE interval_s=$SAMPLE_INTERVAL"
     say "load_threads=$LOAD_THREADS online_cpus=$online"
+    say "baseline_caps=$(cpu_cap_summary)"
 
-    for requested in balanced quiet performance full-speed; do
+    for requested in quiet power-saver balanced performance full-speed; do
         if [ "$ok" -eq 1 ]; then
             ATTEMPTED=$((ATTEMPTED + 1))
             run_profile "$requested"
             rc=$?
             case "$rc" in
-                0)
-                    say "profile_capture=$requested complete"
-                    ;;
-                3)
-                    CUTOFF_COUNT=$((CUTOFF_COUNT + 1))
-                    say "profile_capture=$requested stopped_at_thermal_cutoff"
-                    ;;
-                *)
-                    say "profile_capture=$requested failed rc=$rc"
-                    ok=0
-                    ;;
+                0) say "profile_capture=$requested complete" ;;
+                3) CUTOFF_COUNT=$((CUTOFF_COUNT + 1)); say "profile_capture=$requested stopped_at_thermal_cutoff" ;;
+                *) say "profile_capture=$requested failed rc=$rc"; ok=0 ;;
             esac
         fi
     done
@@ -313,9 +353,7 @@ sleep 2
 
 say ""
 say "===== FINAL ====="
-if [ -n "$PROFILE" ]; then
-    say "final_profile=$(cat "$PROFILE" 2>/dev/null)"
-fi
+if [ -n "$PROFILE" ]; then say "final_profile=$(cat "$PROFILE" 2>/dev/null)"; fi
 if [ -n "$HWMON" ]; then
     say "final_ec_temp_mc=$(read_num "$HWMON/temp1_input")"
     say "final_fan1_rpm=$(read_num "$HWMON/fan1_input")"
@@ -324,15 +362,16 @@ thermal=$(hottest_thermal)
 say "final_system_max_temp_mc=$(printf '%s' "$thermal" | awk '{print $1}')"
 say "final_system_max_zone=$(printf '%s' "$thermal" | cut -d' ' -f2-)"
 say "profiles_attempted=$ATTEMPTED thermal_cutoff_profiles=$CUTOFF_COUNT"
+say "full_speed_pwm255_seen=$FULL_SPEED_MAX_SEEN"
 
-if [ "$ok" -eq 1 ] && [ "$ATTEMPTED" -eq 4 ]; then
+if [ "$ok" -eq 1 ] && [ "$ATTEMPTED" -eq 5 ] && [ "$FULL_SPEED_MAX_SEEN" -eq 1 ]; then
     if [ "$CUTOFF_COUNT" -eq 0 ]; then
-        say "A14_EC_PROFILE_LOAD_CAPTURE=COMPLETE"
+        say "A14_EC_PROFILE_POLICY_VALIDATION=PASS"
     else
-        say "A14_EC_PROFILE_LOAD_CAPTURE=COMPLETE_WITH_CUTOFF"
+        say "A14_EC_PROFILE_POLICY_VALIDATION=PASS_WITH_CUTOFF"
     fi
 else
-    say "A14_EC_PROFILE_LOAD_CAPTURE=STOPPED"
+    say "A14_EC_PROFILE_POLICY_VALIDATION=FAIL"
 fi
 
 true
