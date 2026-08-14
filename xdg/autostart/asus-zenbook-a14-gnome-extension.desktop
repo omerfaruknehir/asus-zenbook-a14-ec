@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=ASUS Zenbook A14 GNOME Mode Integration
+Comment=Enable the ASUS Zenbook A14 Quick Settings power-mode menu
+Exec=/usr/libexec/asus-zenbook-a14-enable-gnome-extension
+OnlyShowIn=GNOME;
+NoDisplay=true
+X-GNOME-Autostart-enabled=true
+X-GNOME-Autostart-Phase=Applications
