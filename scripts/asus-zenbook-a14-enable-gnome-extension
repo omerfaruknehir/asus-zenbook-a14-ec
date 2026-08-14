@@ -1,0 +1,15 @@
+#!/bin/sh
+
+UUID=asus-a14-modes@omerfaruknehir
+
+if ! command -v gnome-extensions >/dev/null 2>&1; then
+    true
+else
+    # A system-wide extension may not be discovered until Shell starts a new
+    # session. At login this helper runs after GNOME has scanned /usr/share.
+    if gnome-extensions list 2>/dev/null | grep -qx "$UUID"; then
+        gnome-extensions enable "$UUID" >/dev/null 2>&1 || true
+    fi
+fi
+
+true
