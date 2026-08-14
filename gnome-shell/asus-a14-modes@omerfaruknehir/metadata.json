@@ -1,0 +1,8 @@
+{
+  "uuid": "asus-a14-modes@omerfaruknehir",
+  "name": "ASUS Zenbook A14 Modes",
+  "description": "Quick Settings control for Quiet, Power Saver, Balanced, Performance and Full Speed on the ASUS Zenbook A14.",
+  "shell-version": ["45", "46", "47", "48", "49", "50"],
+  "version": 1,
+  "version-name": "0.3.0"
+}
