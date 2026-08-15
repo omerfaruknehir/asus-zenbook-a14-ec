@@ -43,8 +43,8 @@ once(
 )
 
 once(
-    '\tcancel_work_sync(&data->backlight_work);\n\tcancel_work_sync(&data->fnlock_work);\n',
-    '\tcancel_work_sync(&data->backlight_work);\n\tcancel_work_sync(&data->fnlock_work);\n\tcancel_work_sync(&data->profile_work);\n',
+    '''\tWRITE_ONCE(data->suspended, true);\n\tcancel_work_sync(&data->backlight_work);\n\tcancel_work_sync(&data->fnlock_work);\n\t(void)asus_hid_set_backlight_hw(data, 0);\n''',
+    '''\tWRITE_ONCE(data->suspended, true);\n\tcancel_work_sync(&data->backlight_work);\n\tcancel_work_sync(&data->fnlock_work);\n\tcancel_work_sync(&data->profile_work);\n\t(void)asus_hid_set_backlight_hw(data, 0);\n''',
     'suspend profile work',
 )
 
@@ -54,11 +54,9 @@ once(
     'probe profile work',
 )
 
-# The remove path contains the same pair as suspend after the Fn-lock transform.
-# At this point suspend was already expanded, so exactly one unexpanded pair remains.
 once(
-    '\tcancel_work_sync(&data->backlight_work);\n\tcancel_work_sync(&data->fnlock_work);\n\tif (data->led_registered)\n',
-    '\tcancel_work_sync(&data->backlight_work);\n\tcancel_work_sync(&data->fnlock_work);\n\tcancel_work_sync(&data->profile_work);\n\tif (data->led_registered)\n',
+    '''\tcancel_work_sync(&data->backlight_work);\n\tcancel_work_sync(&data->fnlock_work);\n\tif (data->led_registered)\n''',
+    '''\tcancel_work_sync(&data->backlight_work);\n\tcancel_work_sync(&data->fnlock_work);\n\tcancel_work_sync(&data->profile_work);\n\tif (data->led_registered)\n''',
     'remove profile work',
 )
 
