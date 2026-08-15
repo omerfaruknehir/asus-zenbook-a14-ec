@@ -13,6 +13,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Validate Resources CPU frequency repair
+        run: |
+          python3 -m py_compile desktop/resources/repair-a14-cpu-frequency.py
+          python3 desktop/resources/test-frequency-repair.py
       - name: Validate Whisper and native ASUS modes
         run: ./scripts/test-package.sh
       - name: Verify packaged profile contract
