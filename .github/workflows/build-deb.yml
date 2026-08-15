@@ -78,9 +78,9 @@ jobs:
             scripts/asus-zenbook-a14-ppd-bridge.py
           grep -Fq 'FIVE_PROFILE_ORDER = ("power-saver", "quiet", "balanced", "performance", "full-speed")' \
             scripts/asus-zenbook-a14-ppd-bridge.py
-          grep -Fq 'GLib.io_add_watch' scripts/asus-zenbook-a14-profile-service.py
+          grep -Fq 'channel.add_watch(' scripts/asus-zenbook-a14-profile-service.py
           grep -Fq 'GLib.IO_PRI' scripts/asus-zenbook-a14-profile-service.py
-          grep -Fq 'GLib.io_add_watch' scripts/asus-zenbook-a14-ppd-bridge.py
+          grep -Fq 'channel.add_watch(' scripts/asus-zenbook-a14-ppd-bridge.py
           grep -Fq 'GLib.IO_PRI' scripts/asus-zenbook-a14-ppd-bridge.py
           grep -Fq "const NATIVE_UI_MARKER = '/usr/share/asus-zenbook-a14-ec/native-gnome-five-profile';" \
             gnome-shell/asus-a14-modes@omerfaruknehir/extension.js
@@ -131,9 +131,9 @@ jobs:
           extension="$root/usr/share/gnome-shell/extensions/asus-a14-modes@omerfaruknehir/extension.js"
           control="$root/usr/sbin/asus-a14-control"
           grep -Fq 'PROFILES = ("whisper", "quiet", "normal", "turbo", "full-speed")' "$service"
-          grep -Fq 'GLib.io_add_watch' "$service"
+          grep -Fq 'channel.add_watch(' "$service"
           grep -Fq 'FIVE_PROFILE_ORDER = ("power-saver", "quiet", "balanced", "performance", "full-speed")' "$bridge"
-          grep -Fq 'GLib.io_add_watch' "$bridge"
+          grep -Fq 'channel.add_watch(' "$bridge"
           grep -Fq "const PROFILE_ORDER = ['whisper', 'quiet', 'normal', 'turbo', 'full-speed'];" "$extension"
           grep -Fq 'new ProfileOsdListener()' "$extension"
           grep -q 'osdWindowManager.show' "$extension"
