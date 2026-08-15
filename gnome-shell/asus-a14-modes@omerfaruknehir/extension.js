@@ -39,31 +39,26 @@ const PROFILE_INFO = {
     'quiet': {
         title: 'Quiet',
         icon: 'audio-volume-low-symbolic',
-        description: 'Acoustic-first · strong throttling',
+        description: 'ASUS Quiet firmware mode',
     },
-    'power-saver': {
-        title: 'Power Saver',
-        icon: 'power-profile-power-saver-symbolic',
-        description: 'Lower power use',
-    },
-    'balanced': {
-        title: 'Balanced',
+    'normal': {
+        title: 'Normal',
         icon: 'power-profile-balanced-symbolic',
-        description: 'Normal firmware policy',
+        description: 'ASUS Normal firmware mode',
     },
-    'performance': {
-        title: 'Performance',
+    'turbo': {
+        title: 'Turbo',
         icon: 'power-profile-performance-symbolic',
-        description: 'Turbo firmware policy',
+        description: 'ASUS Turbo firmware mode',
     },
     'full-speed': {
         title: 'Full Speed',
         icon: 'power-profile-performance-symbolic',
-        description: 'Maximum fan · no artificial CPU cap',
+        description: 'ASUS Full Speed firmware mode',
     },
 };
 
-const PROFILE_ORDER = ['quiet', 'power-saver', 'balanced', 'performance', 'full-speed'];
+const PROFILE_ORDER = ['quiet', 'normal', 'turbo', 'full-speed'];
 
 const A14ModeToggle = GObject.registerClass(
 class A14ModeToggle extends QuickSettings.QuickMenuToggle {
@@ -76,7 +71,7 @@ class A14ModeToggle extends QuickSettings.QuickMenuToggle {
         });
 
         this._panelIndicator = panelIndicator;
-        this._profile = 'balanced';
+        this._profile = 'normal';
         this._emergency = false;
         this._items = new Map();
         this.menuEnabled = true;
@@ -93,11 +88,6 @@ class A14ModeToggle extends QuickSettings.QuickMenuToggle {
             this._section.addMenuItem(item);
         }
 
-        this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
-        this._emergencyItem = new PopupMenu.PopupMenuItem(
-            'Quiet emergency cooling active', {reactive: false});
-        this._emergencyItem.visible = false;
-        this.menu.addMenuItem(this._emergencyItem);
         this.menu.addSettingsAction('Power Settings', 'gnome-power-panel.desktop');
 
         this._proxy = new ProfileProxy(
@@ -132,7 +122,7 @@ class A14ModeToggle extends QuickSettings.QuickMenuToggle {
                 this._setUnavailable();
                 return;
             }
-            this._profile = result?.[0] ?? 'balanced';
+            this._profile = result?.[0] ?? 'normal';
             this._sync();
         });
 
@@ -142,13 +132,6 @@ class A14ModeToggle extends QuickSettings.QuickMenuToggle {
             const available = new Set(result?.[0] ?? []);
             for (const [profile, item] of this._items)
                 item.visible = available.has(profile);
-        });
-
-        this._proxy.GetQuietEmergencyRemote((result, error) => {
-            if (error)
-                return;
-            this._emergency = Boolean(result?.[0]);
-            this._sync();
         });
     }
 
@@ -179,10 +162,8 @@ class A14ModeToggle extends QuickSettings.QuickMenuToggle {
         };
 
         this.menuEnabled = true;
-        this.subtitle = this._emergency
-            ? `${info.title} · Emergency cooling`
-            : info.title;
-        this.iconName = this._emergency ? 'dialog-warning-symbolic' : info.icon;
+        this.subtitle = info.title;
+        this.iconName = info.icon;
 
         for (const [profile, item] of this._items) {
             item.setOrnament(
@@ -191,15 +172,8 @@ class A14ModeToggle extends QuickSettings.QuickMenuToggle {
                     : PopupMenu.Ornament.NONE);
         }
 
-        this._emergencyItem.visible = this._emergency;
-        this.menu.setHeader(
-            this._emergency ? 'dialog-warning-symbolic' : info.icon,
-            this._emergency ? 'A14 Mode · Emergency cooling' : 'A14 Mode');
-
-        // Avoid a permanent extra top-bar icon. Surface one only while Quiet
-        // has escalated cooling and the user should be aware of it.
-        this._panelIndicator.icon_name = 'dialog-warning-symbolic';
-        this._panelIndicator.visible = this._emergency;
+        this.menu.setHeader(info.icon, 'A14 Mode');
+        this._panelIndicator.visible = false;
     }
 
     destroy() {
@@ -218,7 +192,7 @@ class A14Indicator extends QuickSettings.SystemIndicator {
     constructor() {
         super();
         this._indicator = this._addIndicator();
-        this._indicator.icon_name = 'dialog-warning-symbolic';
+        this._indicator.icon_name = 'power-profile-balanced-symbolic';
         this._indicator.visible = false;
 
         this._toggle = new A14ModeToggle(this._indicator);
