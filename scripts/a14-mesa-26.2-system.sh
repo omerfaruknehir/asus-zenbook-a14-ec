@@ -67,6 +67,41 @@ verify_release() {
     gpg --homedir "$gnupg" --batch --verify "$WORK_ROOT/$ARCHIVE.sig" "$WORK_ROOT/$ARCHIVE"
 }
 
+stage_paths() {
+    STAGE_PREFIX="$WORK_ROOT/stage$PREFIX"
+    STAGE_LIB="$STAGE_PREFIX/$LIBDIR"
+    STAGE_DRI="$STAGE_LIB/dri/msm_dri.so"
+    STAGE_TURNIP="$STAGE_LIB/libvulkan_freedreno.so"
+    STAGE_EGL="$STAGE_LIB/libEGL_mesa.so.0"
+    STAGE_GBM="$STAGE_LIB/libgbm.so.1"
+}
+
+stage_ready() {
+    stage_paths
+    [ -e "$STAGE_DRI" ] && \
+    [ -f "$STAGE_TURNIP" ] && \
+    [ -e "$STAGE_EGL" ] && \
+    [ -e "$STAGE_GBM" ]
+}
+
+validate_stage() {
+    stage_paths
+    [ -e "$STAGE_DRI" ] || die "Mesa stage does not contain a usable msm_dri.so"
+    [ -f "$STAGE_TURNIP" ] || die "Mesa stage does not contain Turnip libvulkan_freedreno.so"
+    [ -e "$STAGE_EGL" ] || die "Mesa stage does not contain libEGL_mesa.so.0"
+    [ -e "$STAGE_GBM" ] || die "Mesa stage does not contain libgbm.so.1"
+
+    # Mesa 26.2's Gallium DRIL install intentionally makes msm_dri.so a symlink
+    # to libdril_dri.so. `find -type f` therefore rejects a perfectly valid
+    # build. Follow the link instead and make sure the resulting object exists.
+    if [ -L "$STAGE_DRI" ]; then
+        local target
+        target=$(readlink "$STAGE_DRI")
+        [ -n "$target" ] || die "Mesa msm_dri.so symlink has an empty target"
+        say "Mesa DRI stage: msm_dri.so -> $target"
+    fi
+}
+
 build_mesa() {
     local src="$WORK_ROOT/mesa-$MESA_VERSION"
     local build="$WORK_ROOT/build"
@@ -93,11 +128,7 @@ build_mesa() {
     meson compile -C "$build" -j"$(nproc)"
     mkdir -p "$stage"
     DESTDIR="$stage" meson install -C "$build"
-
-    find "$stage" -name 'msm_dri.so' -type f | grep -q . || die "Mesa build did not produce msm_dri.so"
-    find "$stage" -name 'libvulkan_freedreno.so' -type f | grep -q . || die "Mesa build did not produce Turnip"
-    find "$stage" -name 'libEGL_mesa.so.0*' | grep -q . || die "Mesa build did not produce libEGL_mesa"
-    find "$stage" -name 'libgbm.so.1*' | grep -q . || die "Mesa build did not produce libgbm"
+    validate_stage
 }
 
 remove_previous_custom() {
@@ -119,6 +150,7 @@ install_stage() {
     local stage="$WORK_ROOT/stage"
     local stage_prefix="$stage$PREFIX"
     [ -d "$stage_prefix" ] || die "Staged /usr/local tree is missing."
+    validate_stage
 
     remove_previous_custom
 
@@ -183,9 +215,19 @@ rollback() {
 install() {
     require_host
     mkdir -p "$WORK_ROOT"
-    install_build_deps
-    verify_release
-    build_mesa
+
+    # A previous run may have completed all 1505 build targets and only failed
+    # the old regular-file-only msm_dri.so check. Reuse that complete staged
+    # tree instead of burning time recompiling it.
+    if stage_ready; then
+        say "Found a complete staged Mesa ${MESA_VERSION} build; reusing it."
+        validate_stage
+    else
+        install_build_deps
+        verify_release
+        build_mesa
+    fi
+
     install_stage
     say
     say "Mesa ${MESA_VERSION} Freedreno + Turnip installed under /usr/local."
