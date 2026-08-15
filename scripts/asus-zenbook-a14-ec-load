@@ -9,17 +9,12 @@ case "$model" in
     ;;
 esac
 
-# Hamoa/X1E exposes Oryon DVFS through the ARM SCMI Performance protocol over
-# the Qualcomm CPUCP mailbox. On distro kernels these pieces may be modules.
-# Attempt the standard chain before loading the A14 EC so Whisper can attach
-# freq_qos requests immediately. Every step is non-fatal: native ASUS modes and
-# Whisper's safe Quiet fallback remain usable if this kernel lacks CPUFreq.
+# X1E CPU DVFS is SCMI Performance over the Qualcomm CPUCP mailbox.  Ubuntu's
+# 7.1.x build carries the mailbox and cpufreq clients as modules, so make a
+# best-effort attempt to register the three Oryon cpufreq policies early.
 modprobe qcom_cpucp_mbox 2>/dev/null || true
 modprobe scmi_transport_mailbox 2>/dev/null || true
 modprobe scmi_cpufreq 2>/dev/null || true
-
-# HID support is independent of the direct EC path and is safe to load first.
-modprobe hid_asus_ec || true
 
 # The direct EC client must not probe during the earliest boot phase. Wait for
 # the Qualcomm I2C controller to be fully registered before loading it.
@@ -29,4 +24,13 @@ while [ ! -e /sys/bus/platform/devices/b94000.i2c ]; do
   [ "$i" -ge 40 ] && { echo "EC I2C controller did not appear" >&2; exit 1; }
   sleep 0.25
 done
+
+# Fn+F in the generated HID module calls asus_a14_cycle_native_profile(), which
+# is exported by the EC module.  Load EC first deliberately; relying on
+# modules.dep here could probe EC before the late-I2C guard above has completed.
 modprobe asus_zenbook_a14_ec
+if ! modprobe hid_asus_ec; then
+  echo "Failed to load A14 HID hotkey module after EC module" >&2
+  modprobe -r asus_zenbook_a14_ec 2>/dev/null || true
+  exit 1
+fi

@@ -1,0 +1,190 @@
+diff -ruN patch-old/src/ui/pages/gpu.rs patch-new/src/ui/pages/gpu.rs
+--- patch-old/src/ui/pages/gpu.rs	2026-05-30 21:34:58.000000000 +0000
++++ patch-new/src/ui/pages/gpu.rs	2026-05-30 21:48:48.284721323 +0000
+@@ -300,6 +300,7 @@
+             power_cap_max,
+             link,
+             nvidia: _,
++            msm,
+         } = gpu_data;
+ 
+         imp.gpu_usage.add_fraction_point(*usage_fraction);
+@@ -347,7 +348,16 @@
+ 
+         imp.vram_usage.add_storage_point(*used_vram, *total_vram);
+ 
+-        let mut power_string = power_usage.map_or_else(|| i18n("N/A"), convert_power);
++        let mut power_string = power_usage.map_or_else(
++            || {
++                if *msm {
++                    i18n("Not exposed")
++                } else {
++                    i18n("N/A")
++                }
++            },
++            convert_power,
++        );
+ 
+         if let Some(power_cap) = power_cap {
+             let _ = write!(power_string, " / {}", convert_power(*power_cap));
+@@ -357,12 +367,24 @@
+ 
+         set_subtitle_converted_maybe(*clock_speed, convert_frequency, &imp.gpu_clockspeed);
+ 
+-        set_subtitle_converted_maybe(*vram_speed, convert_frequency, &imp.vram_clockspeed);
++        if *msm {
++            imp.vram_clockspeed.set_subtitle(&i18n("Shared system memory"));
++        } else {
++            set_subtitle_converted_maybe(*vram_speed, convert_frequency, &imp.vram_clockspeed);
++        }
+ 
+-        set_subtitle_converted_maybe(*power_cap_max, convert_power, &imp.max_power_cap);
++        if *msm {
++            imp.max_power_cap.set_subtitle(&i18n("Not exposed"));
++        } else {
++            set_subtitle_converted_maybe(*power_cap_max, convert_power, &imp.max_power_cap);
++        }
+         imp.temperature.add_temperature_point(*temperature);
+ 
+-        set_subtitle_converted_maybe(link.as_ref(), Link::to_string, &imp.link);
++        if *msm {
++            imp.link.set_subtitle(&i18n("SoC integrated"));
++        } else {
++            set_subtitle_converted_maybe(link.as_ref(), Link::to_string, &imp.link);
++        }
+ 
+         self.set_property("usage", usage_fraction.unwrap_or(0.0));
+ 
+diff -ruN patch-old/src/utils/cpu.rs patch-new/src/utils/cpu.rs
+--- patch-old/src/utils/cpu.rs	2026-05-30 21:34:58.000000000 +0000
++++ patch-new/src/utils/cpu.rs	2026-05-30 21:48:48.282986682 +0000
+@@ -3,7 +3,7 @@
+ use lazy_regex::{Lazy, Regex, lazy_regex};
+ use log::{debug, trace, warn};
+ use std::{
+-    collections::HashMap,
++    collections::{BTreeSet, HashMap},
+     path::{Path, PathBuf},
+     sync::LazyLock,
+ };
+@@ -246,6 +246,51 @@
+     pub max_speed: Option<f64>,
+ }
+ 
++
++fn qcom_physical_topology_from_sysfs() -> (Option<usize>, Option<usize>) {
++    let mut packages = BTreeSet::new();
++    let mut cores = BTreeSet::new();
++
++    for cpu in glob("/sys/devices/system/cpu/cpu[0-9]*").unwrap().flatten() {
++        let topology = cpu.join("topology");
++        if !topology.exists() {
++            continue;
++        }
++
++        let package = read_parsed::<isize>(topology.join("physical_package_id")).unwrap_or(0);
++        let cluster = read_parsed::<isize>(topology.join("cluster_id")).unwrap_or(-1);
++        let core = read_parsed::<isize>(topology.join("core_id")).unwrap_or_else(|_| {
++            cpu.file_name()
++                .and_then(|name| name.to_string_lossy().strip_prefix("cpu").map(str::to_string))
++                .and_then(|id| id.parse::<isize>().ok())
++                .unwrap_or(-1)
++        });
++
++        packages.insert(package);
++        cores.insert((package, cluster, core));
++    }
++
++    let physical_cpus = (!cores.is_empty()).then_some(cores.len());
++    let sockets = (!packages.is_empty()).then_some(packages.len().max(1));
++
++    (physical_cpus, sockets)
++}
++
++fn fallback_virtualization_string() -> Option<String> {
++    let cpuinfo = std::fs::read_to_string("/proc/cpuinfo").ok()?;
++    let lower = cpuinfo.to_lowercase();
++
++    // ARM64 virtualization is not always reported by lscpu on device-tree boots.
++    // If the kernel exposes obvious ARM virtualization features, show that rather
++    // than leaving the CPU properties page as N/A. Otherwise be explicit that the
++    // running kernel did not report a usable value.
++    if lower.contains("\nfeatures") && (lower.contains(" vh") || lower.contains(" virt")) {
++        Some("ARM virtualization extensions".into())
++    } else {
++        Some("Not reported by kernel".into())
++    }
++}
++
+ impl CpuInfo {
+     fn parse_lscpu<S: AsRef<str>>(lscpu_output: S) -> Self {
+         let lscpu_output = lscpu_output.as_ref();
+@@ -299,13 +344,15 @@
+                 })
+             });
+ 
++        let (physical_cpus_fallback, sockets_fallback) = qcom_physical_topology_from_sysfs();
++
+         Self {
+             model_name,
+             architecture,
+             logical_cpus,
+-            physical_cpus,
+-            sockets,
+-            virtualization,
++            physical_cpus: physical_cpus.or(physical_cpus_fallback).or(logical_cpus),
++            sockets: sockets.or(sockets_fallback).or(Some(1)),
++            virtualization: virtualization.or_else(fallback_virtualization_string),
+             max_speed,
+         }
+     }
+diff -ruN patch-old/src/utils/gpu/mod.rs patch-new/src/utils/gpu/mod.rs
+--- patch-old/src/utils/gpu/mod.rs	2026-05-30 19:48:26.000000000 +0000
++++ patch-new/src/utils/gpu/mod.rs	2026-05-30 21:48:48.283825016 +0000
+@@ -62,6 +62,7 @@
+     pub link: Option<Link>,
+ 
+     pub nvidia: bool,
++    pub msm: bool,
+ }
+ 
+ impl GpuData {
+@@ -91,6 +92,7 @@
+         let link = gpu.link().ok();
+ 
+         let nvidia = matches!(gpu, Gpu::Nvidia(_));
++        let msm = matches!(gpu, Gpu::Msm(_));
+ 
+         let gpu_data = Self {
+             gpu_identifier,
+@@ -107,6 +109,7 @@
+             power_cap_max,
+             link,
+             nvidia,
++            msm,
+         };
+ 
+         trace!("Gathered GPU data for {gpu_identifier}: {gpu_data:?}");
+diff -ruN patch-old/src/utils/gpu/msm.rs patch-new/src/utils/gpu/msm.rs
+--- patch-old/src/utils/gpu/msm.rs	2026-05-30 21:34:58.000000000 +0000
++++ patch-new/src/utils/gpu/msm.rs	2026-05-30 21:48:48.284226764 +0000
+@@ -208,11 +208,17 @@
+     }
+ 
+     fn encode_usage(&self) -> Result<f64> {
+-        bail!("encode usage not implemented for MSM/Adreno")
++        // Snapdragon video encode is handled by separate media/V4L blocks, not by
++        // the DRM GPU engine. Resources has no Qualcomm video-engine backend yet,
++        // so report the GPU encoder engine as idle instead of showing N/A.
++        Ok(0.0)
+     }
+ 
+     fn decode_usage(&self) -> Result<f64> {
+-        bail!("decode usage not implemented for MSM/Adreno")
++        // Snapdragon video decode is handled by separate media/V4L blocks, not by
++        // the DRM GPU engine. Resources has no Qualcomm video-engine backend yet,
++        // so report the GPU decoder engine as idle instead of showing N/A.
++        Ok(0.0)
+     }
+ 
+     fn combined_media_engine(&self) -> Result<bool> {

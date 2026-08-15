@@ -1,0 +1,185 @@
+--- a/src/aegis_hello/capture.py
++++ b/src/aegis_hello/capture.py
+@@ -364,32 +364,117 @@
+     proc.wait(timeout=0.8)
+ 
+ 
+-def _continuous_torch_level(maximum: int, percent: float) -> int:
+-    """Convert a percentage to the LED-class torch scale without assuming units."""
+-    if maximum < 1:
+-        raise CaptureConfigurationError("HM1092 infrared torch reports no usable brightness range")
++def _continuous_torch_level(
++    maximum: int, percent: float, *, minimum: int = 1, step: int = 1
++) -> int:
++    """Convert a percentage to a real driver range and align it to its step."""
++    if maximum < minimum or minimum < 0 or step < 1:
++        raise CaptureConfigurationError("HM1092 infrared torch reports an invalid current range")
+     bounded = min(100.0, max(1.0, float(percent)))
+-    return min(maximum, max(1, int(round(maximum * bounded / 100.0))))
++    target = int(round(maximum * bounded / 100.0))
++    target = min(maximum, max(minimum, target))
++    target = minimum + int(round((target - minimum) / step)) * step
++    return min(maximum, max(minimum, target))
++
++
++def _find_v4l2_flash_device() -> str:
++    """Find the PM8550 V4L2 flash subdevice that owns Torch mode."""
++    tool = shutil.which("v4l2-ctl")
++    if not tool:
++        raise CaptureConfigurationError("v4l2-ctl is required for HM1092 continuous infrared")
++    for candidate in sorted(glob.glob("/dev/v4l-subdev*")):
++        completed = subprocess.run(
++            [tool, "-d", candidate, "--list-ctrls-menus"],
++            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, check=False, timeout=2.0,
++        )
++        controls = completed.stdout or ""
++        if completed.returncode == 0 and "led_mode" in controls and "intensity_torch_mode" in controls:
++            return candidate
++    raise CaptureConfigurationError("HM1092 V4L2 flash/torch subdevice is missing")
++
++
++def _v4l2_torch_range(device: str) -> tuple[int, int, int]:
++    tool = shutil.which("v4l2-ctl")
++    assert tool is not None
++    completed = subprocess.run(
++        [tool, "-d", device, "--list-ctrls"],
++        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False, timeout=2.0,
++    )
++    if completed.returncode != 0:
++        raise CaptureConfigurationError(
++            f"Cannot query HM1092 V4L2 torch controls: {(completed.stderr or '').strip()}"
++        )
++    match = re.search(
++        r"^\s*intensity_torch_mode\s+[^:]+:\s+min=(\d+)\s+max=(\d+)\s+step=(\d+)",
++        completed.stdout or "", re.MULTILINE,
++    )
++    if not match:
++        raise CaptureConfigurationError("HM1092 V4L2 torch current range is unavailable")
++    minimum, maximum, step = map(int, match.groups())
++    return minimum, maximum, step
++
++
++def _set_v4l2_controls(device: str, controls: str) -> None:
++    tool = shutil.which("v4l2-ctl")
++    assert tool is not None
++    completed = subprocess.run(
++        [tool, "-d", device, f"--set-ctrl={controls}"],
++        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False, timeout=2.0,
++    )
++    if completed.returncode != 0:
++        detail = (completed.stderr or completed.stdout or "V4L2 control write failed").strip()
++        raise CaptureConfigurationError(f"Cannot control HM1092 IR torch: {detail}")
++
++
++def _get_v4l2_control(device: str, control: str) -> int:
++    tool = shutil.which("v4l2-ctl")
++    assert tool is not None
++    completed = subprocess.run(
++        [tool, "-d", device, f"--get-ctrl={control}"],
++        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False, timeout=2.0,
++    )
++    if completed.returncode != 0:
++        raise CaptureConfigurationError(f"Cannot read HM1092 V4L2 control {control}")
++    match = re.search(r":\s*(-?\d+)\s*$", completed.stdout or "")
++    if not match:
++        raise CaptureConfigurationError(f"Invalid HM1092 V4L2 control value for {control}")
++    return int(match.group(1))
++
++
++def _continuous_torch_target(percent: float) -> int:
++    device = _find_v4l2_flash_device()
++    minimum, maximum, step = _v4l2_torch_range(device)
++    return _continuous_torch_level(maximum, percent, minimum=minimum, step=step)
+ 
+ 
+ def set_continuous_illumination(percent: float) -> int:
+-    """Set steady IR output through brightness/max_brightness; flash strobe stays off."""
++    """Enable real steady PM8550 Torch mode; do not emulate it with LED brightness."""
+     dev = _find_sync_device()
+     led = _find_flash_led()
+-    maximum_path = led / "max_brightness"
+-    if not maximum_path.exists():
+-        raise CaptureConfigurationError("HM1092 infrared torch control is missing max_brightness")
+-    maximum = _read_int(maximum_path)
+-    level = _continuous_torch_level(maximum, percent)
++    flash = _find_v4l2_flash_device()
++    minimum, maximum, step = _v4l2_torch_range(flash)
++    level = _continuous_torch_level(maximum, percent, minimum=minimum, step=step)
+     try:
++        # Stop the SOF-gated/strobe path first, then select the driver's dedicated
++        # continuous Torch mode and its real current control.  The A14 exposes
++        # led_mode=2 (Torch) and intensity_torch_mode in microamps.
+         _write_required(dev / "force_off", 1)
+         _write_required(led / "flash_strobe", 0)
+-        _write_required(led / "brightness", level)
+-        actual = _read_int(led / "brightness")
+-        if actual <= 0:
+-            raise CaptureConfigurationError("HM1092 infrared torch did not turn on")
++        _write_required(led / "brightness", 0)
++        _set_v4l2_controls(flash, "led_mode=0")
++        _set_v4l2_controls(flash, f"intensity_torch_mode={level}")
++        _set_v4l2_controls(flash, "led_mode=2")
++        if _get_v4l2_control(flash, "led_mode") != 2:
++            raise CaptureConfigurationError("HM1092 infrared flash driver did not enter Torch mode")
++        actual = _get_v4l2_control(flash, "intensity_torch_mode")
++        if actual < minimum:
++            raise CaptureConfigurationError("HM1092 infrared torch current did not become active")
+         return actual
+     except Exception:
++        try:
++            _set_v4l2_controls(flash, "led_mode=0")
++        except Exception:
++            pass
+         _write(dev / "force_off", 1)
+         _write(led / "flash_strobe", 0)
+         _write(led / "brightness", 0)
+@@ -397,7 +482,11 @@
+ 
+ 
+ def disable_continuous_illumination() -> None:
+-    """Turn steady IR off immediately; safe to call repeatedly."""
++    """Turn real V4L2 Torch mode off immediately; safe to call repeatedly."""
++    try:
++        _set_v4l2_controls(_find_v4l2_flash_device(), "led_mode=0")
++    except CaptureConfigurationError:
++        pass
+     _force_ir_off_safely()
+ 
+ 
+@@ -885,9 +974,7 @@
+         base_percent = float(self.ir.get("continuous_base_percent", 35.0))
+         challenge_percent = float(self.ir.get("continuous_challenge_percent", 62.0))
+         self._torch_base_level = self._set_torch_percent(base_percent)
+-        maximum_path = _find_flash_led() / "max_brightness"
+-        maximum = _read_int(maximum_path)
+-        self._torch_challenge_level = _continuous_torch_level(maximum, challenge_percent)
++        self._torch_challenge_level = _continuous_torch_target(challenge_percent)
+         settle = max(0.05, float(self.ir.get("continuous_torch_settle_seconds", 0.18)))
+         time.sleep(settle)
+         self.status("illuminating", "Continuous infrared illumination is on")
+@@ -944,9 +1031,8 @@
+             return
+         base_percent = float(self.ir.get("continuous_base_percent", 35.0))
+         self._torch_base_level = self._set_torch_percent(base_percent)
+-        maximum = _read_int(_find_flash_led() / "max_brightness")
+         challenge_percent = float(self.ir.get("continuous_challenge_percent", 62.0))
+-        self._torch_challenge_level = _continuous_torch_level(maximum, challenge_percent)
++        self._torch_challenge_level = _continuous_torch_target(challenge_percent)
+         time.sleep(max(0.05, float(self.ir.get("continuous_torch_settle_seconds", 0.18))))
+ 
+     def _park_stream(self, reason: str) -> None:
+--- a/tests/test_capture_lifecycle.py
++++ b/tests/test_capture_lifecycle.py
+@@ -62,9 +62,9 @@
+ 
+     def test_continuous_torch_uses_relative_driver_scale(self):
+         self.assertEqual(_continuous_torch_level(100, 35), 35)
+-        self.assertEqual(_continuous_torch_level(700000, 35), 245000)
+-        self.assertEqual(_continuous_torch_level(7, 1), 1)
+-        self.assertEqual(_continuous_torch_level(7, 500), 7)
++        self.assertEqual(_continuous_torch_level(500000, 35, minimum=5000, step=5000), 175000)
++        self.assertEqual(_continuous_torch_level(500000, 1, minimum=5000, step=5000), 5000)
++        self.assertEqual(_continuous_torch_level(500000, 500, minimum=5000, step=5000), 500000)
+ 
+     def test_steady_result_uses_illuminated_frames_without_flash(self):
+         session = object.__new__(HM1092CaptureSession)

@@ -1,0 +1,111 @@
+--- a/src/ui/pages/gpu.rs
++++ b/src/ui/pages/gpu.rs
+@@ -242,16 +242,13 @@
+         imp.temperature.graph().set_graph_color(0xa5, 0x1d, 0x2d);
+         imp.temperature.graph().set_locked_max_y(None);
+ 
+-        imp.manufacturer.set_subtitle(
+-            &gpu.get_vendor()
+-                .map_or_else(|_| i18n("N/A"), |vendor| vendor.name().to_string()),
+-        );
++        imp.manufacturer.set_subtitle(&gpu.vendor_name());
+ 
+         match gpu.gpu_identifier() {
+             GpuIdentifier::PciSlot(pci_slot) => {
+                 imp.pci_slot.set_subtitle(&pci_slot.to_string());
+             }
+-            GpuIdentifier::Enumerator(_) => imp.pci_slot.set_subtitle(&i18n("N/A")),
++            GpuIdentifier::Enumerator(_) => imp.pci_slot.set_subtitle(&i18n("Platform / Device Tree")),
+         }
+ 
+         imp.driver_used.set_subtitle(gpu.driver());
+--- a/src/utils/cpu.rs
++++ b/src/utils/cpu.rs
+@@ -125,6 +125,34 @@
+     None
+ }
+ 
++fn qcom_cpu_temperature() -> Result<f32> {
++    let mut temps = Vec::new();
++
++    for zone in glob("/sys/class/thermal/thermal_zone*")?.flatten() {
++        let Ok(zone_type) = read_parsed::<String>(zone.join("type")) else {
++            continue;
++        };
++
++        let zone_type = zone_type.trim().to_ascii_lowercase();
++        if !(zone_type.starts_with("cpu")
++            || zone_type.starts_with("cpuss")
++            || zone_type.contains("cpu")
++            || zone_type.contains("cpuss"))
++        {
++            continue;
++        }
++
++        if let Ok(temp) = read_sysfs_thermal(zone.join("temp")) {
++            temps.push(temp);
++        }
++    }
++
++    temps
++        .into_iter()
++        .reduce(f32::max)
++        .context("no Qualcomm CPU thermal-zone temperature found")
++}
++
+ #[derive(Debug)]
+ pub struct CpuData {
+     pub new_thread_usages: Vec<Result<(u64, u64)>>,
+@@ -346,7 +374,7 @@
+     if let Some(path) = CPU_TEMPERATURE_PATH.as_ref() {
+         read_sysfs_thermal(path)
+     } else {
+-        bail!("no CPU temperature sensor found")
++        qcom_cpu_temperature().or_else(|_| bail!("no CPU temperature sensor found"))
+     }
+ }
+ 
+--- a/src/utils/gpu/mod.rs
++++ b/src/utils/gpu/mod.rs
+@@ -380,6 +380,19 @@
+         Ok(self.device().context("no device")?.vendor())
+     }
+ 
++    pub fn vendor_name(&self) -> String {
++        match self {
++            Gpu::Msm(_) => "Qualcomm".to_string(),
++            _ => self
++                .get_vendor()
++                .map_or_else(|_| i18n("N/A"), |vendor| vendor.name().to_string()),
++        }
++    }
++
++    pub fn is_platform_gpu(&self) -> bool {
++        matches!(self.gpu_identifier(), GpuIdentifier::Enumerator(_))
++    }
++
+     pub fn link(&self) -> Result<Link> {
+         if let GpuIdentifier::PciSlot(pci_slot) = self.gpu_identifier() {
+             let pcie_link = LinkData::from_pci_slot(&pci_slot)?;
+--- a/src/utils/gpu/msm.rs
++++ b/src/utils/gpu/msm.rs
+@@ -1,6 +1,5 @@
+ use anyhow::{Context, Result, bail};
+ use glob::glob;
+-use log::trace;
+ use process_data::{gpu_usage::GpuIdentifier, unix_as_secs_f64};
+ 
+ use std::{
+@@ -125,8 +124,10 @@
+                 continue;
+             }
+ 
+-            if let Ok(millicelsius) = read_parsed::<f64>(hwmon.join("temp1_input")) {
+-                temps.push(millicelsius / 1000.0);
++            for temp_input in glob(&format!("{}{}", hwmon.display(), "/temp*_input"))?.flatten() {
++                if let Ok(millicelsius) = read_parsed::<f64>(temp_input) {
++                    temps.push(millicelsius / 1000.0);
++                }
+             }
+         }
+ 

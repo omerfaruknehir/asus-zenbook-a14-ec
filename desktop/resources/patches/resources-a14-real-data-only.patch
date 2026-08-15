@@ -1,0 +1,139 @@
+diff -ruN a/src/ui/pages/gpu.rs b/src/ui/pages/gpu.rs
+--- a/src/ui/pages/gpu.rs	2026-05-30 21:48:48.000000000 +0000
++++ b/src/ui/pages/gpu.rs	2026-05-30 22:43:15.280115869 +0000
+@@ -255,9 +255,6 @@
+             GpuIdentifier::PciSlot(pci_slot) => {
+                 imp.pci_slot.set_subtitle(&pci_slot.to_string());
+             }
+-            GpuIdentifier::Enumerator(_) if matches!(gpu, Gpu::Msm(_)) => {
+-                imp.pci_slot.set_subtitle("Platform GPU")
+-            }
+             GpuIdentifier::Enumerator(_) => imp.pci_slot.set_subtitle(&i18n("N/A")),
+         }
+ 
+@@ -300,7 +297,6 @@
+             power_cap_max,
+             link,
+             nvidia: _,
+-            msm,
+         } = gpu_data;
+ 
+         imp.gpu_usage.add_fraction_point(*usage_fraction);
+@@ -348,16 +344,7 @@
+ 
+         imp.vram_usage.add_storage_point(*used_vram, *total_vram);
+ 
+-        let mut power_string = power_usage.map_or_else(
+-            || {
+-                if *msm {
+-                    i18n("Not exposed")
+-                } else {
+-                    i18n("N/A")
+-                }
+-            },
+-            convert_power,
+-        );
++        let mut power_string = power_usage.map_or_else(|| i18n("N/A"), convert_power);
+ 
+         if let Some(power_cap) = power_cap {
+             let _ = write!(power_string, " / {}", convert_power(*power_cap));
+@@ -367,24 +354,12 @@
+ 
+         set_subtitle_converted_maybe(*clock_speed, convert_frequency, &imp.gpu_clockspeed);
+ 
+-        if *msm {
+-            imp.vram_clockspeed.set_subtitle(&i18n("Shared system memory"));
+-        } else {
+-            set_subtitle_converted_maybe(*vram_speed, convert_frequency, &imp.vram_clockspeed);
+-        }
++        set_subtitle_converted_maybe(*vram_speed, convert_frequency, &imp.vram_clockspeed);
+ 
+-        if *msm {
+-            imp.max_power_cap.set_subtitle(&i18n("Not exposed"));
+-        } else {
+-            set_subtitle_converted_maybe(*power_cap_max, convert_power, &imp.max_power_cap);
+-        }
++        set_subtitle_converted_maybe(*power_cap_max, convert_power, &imp.max_power_cap);
+         imp.temperature.add_temperature_point(*temperature);
+ 
+-        if *msm {
+-            imp.link.set_subtitle(&i18n("SoC integrated"));
+-        } else {
+-            set_subtitle_converted_maybe(link.as_ref(), Link::to_string, &imp.link);
+-        }
++        set_subtitle_converted_maybe(link.as_ref(), Link::to_string, &imp.link);
+ 
+         self.set_property("usage", usage_fraction.unwrap_or(0.0));
+ 
+diff -ruN a/src/utils/cpu.rs b/src/utils/cpu.rs
+--- a/src/utils/cpu.rs	2026-05-30 21:48:48.000000000 +0000
++++ b/src/utils/cpu.rs	2026-05-30 22:43:15.281434632 +0000
+@@ -280,14 +280,13 @@
+     let cpuinfo = std::fs::read_to_string("/proc/cpuinfo").ok()?;
+     let lower = cpuinfo.to_lowercase();
+ 
+-    // ARM64 virtualization is not always reported by lscpu on device-tree boots.
+-    // If the kernel exposes obvious ARM virtualization features, show that rather
+-    // than leaving the CPU properties page as N/A. Otherwise be explicit that the
+-    // running kernel did not report a usable value.
++    // Only return a value when the running kernel explicitly reports ARM
++    // virtualization features. Otherwise let the UI show N/A instead of a
++    // descriptive placeholder.
+     if lower.contains("\nfeatures") && (lower.contains(" vh") || lower.contains(" virt")) {
+         Some("ARM virtualization extensions".into())
+     } else {
+-        Some("Not reported by kernel".into())
++        None
+     }
+ }
+ 
+diff -ruN a/src/utils/gpu/mod.rs b/src/utils/gpu/mod.rs
+--- a/src/utils/gpu/mod.rs	2026-05-30 21:48:48.000000000 +0000
++++ b/src/utils/gpu/mod.rs	2026-05-30 22:43:15.280544358 +0000
+@@ -62,7 +62,6 @@
+     pub link: Option<Link>,
+ 
+     pub nvidia: bool,
+-    pub msm: bool,
+ }
+ 
+ impl GpuData {
+@@ -92,7 +91,6 @@
+         let link = gpu.link().ok();
+ 
+         let nvidia = matches!(gpu, Gpu::Nvidia(_));
+-        let msm = matches!(gpu, Gpu::Msm(_));
+ 
+         let gpu_data = Self {
+             gpu_identifier,
+@@ -109,7 +107,6 @@
+             power_cap_max,
+             link,
+             nvidia,
+-            msm,
+         };
+ 
+         trace!("Gathered GPU data for {gpu_identifier}: {gpu_data:?}");
+diff -ruN a/src/utils/gpu/msm.rs b/src/utils/gpu/msm.rs
+--- a/src/utils/gpu/msm.rs	2026-05-30 21:48:48.000000000 +0000
++++ b/src/utils/gpu/msm.rs	2026-05-30 22:43:15.280800452 +0000
+@@ -208,17 +208,11 @@
+     }
+ 
+     fn encode_usage(&self) -> Result<f64> {
+-        // Snapdragon video encode is handled by separate media/V4L blocks, not by
+-        // the DRM GPU engine. Resources has no Qualcomm video-engine backend yet,
+-        // so report the GPU encoder engine as idle instead of showing N/A.
+-        Ok(0.0)
++        bail!("encode usage not implemented for MSM/Adreno")
+     }
+ 
+     fn decode_usage(&self) -> Result<f64> {
+-        // Snapdragon video decode is handled by separate media/V4L blocks, not by
+-        // the DRM GPU engine. Resources has no Qualcomm video-engine backend yet,
+-        // so report the GPU decoder engine as idle instead of showing N/A.
+-        Ok(0.0)
++        bail!("decode usage not implemented for MSM/Adreno")
+     }
+ 
+     fn combined_media_engine(&self) -> Result<bool> {

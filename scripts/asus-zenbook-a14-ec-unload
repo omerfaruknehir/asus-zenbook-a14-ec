@@ -1,39 +1,34 @@
 #!/bin/sh
 set -u
+I2C_DEV=/sys/bus/platform/devices/b94000.i2c
 
-# Removing the module calls its quiesce path: automatic fan mode, uncapped CPU,
-# cancelled safety work, and a cleared EC compound-operation mailbox.
-#
-# qcom-geni-i2c runtime-powers the serial engine down after the final transfer.
-# The A14 warm-reboot failure was observed on the next boot's first EC transfer,
-# so do not race the controller's autosuspend during an orderly stop/reboot.
-I2C_CONTROLLER=/sys/bus/platform/devices/b94000.i2c
-RUNTIME_STATUS="$I2C_CONTROLLER/power/runtime_status"
-
-was_loaded=0
-if grep -q '^asus_zenbook_a14_ec ' /proc/modules 2>/dev/null; then
-  was_loaded=1
-fi
-
-modprobe -r asus_zenbook_a14_ec 2>/dev/null || true
-
-if [ "$was_loaded" -eq 1 ] && [ -r "$RUNTIME_STATUS" ]; then
-  status=unknown
-  suspended=0
-  i=0
-  while [ "$i" -lt 40 ]; do
-    status=$(cat "$RUNTIME_STATUS" 2>/dev/null || true)
-    if [ "$status" = suspended ]; then
-      suspended=1
-      break
-    fi
-    i=$((i + 1))
-    sleep 0.05
-  done
-
-  if [ "$suspended" -eq 1 ]; then
-    echo "ASUS A14 EC: I2C controller runtime-suspended before shutdown"
-  else
-    echo "ASUS A14 EC: I2C controller did not runtime-suspend before shutdown (status=${status:-unknown})" >&2
+# hid_asus_ec references an exported symbol from asus_zenbook_a14_ec.  Remove
+# the dependent first; otherwise the EC removal fails with EBUSY and an upgrade
+# can silently leave the previous EC/HID pair resident in RAM.
+if grep -q '^hid_asus_ec ' /proc/modules 2>/dev/null; then
+  if ! modprobe -r hid_asus_ec; then
+    echo "Failed to unload A14 HID hotkey module; refusing to leave mixed module versions" >&2
+    exit 1
   fi
 fi
+
+if grep -q '^asus_zenbook_a14_ec ' /proc/modules 2>/dev/null; then
+  if ! modprobe -r asus_zenbook_a14_ec; then
+    echo "Failed to unload A14 EC module" >&2
+    exit 1
+  fi
+fi
+
+# The EC mailbox driver asks the Qualcomm I2C controller to runtime-suspend on
+# removal.  Give that transition a bounded moment to complete before systemd
+# considers the service stopped.
+i=0
+while [ -r "$I2C_DEV/power/runtime_status" ]; do
+  status=$(cat "$I2C_DEV/power/runtime_status" 2>/dev/null || true)
+  [ "$status" = suspended ] && break
+  i=$((i + 1))
+  [ "$i" -ge 20 ] && break
+  sleep 0.05
+done
+
+exit 0

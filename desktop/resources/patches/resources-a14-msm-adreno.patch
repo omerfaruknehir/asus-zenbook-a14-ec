@@ -1,0 +1,364 @@
+diff --git a/lib/process_data/src/lib.rs b/lib/process_data/src/lib.rs
+index 0ee6169..fb6fe1e 100644
+--- a/lib/process_data/src/lib.rs
++++ b/lib/process_data/src/lib.rs
+@@ -90,6 +90,8 @@ static GFX_NS_DRM_FIELDS: Lazy<HashMap<&str, Vec<&str>>> = Lazy::new(|| {
+         ("amdgpu", vec!["drm-engine-compute", "drm-engine-gfx"]),
+         ("i915", vec!["drm-engine-render"]),
+         ("v3d", vec!["drm-engine-render"]),
++        ("msm", vec!["drm-engine-gpu", "drm-engine-render"]),
++        ("msm_dpu", vec!["drm-engine-gpu", "drm-engine-render"]),
+     ])
+ });
+ 
+@@ -130,6 +132,8 @@ static MEM_DRM_FIELDS: Lazy<HashMap<&str, Vec<&str>>> = Lazy::new(|| {
+         ("amdxdna_accel_driver", vec!["drm-total-memory"]),
+         ("i915", vec!["drm-total-local0", "drm-total-system0"]),
+         ("v3d", vec!["drm-total-memory"]),
++        ("msm", vec!["drm-memory-active", "drm-memory-resident", "drm-total-memory"]),
++        ("msm_dpu", vec!["drm-memory-active", "drm-memory-resident", "drm-total-memory"]),
+         ("xe", vec!["drm-total-gtt", "drm-total-vram0"]),
+     ])
+ });
+@@ -757,7 +761,17 @@ impl ProcessData {
+                 .get(DRM_PDEV)
+                 .and_then(|field| PciSlot::from_str(field).ok())
+                 .map(GpuIdentifier::PciSlot)
+-                .unwrap_or_default();
++                .unwrap_or_else(|| {
++                    // Platform GPUs such as Qualcomm/Adreno do not expose a PCI slot in fdinfo.
++                    // On the X1E80100/A14 kernel, Resources enumerates the msm_dpu DRM card as
++                    // card1, so attach MSM fdinfo counters to Enumerator(1) instead of the
++                    // default Enumerator(0).
++                    if driver == "msm" || driver == "msm_dpu" {
++                        GpuIdentifier::Enumerator(1)
++                    } else {
++                        GpuIdentifier::default()
++                    }
++                });
+ 
+             let stats = match driver.as_str() {
+                 // TODO: this surely can be made prettier
+@@ -792,7 +806,7 @@ impl ProcessData {
+                         .map(|names| Self::parse_drm_fields(fdinfo, names, &RE_DRM_TIME))
+                         .unwrap_or_default(),
+                 },
+-                "v3d" => GpuUsageStats::V3dStats {
++                "v3d" | "msm" | "msm_dpu" => GpuUsageStats::V3dStats {
+                     gfx_ns: GFX_NS_DRM_FIELDS
+                         .get(driver.as_str())
+                         .map(|names| Self::parse_drm_fields(fdinfo, names, &RE_DRM_TIME))
+diff --git a/src/utils/gpu/mod.rs b/src/utils/gpu/mod.rs
+index 521fed6..6925207 100644
+--- a/src/utils/gpu/mod.rs
++++ b/src/utils/gpu/mod.rs
+@@ -2,6 +2,7 @@ mod amd;
+ mod intel;
+ mod nvidia;
+ mod other;
++mod msm;
+ mod v3d;
+ 
+ use anyhow::{Context, Result, bail};
+@@ -15,7 +16,7 @@ use std::{
+     str::FromStr,
+ };
+ 
+-use self::{amd::AmdGpu, intel::IntelGpu, nvidia::NvidiaGpu, other::OtherGpu};
++use self::{amd::AmdGpu, intel::IntelGpu, msm::MsmGpu, nvidia::NvidiaGpu, other::OtherGpu};
+ use crate::utils::{
+     link::{Link, LinkData},
+     read_parsed,
+@@ -119,6 +120,7 @@ pub enum Gpu {
+     Amd(AmdGpu),
+     Intel(IntelGpu),
+     Nvidia(NvidiaGpu),
++    Msm(MsmGpu),
+     V3d(V3dGpu),
+     Other(OtherGpu),
+ }
+@@ -211,6 +213,7 @@ impl std::ops::Deref for Gpu {
+             Gpu::Amd(gpu) => gpu,
+             Gpu::Intel(gpu) => gpu,
+             Gpu::Nvidia(gpu) => gpu,
++            Gpu::Msm(gpu) => gpu,
+             Gpu::V3d(gpu) => gpu,
+             Gpu::Other(gpu) => gpu,
+         }
+@@ -327,6 +330,17 @@ impl Gpu {
+                 )),
+                 "NVIDIA",
+             )
++        } else if driver == "msm_dpu" {
++            (
++                Gpu::Msm(MsmGpu::new(
++                    device,
++                    gpu_identifier,
++                    driver,
++                    path.to_path_buf(),
++                    hwmon_vec.first().cloned(),
++                )),
++                "MSM/Adreno",
++            )
+         } else if driver == "v3d" {
+             (
+                 Gpu::V3d(V3dGpu::new(
+diff --git a/src/utils/gpu/msm.rs b/src/utils/gpu/msm.rs
+new file mode 100644
+index 0000000..feee040
+--- /dev/null
++++ b/src/utils/gpu/msm.rs
+@@ -0,0 +1,253 @@
++use anyhow::{Context, Result, bail};
++use glob::glob;
++use log::trace;
++use process_data::{gpu_usage::GpuIdentifier, unix_as_secs_f64};
++
++use std::{
++    cell::Cell,
++    fs,
++    path::{Path, PathBuf},
++};
++
++use crate::utils::{pci::Device, read_parsed};
++
++use super::GpuImpl;
++
++#[derive(Debug, Clone, Default)]
++pub struct MsmGpu {
++    pub device: Option<&'static Device>,
++    pub gpu_identifier: GpuIdentifier,
++    pub driver: String,
++    sysfs_path: PathBuf,
++    first_hwmon_path: Option<PathBuf>,
++    last_engine_ns: Cell<u64>,
++    last_engine_timestamp: Cell<f64>,
++}
++
++impl MsmGpu {
++    pub fn new(
++        device: Option<&'static Device>,
++        gpu_identifier: GpuIdentifier,
++        driver: String,
++        sysfs_path: PathBuf,
++        first_hwmon_path: Option<PathBuf>,
++    ) -> Self {
++        Self {
++            device,
++            gpu_identifier,
++            driver,
++            sysfs_path,
++            first_hwmon_path,
++            last_engine_ns: Cell::new(0),
++            last_engine_timestamp: Cell::new(0.0),
++        }
++    }
++
++    fn compatible(&self) -> Option<String> {
++        read_parsed::<String>(self.sysfs_path().join("device/uevent"))
++            .ok()
++            .and_then(|uevent| {
++                uevent.lines().find_map(|line| {
++                    line.strip_prefix("OF_COMPATIBLE_0=")
++                        .map(std::string::ToString::to_string)
++                })
++            })
++    }
++
++    fn devfreq_gpu_path() -> Result<PathBuf> {
++        glob("/sys/class/devfreq/*gpu*")?
++            .flatten()
++            .find(|path| path.join("cur_freq").exists())
++            .context("no MSM/Adreno devfreq node found")
++    }
++
++    fn parse_msm_engine_ns(contents: &str) -> Option<u64> {
++        if !contents.lines().any(|line| {
++            let line = line.trim();
++            line == "drm-driver:\tmsm"
++                || line == "drm-driver: msm"
++                || line == "drm-driver:\tmsm_dpu"
++                || line == "drm-driver: msm_dpu"
++        }) {
++            return None;
++        }
++
++        contents.lines().find_map(|line| {
++            let trimmed = line.trim();
++            let value = trimmed
++                .strip_prefix("drm-engine-gpu:")
++                .or_else(|| trimmed.strip_prefix("drm-engine-render:"))?;
++            value
++                .split_whitespace()
++                .next()
++                .and_then(|ns| ns.parse::<u64>().ok())
++        })
++    }
++
++    fn total_engine_ns_from_fdinfo() -> u64 {
++        let mut total = 0_u64;
++
++        let Ok(proc_entries) = fs::read_dir("/proc") else {
++            return 0;
++        };
++
++        for proc_entry in proc_entries.flatten() {
++            let pid_name = proc_entry.file_name();
++            if !pid_name.as_encoded_bytes().iter().all(|b| b.is_ascii_digit()) {
++                continue;
++            }
++
++            let fdinfo_dir = proc_entry.path().join("fdinfo");
++            let Ok(fdinfo_entries) = fs::read_dir(fdinfo_dir) else {
++                continue;
++            };
++
++            for fdinfo_entry in fdinfo_entries.flatten() {
++                let Ok(contents) = fs::read_to_string(fdinfo_entry.path()) else {
++                    continue;
++                };
++
++                if let Some(engine_ns) = Self::parse_msm_engine_ns(&contents) {
++                    total = total.saturating_add(engine_ns);
++                }
++            }
++        }
++
++        total
++    }
++
++    fn gpuss_temperature_from_hwmon() -> Result<f64> {
++        let mut temps = Vec::new();
++
++        for hwmon in glob("/sys/class/hwmon/hwmon*")?.flatten() {
++            let name = read_parsed::<String>(hwmon.join("name")).unwrap_or_default();
++            if !(name.starts_with("gpuss") || name.contains("gpu")) {
++                continue;
++            }
++
++            if let Ok(millicelsius) = read_parsed::<f64>(hwmon.join("temp1_input")) {
++                temps.push(millicelsius / 1000.0);
++            }
++        }
++
++        temps
++            .into_iter()
++            .reduce(f64::max)
++            .context("no gpuss hwmon temperature")
++    }
++
++    fn gpuss_temperature_from_thermal_zone() -> Result<f64> {
++        let mut temps = Vec::new();
++
++        for zone in glob("/sys/class/thermal/thermal_zone*")?.flatten() {
++            let zone_type = read_parsed::<String>(zone.join("type")).unwrap_or_default();
++            if !(zone_type.starts_with("gpuss") || zone_type.contains("gpu")) {
++                continue;
++            }
++
++            if let Ok(millicelsius) = read_parsed::<f64>(zone.join("temp")) {
++                temps.push(millicelsius / 1000.0);
++            }
++        }
++
++        temps
++            .into_iter()
++            .reduce(f64::max)
++            .context("no gpuss thermal-zone temperature")
++    }
++}
++
++impl GpuImpl for MsmGpu {
++    fn device(&self) -> Option<&'static Device> {
++        self.device
++    }
++
++    fn gpu_identifier(&self) -> GpuIdentifier {
++        self.gpu_identifier
++    }
++
++    fn driver(&self) -> &str {
++        &self.driver
++    }
++
++    fn sysfs_path(&self) -> &Path {
++        &self.sysfs_path
++    }
++
++    fn first_hwmon(&self) -> Option<&Path> {
++        self.first_hwmon_path.as_deref()
++    }
++
++    fn name(&self) -> Result<String> {
++        if self
++            .compatible()
++            .is_some_and(|compatible| compatible.contains("qcom,x1e80100"))
++        {
++            Ok("Qualcomm Adreno X1-85".into())
++        } else {
++            Ok("Qualcomm Adreno".into())
++        }
++    }
++
++    fn usage(&self) -> Result<f64> {
++        let now = unix_as_secs_f64();
++        let total_engine_ns = Self::total_engine_ns_from_fdinfo();
++
++        let last_total_engine_ns = self.last_engine_ns.replace(total_engine_ns);
++        let last_timestamp = self.last_engine_timestamp.replace(now);
++
++        if last_timestamp == 0.0 {
++            bail!("first MSM fdinfo sample")
++        }
++
++        let elapsed_ns = ((now - last_timestamp) * 1_000_000_000.0).max(1.0);
++        let busy_ns = total_engine_ns.saturating_sub(last_total_engine_ns) as f64;
++
++        Ok((busy_ns / elapsed_ns).clamp(0.0, 1.0))
++    }
++
++    fn encode_usage(&self) -> Result<f64> {
++        bail!("encode usage not implemented for MSM/Adreno")
++    }
++
++    fn decode_usage(&self) -> Result<f64> {
++        bail!("decode usage not implemented for MSM/Adreno")
++    }
++
++    fn combined_media_engine(&self) -> Result<bool> {
++        Ok(false)
++    }
++
++    fn used_vram(&self) -> Result<u64> {
++        bail!("VRAM accounting not exposed for MSM/Adreno")
++    }
++
++    fn total_vram(&self) -> Result<u64> {
++        bail!("VRAM accounting not exposed for MSM/Adreno")
++    }
++
++    fn temperature(&self) -> Result<f64> {
++        Self::gpuss_temperature_from_hwmon().or_else(|_| Self::gpuss_temperature_from_thermal_zone())
++    }
++
++    fn power_usage(&self) -> Result<f64> {
++        self.hwmon_power_usage()
++    }
++
++    fn core_frequency(&self) -> Result<f64> {
++        let devfreq = Self::devfreq_gpu_path()?;
++        read_parsed::<f64>(devfreq.join("cur_freq"))
++    }
++
++    fn vram_frequency(&self) -> Result<f64> {
++        bail!("VRAM clock not exposed for MSM/Adreno")
++    }
++
++    fn power_cap(&self) -> Result<f64> {
++        self.hwmon_power_cap()
++    }
++
++    fn power_cap_max(&self) -> Result<f64> {
++        self.hwmon_power_cap_max()
++    }
++}

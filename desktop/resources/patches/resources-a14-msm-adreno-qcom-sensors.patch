@@ -1,0 +1,181 @@
+diff -ruN orig/resources-a14/src/ui/pages/gpu.rs res2/resources-a14/src/ui/pages/gpu.rs
+--- orig/resources-a14/src/ui/pages/gpu.rs	2026-05-30 19:39:15.000000000 +0000
++++ res2/resources-a14/src/ui/pages/gpu.rs	2026-05-30 21:34:58.998294957 +0000
+@@ -242,15 +242,22 @@
+         imp.temperature.graph().set_graph_color(0xa5, 0x1d, 0x2d);
+         imp.temperature.graph().set_locked_max_y(None);
+ 
+-        imp.manufacturer.set_subtitle(
+-            &gpu.get_vendor()
+-                .map_or_else(|_| i18n("N/A"), |vendor| vendor.name().to_string()),
+-        );
++        if matches!(gpu, Gpu::Msm(_)) {
++            imp.manufacturer.set_subtitle("Qualcomm");
++        } else {
++            imp.manufacturer.set_subtitle(
++                &gpu.get_vendor()
++                    .map_or_else(|_| i18n("N/A"), |vendor| vendor.name().to_string()),
++            );
++        }
+ 
+         match gpu.gpu_identifier() {
+             GpuIdentifier::PciSlot(pci_slot) => {
+                 imp.pci_slot.set_subtitle(&pci_slot.to_string());
+             }
++            GpuIdentifier::Enumerator(_) if matches!(gpu, Gpu::Msm(_)) => {
++                imp.pci_slot.set_subtitle("Platform GPU")
++            }
+             GpuIdentifier::Enumerator(_) => imp.pci_slot.set_subtitle(&i18n("N/A")),
+         }
+ 
+diff -ruN orig/resources-a14/src/utils/cpu.rs res2/resources-a14/src/utils/cpu.rs
+--- orig/resources-a14/src/utils/cpu.rs	2026-05-30 19:39:15.000000000 +0000
++++ res2/resources-a14/src/utils/cpu.rs	2026-05-30 21:34:58.997601031 +0000
+@@ -12,9 +12,40 @@
+ 
+ const PROC_STAT: &str = "/proc/stat";
+ 
+-const KNOWN_HWMONS: &[&str] = &["zenpower", "coretemp", "k10temp", "ibmpowernv"];
+-
+-const KNOWN_THERMAL_ZONES: &[&str] = &["cpu-thermal", "x86_pkg_temp", "acpitz"];
++const KNOWN_HWMONS: &[&str] = &[
++    "zenpower",
++    "coretemp",
++    "k10temp",
++    "ibmpowernv",
++    // Qualcomm Snapdragon X / ARM64 platforms usually expose CPU related
++    // temperatures through qcom-tsens thermal zones/hwmons instead of the
++    // x86-centric sensors above.
++    "cpuss0-top-thermal",
++    "cpuss0-btm-thermal",
++    "cpuss1-top-thermal",
++    "cpuss1-btm-thermal",
++    "cpuss2-top-thermal",
++    "cpuss2-btm-thermal",
++];
++
++const KNOWN_THERMAL_ZONES: &[&str] = &[
++    "cpu-thermal",
++    "x86_pkg_temp",
++    "acpitz",
++    // Qualcomm Snapdragon X Elite/X Plus device-tree thermal zones.
++    "cpuss0-top-thermal",
++    "cpuss0-btm-thermal",
++    "cpuss1-top-thermal",
++    "cpuss1-btm-thermal",
++    "cpuss2-top-thermal",
++    "cpuss2-btm-thermal",
++    "cpu0-0-top-thermal",
++    "cpu0-0-btm-thermal",
++    "cpu1-0-top-thermal",
++    "cpu1-0-btm-thermal",
++    "cpu2-0-top-thermal",
++    "cpu2-0-btm-thermal",
++];
+ 
+ static RE_LSCPU_MODEL_NAME: Lazy<Regex> = lazy_regex!(r"Model name:\s*(.*)");
+ 
+@@ -37,6 +68,7 @@
+ static CPU_TEMPERATURE_PATH: LazyLock<Option<PathBuf>> = LazyLock::new(|| {
+     search_for_hwmons(KNOWN_HWMONS)
+         .or_else(|| search_for_thermal_zones(KNOWN_THERMAL_ZONES))
++        .or_else(search_for_qcom_cpu_thermal_zone)
+         .or_else(|| {
+             warn!("No CPU temperature sensor found!");
+             None
+@@ -125,6 +157,51 @@
+     None
+ }
+ 
++fn search_for_qcom_cpu_thermal_zone() -> Option<PathBuf> {
++    trace!("Searching for Qualcomm CPU thermal zones…");
++
++    let mut candidates: Vec<(String, PathBuf)> = Vec::new();
++
++    for path in (glob("/sys/class/thermal/thermal_zone*").unwrap()).flatten() {
++        if let Ok(read_type) = read_parsed::<String>(path.join("type")) {
++            let read_type = read_type.trim_end().to_string();
++            let lower = read_type.to_lowercase();
++
++            // Accept CPU/core clusters, but explicitly reject GPU/video/camera style
++            // zones so the Processor page does not show a GPU/display temperature.
++            let looks_cpu = lower.starts_with("cpu") || lower.starts_with("cpuss");
++            let reject = lower.starts_with("gpu")
++                || lower.starts_with("gpuss")
++                || lower.contains("video")
++                || lower.contains("camera")
++                || lower.contains("aoss")
++                || lower.contains("mem")
++                || lower.contains("pm")
++                || lower.contains("nsp");
++
++            if looks_cpu && !reject && path.join("temp").exists() {
++                candidates.push((read_type, path.join("temp")));
++            }
++        }
++    }
++
++    // Prefer the hottest currently readable CPU-related zone. This gives a useful
++    // package/cluster-ish temperature on Snapdragon laptops where there is no
++    // single x86-style package sensor.
++    candidates
++        .into_iter()
++        .filter_map(|(name, path)| {
++            read_sysfs_thermal(&path)
++                .ok()
++                .map(|temp| (name, path, temp))
++        })
++        .max_by(|(_, _, a), (_, _, b)| a.total_cmp(b))
++        .map(|(name, path, temp)| {
++            debug!("CPU temperature sensor located at {path:?} ({name}, fallback Qualcomm thermal zone, currently {temp:.1} °C)");
++            path
++        })
++}
++
+ #[derive(Debug)]
+ pub struct CpuData {
+     pub new_thread_usages: Vec<Result<(u64, u64)>>,
+diff -ruN orig/resources-a14/src/utils/gpu/msm.rs res2/resources-a14/src/utils/gpu/msm.rs
+--- orig/resources-a14/src/utils/gpu/msm.rs	2026-05-30 19:49:58.000000000 +0000
++++ res2/resources-a14/src/utils/gpu/msm.rs	2026-05-30 21:34:58.998905518 +0000
+@@ -1,6 +1,5 @@
+ use anyhow::{Context, Result, bail};
+ use glob::glob;
+-use log::trace;
+ use process_data::{gpu_usage::GpuIdentifier, unix_as_secs_f64};
+ 
+ use std::{
+@@ -121,6 +120,7 @@
+ 
+         for hwmon in glob("/sys/class/hwmon/hwmon*")?.flatten() {
+             let name = read_parsed::<String>(hwmon.join("name")).unwrap_or_default();
++            let name = name.to_lowercase();
+             if !(name.starts_with("gpuss") || name.contains("gpu")) {
+                 continue;
+             }
+@@ -141,6 +141,7 @@
+ 
+         for zone in glob("/sys/class/thermal/thermal_zone*")?.flatten() {
+             let zone_type = read_parsed::<String>(zone.join("type")).unwrap_or_default();
++            let zone_type = zone_type.to_lowercase();
+             if !(zone_type.starts_with("gpuss") || zone_type.contains("gpu")) {
+                 continue;
+             }
+@@ -219,11 +220,15 @@
+     }
+ 
+     fn used_vram(&self) -> Result<u64> {
+-        bail!("VRAM accounting not exposed for MSM/Adreno")
++        // MSM/Adreno is an integrated GPU with shared system memory. There is no
++        // dedicated VRAM total/used pair like on many PCI GPUs. Returning an error
++        // lets the UI fall back to per-process GPU memory when available instead of
++        // presenting a fake total.
++        bail!("dedicated VRAM accounting not exposed for MSM/Adreno")
+     }
+ 
+     fn total_vram(&self) -> Result<u64> {
+-        bail!("VRAM accounting not exposed for MSM/Adreno")
++        bail!("dedicated VRAM accounting not exposed for MSM/Adreno")
+     }
+ 
+     fn temperature(&self) -> Result<f64> {
