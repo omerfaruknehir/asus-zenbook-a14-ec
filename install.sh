@@ -10,7 +10,7 @@ esac
 kernel=$(uname -r)
 headers="/lib/modules/$kernel/build/Makefile"
 need_bootstrap=false
-for command in dkms dpkg-deb make gcc python3; do
+for command in dkms dpkg-deb make gcc python3 readelf; do
   command -v "$command" >/dev/null 2>&1 || need_bootstrap=true
 done
 [ -e "$headers" ] || need_bootstrap=true
@@ -21,7 +21,7 @@ done
 if [ "$need_bootstrap" = true ]; then
   echo "Installing build requirements and running-kernel headers..."
   sudo apt-get update
-  sudo apt-get install -y dkms build-essential dpkg-dev "linux-headers-$kernel"
+  sudo apt-get install -y dkms build-essential binutils dpkg-dev "linux-headers-$kernel"
 fi
 
 if [ ! -e "$headers" ]; then
@@ -30,14 +30,19 @@ if [ ! -e "$headers" ]; then
 fi
 
 # Compile the exact generated sources against the running kernel *before*
-# unpacking/upgrading the DEB. This keeps a source/API regression from leaving
-# dpkg in a half-configured state and exposes the real compiler error directly.
+# unpacking/upgrading the DEB. The compatibility wrapper also detects Ubuntu
+# mainline ARM64 header packages containing a foreign-architecture
+# gendwarfksyms host tool and substitutes an exact-source native helper from an
+# installed ARM64 header tree when available.
 echo "Preflight building A14 modules against $kernel..."
 make clean >/dev/null 2>&1 || true
-if ! make -j"${A14_BUILD_JOBS:-$(nproc)}" KDIR="/lib/modules/$kernel/build"; then
+if ! A14_MODULE_DIR="$repo" \
+     A14_BUILD_JOBS="${A14_BUILD_JOBS:-$(nproc)}" \
+     KDIR="/lib/modules/$kernel/build" \
+     sh "$repo/scripts/a14-kbuild-compat.sh" "$kernel"; then
   echo >&2
   echo "A14 module preflight failed; package was not installed." >&2
-  echo "The compiler output above is the authoritative failure, not DKMS/Apport's generic 'kernel package not supported' line." >&2
+  echo "The compiler/Kbuild output above is the authoritative failure, not DKMS/Apport's generic 'kernel package not supported' line." >&2
   exit 1
 fi
 make clean >/dev/null 2>&1 || true
