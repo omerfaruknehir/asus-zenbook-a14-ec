@@ -1,0 +1,83 @@
+#!/usr/bin/env python3
+from pathlib import Path
+
+p = Path("hid_asus_ec.c")
+s = p.read_text()
+
+MARKER = "A14_HID_NATIVE_PROFILE_HOTKEY"
+if MARKER in s:
+    print("a14_hid_native_profile_hotkey=current")
+    raise SystemExit(0)
+
+
+def once(old: str, new: str, label: str) -> None:
+    global s
+    count = s.count(old)
+    if count != 1:
+        raise SystemExit(f"{label}: expected one source anchor, found {count}")
+    s = s.replace(old, new, 1)
+
+
+once(
+    '#define A14_EC_EVT_KEY_FN_F             0x9d\n',
+    '#define A14_EC_EVT_KEY_FN_F             0x9d\n\n#define A14_HID_NATIVE_PROFILE_HOTKEY 1\n\nextern int asus_a14_cycle_native_profile(void);\n',
+    'Fn+F native cycle declaration',
+)
+
+once(
+    '\tstruct work_struct backlight_work;\n\tstruct work_struct fnlock_work;\n',
+    '\tstruct work_struct backlight_work;\n\tstruct work_struct fnlock_work;\n\tstruct work_struct profile_work;\n',
+    'profile work state',
+)
+
+anchor = '''static void asus_emit_key(struct input_dev *input, unsigned int key)\n'''
+helper = '''static void asus_profile_work(struct work_struct *work)\n{\n\tstruct asus_hid_data *data = container_of(work, struct asus_hid_data,\n\t\t\t\t\t\t  profile_work);\n\tint ret;\n\n\tif (READ_ONCE(data->suspended))\n\t\treturn;\n\n\tret = asus_a14_cycle_native_profile();\n\tif (ret)\n\t\tdev_warn(&data->hdev->dev,\n\t\t\t "Fn+F native profile cycle failed: %d\\n", ret);\n}\n\n'''
+if s.count(anchor) != 1:
+    raise SystemExit(f"profile worker insertion: expected one anchor, found {s.count(anchor)}")
+s = s.replace(anchor, helper + anchor, 1)
+
+once(
+    '\tcase A14_EC_EVT_KEY_FN_F:\n\t\tasus_emit_key(data->hotkeys, KEY_PERFORMANCE);\n\t\treturn 1;\n',
+    '\tcase A14_EC_EVT_KEY_FN_F:\n\t\tschedule_work(&data->profile_work);\n\t\treturn 1;\n',
+    'Fn+F event',
+)
+
+once(
+    '\tcancel_work_sync(&data->backlight_work);\n\tcancel_work_sync(&data->fnlock_work);\n',
+    '\tcancel_work_sync(&data->backlight_work);\n\tcancel_work_sync(&data->fnlock_work);\n\tcancel_work_sync(&data->profile_work);\n',
+    'suspend profile work',
+)
+
+once(
+    '\tINIT_WORK(&data->backlight_work, asus_backlight_work);\n\tINIT_WORK(&data->fnlock_work, asus_fnlock_work);\n',
+    '\tINIT_WORK(&data->backlight_work, asus_backlight_work);\n\tINIT_WORK(&data->fnlock_work, asus_fnlock_work);\n\tINIT_WORK(&data->profile_work, asus_profile_work);\n',
+    'probe profile work',
+)
+
+# The remove path contains the same pair as suspend after the Fn-lock transform.
+# At this point suspend was already expanded, so exactly one unexpanded pair remains.
+once(
+    '\tcancel_work_sync(&data->backlight_work);\n\tcancel_work_sync(&data->fnlock_work);\n\tif (data->led_registered)\n',
+    '\tcancel_work_sync(&data->backlight_work);\n\tcancel_work_sync(&data->fnlock_work);\n\tcancel_work_sync(&data->profile_work);\n\tif (data->led_registered)\n',
+    'remove profile work',
+)
+
+# KEY_PERFORMANCE no longer represents Fn+F; the event is consumed by the
+# kernel profile cycle, avoiding a second userspace handler changing it again.
+s = s.replace('\tinput_set_capability(data->hotkeys, EV_KEY, KEY_PERFORMANCE);\n', '', 1)
+
+required = (
+    MARKER,
+    'extern int asus_a14_cycle_native_profile(void);',
+    'struct work_struct profile_work;',
+    'asus_a14_cycle_native_profile();',
+    'schedule_work(&data->profile_work);',
+    'INIT_WORK(&data->profile_work, asus_profile_work);',
+    'cancel_work_sync(&data->profile_work);',
+)
+missing = [token for token in required if token not in s]
+if missing:
+    raise SystemExit("Fn+F native profile hotkey transform incomplete: " + ", ".join(missing))
+
+p.write_text(s)
+print("a14_hid_native_profile_hotkey=applied")
