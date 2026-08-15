@@ -13,6 +13,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - name: Validate archived patches and IR helpers
         shell: bash
         run: |
@@ -30,6 +31,7 @@ jobs:
           grep -q 'intensity_torch_mode' userspace/aegis-hello/patches/aegis-hello-0.8.3-v4l2-torch-runtime.patch
           grep -q 'modprobe asus_zenbook_a14_ec' scripts/asus-zenbook-a14-ec-load
           grep -q 'modprobe hid_asus_ec' scripts/asus-zenbook-a14-ec-load
+
       - name: Validate DKMS relative build directory handling
         shell: bash
         run: |
@@ -51,12 +53,47 @@ jobs:
           )
           grep -Fxq "M=$tmp/module" "$tmp/args"
           ! grep -Fxq 'M=.' "$tmp/args"
+
       - name: Validate Resources CPU frequency repair
         run: |
           python3 -m py_compile desktop/resources/repair-a14-cpu-frequency.py
           python3 desktop/resources/test-frequency-repair.py
+
+      - name: Validate A14 GNOME five-mode integration
+        shell: bash
+        run: |
+          python3 -m py_compile \
+            scripts/a14-gnome-native-five-profile.py \
+            scripts/a14-gnome-native-five-profile-clean-ui.py \
+            scripts/asus-zenbook-a14-profile-service.py \
+            scripts/asus-zenbook-a14-ppd-bridge.py
+          sh -n scripts/a14-gnome-native-install.sh \
+            scripts/asus-zenbook-a14-enable-gnome-extension \
+            scripts/asus-a14-control
+
+          for mode in Whisper Quiet Normal Turbo 'Full Speed'; do
+            grep -Fq "$mode" scripts/a14-gnome-native-five-profile.py
+          done
+          grep -Fq 'NATIVE_GNOME_MARKER = Path("/usr/share/asus-zenbook-a14-ec/native-gnome-five-profile")' \
+            scripts/asus-zenbook-a14-ppd-bridge.py
+          grep -Fq 'FIVE_PROFILE_ORDER = ("power-saver", "quiet", "balanced", "performance", "full-speed")' \
+            scripts/asus-zenbook-a14-ppd-bridge.py
+          grep -Fq 'GLib.io_add_watch' scripts/asus-zenbook-a14-profile-service.py
+          grep -Fq 'GLib.IO_PRI' scripts/asus-zenbook-a14-profile-service.py
+          grep -Fq 'GLib.io_add_watch' scripts/asus-zenbook-a14-ppd-bridge.py
+          grep -Fq 'GLib.IO_PRI' scripts/asus-zenbook-a14-ppd-bridge.py
+          grep -Fq "const NATIVE_UI_MARKER = '/usr/share/asus-zenbook-a14-ec/native-gnome-five-profile';" \
+            gnome-shell/asus-a14-modes@omerfaruknehir/extension.js
+          grep -Fq 'new ProfileOsdListener()' gnome-shell/asus-a14-modes@omerfaruknehir/extension.js
+          grep -Fq 'gnome-extensions enable "$UUID"' scripts/asus-zenbook-a14-enable-gnome-extension
+          grep -Fq "name: C_('Power profile', 'Whisper')" userspace/gnome/patches/gnome-shell-50-a14-five-profiles.patch
+          grep -Fq 'text = C_("Power profile", "_Turbo")' userspace/gnome/patches/gnome-control-center-50-a14-five-profiles.patch
+          ! grep -Fq 'EC_NATIVE_FAN1_RPM_LO' scripts/prepare-a14-ec.py
+          grep -Fq 'automatic (ASUS firmware owns PWM)' scripts/asus-a14-control
+
       - name: Validate Whisper and native ASUS modes
         run: ./scripts/test-package.sh
+
       - name: Verify packaged profile contract
         shell: bash
         run: |
@@ -82,17 +119,27 @@ jobs:
           grep -q 'DEVICE_ATTR_RO(whisper_level)' "$ec"
           grep -q 'A14_HID_NATIVE_PROFILE_HOTKEY' "$hid"
           grep -q 'asus_a14_cycle_native_profile();' "$hid"
+          grep -q 'EC_TACH_RPM_MULT' "$ec"
+          ! grep -q 'EC_NATIVE_FAN1_RPM_LO\|asus_ec_read_native_fan1_rpm' "$ec"
 
           for forbidden in A14_PROFILE_POLICY_V2 ASUS_EC_PROFILE_POWER_SAVER A14_QUIET_FANLESS; do
             ! grep -q "$forbidden" "$ec"
           done
 
           service="$root/usr/libexec/asus-zenbook-a14-profile-service"
+          bridge="$root/usr/libexec/asus-zenbook-a14-ppd-bridge"
           extension="$root/usr/share/gnome-shell/extensions/asus-a14-modes@omerfaruknehir/extension.js"
+          control="$root/usr/sbin/asus-a14-control"
           grep -Fq 'PROFILES = ("whisper", "quiet", "normal", "turbo", "full-speed")' "$service"
+          grep -Fq 'GLib.io_add_watch' "$service"
+          grep -Fq 'FIVE_PROFILE_ORDER = ("power-saver", "quiet", "balanced", "performance", "full-speed")' "$bridge"
+          grep -Fq 'GLib.io_add_watch' "$bridge"
           grep -Fq "const PROFILE_ORDER = ['whisper', 'quiet', 'normal', 'turbo', 'full-speed'];" "$extension"
+          grep -Fq 'new ProfileOsdListener()' "$extension"
           grep -q 'osdWindowManager.show' "$extension"
           ! grep -q 'Main.notify\|Main.notifyError' "$extension"
+          grep -Fq 'automatic (ASUS firmware owns PWM)' "$control"
+
       - uses: actions/upload-artifact@v4
         with:
           name: asus-zenbook-a14-ec-deb
