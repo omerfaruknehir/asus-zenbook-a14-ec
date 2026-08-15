@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """System D-Bus API for the ASUS Zenbook A14 EC profile driver.
 
-This intentionally exposes only the four recovered ASUS firmware modes. It
-never provides raw EC, PWM, register, firmware-mailbox, or MMIO access.
+This intentionally exposes only the four recovered ASUS firmware modes in their
+native order: Quiet, Normal, Turbo, Full Speed. It never provides raw EC, PWM,
+register, firmware-mailbox, or MMIO access.
 """
 
 from __future__ import annotations
@@ -26,7 +27,7 @@ PROFILE_PATH = Path("/sys/devices/platform/asus_zenbook_a14_ec/profile")
 CHOICES_PATH = Path("/sys/devices/platform/asus_zenbook_a14_ec/profile_choices")
 EMERGENCY_PATH = Path("/sys/devices/platform/asus_zenbook_a14_ec/quiet_emergency")
 
-PROFILES = ("quiet", "balanced", "performance", "full-speed")
+PROFILES = ("quiet", "normal", "turbo", "full-speed")
 
 
 class A14Error(dbus.DBusException):
@@ -82,8 +83,6 @@ class ProfileService(dbus.service.Object):
 
     @staticmethod
     def _read_emergency() -> bool:
-        # Kept for API compatibility with older desktop components. Native-only
-        # firmware profiles do not create a synthetic Quiet emergency state.
         try:
             return EMERGENCY_PATH.read_text().strip() == "1"
         except OSError:
