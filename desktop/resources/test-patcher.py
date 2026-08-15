@@ -72,6 +72,26 @@ impl CpuInfo {
             .map(Self::parse_lscpu)
     }
 }
+
+pub fn get_cpu_freq(core: usize) -> Result<u64> {
+    trace!("Finding CPU frequency for core {core}…");
+
+    read_parsed::<u64>(format!(
+        "/sys/devices/system/cpu/cpu{core}/cpufreq/cpuinfo_avg_freq"
+    ))
+    .or_else(|_| {
+        read_parsed::<u64>(format!(
+            "/sys/devices/system/cpu/cpu{core}/cpufreq/scaling_cur_freq"
+        ))
+    })
+    .map(|x| x * 1000)
+    .inspect(|freq| trace!("Frequency of core {core}: {freq} Hz"))
+}
+
+fn parse_proc_stat_line(line: &str) -> Result<(u64, u64)> {
+    let _ = line;
+    Ok((0, 0))
+}
 '''
 
 CPU_PAGE_RS = r'''mod imp {
@@ -133,10 +153,28 @@ def main() -> None:
         ui = (repo / "data/resources/ui/pages/cpu.ui").read_text()
 
         assert cpu.count(MODULE.MARKER) == 1
+        assert cpu.count(MODULE.FREQ_MARKER) == 1
         assert "RE_LSCPU_ONLINE_CPUS" in cpu
         assert "let is_x1e = qcom_x1e_platform();" in cpu
         assert "Qualcomm Oryon (ARMv8.7-A)" in cpu
         assert "pub microarchitecture: Option<String>" in cpu
+
+        # Current frequency must resolve canonical CPUFreq policy directories,
+        # and must not depend solely on cpuN/cpufreq or cpuinfo_avg_freq.
+        assert 'glob("/sys/devices/system/cpu/cpufreq/policy*")' in cpu
+        assert 'policy.join("affected_cpus")' in cpu
+        assert 'policy.join("related_cpus")' in cpu
+        assert '"cpuinfo_avg_freq", "cpuinfo_cur_freq", "scaling_cur_freq"' in cpu
+        assert "linux_cpu_frequency_khz(core)" in cpu
+        assert "read_parsed::<u64>(format!(" not in cpu
+
+        # Max prefers hardware capability and the frequency table, using the
+        # current scaling limit only as a last-resort fallback.
+        hardware = cpu.index('policy.join("cpuinfo_max_freq")')
+        table = cpu.index('policy.join("scaling_available_frequencies")')
+        scaling = cpu.index('policy.join("scaling_max_freq")')
+        assert hardware < table < scaling
+
         assert page.count("microarchitecture: Default::default()") == 1
         assert "imp.set_tab_name(microarchitecture)" in page
         assert ui.count('id="microarchitecture"') == 1
