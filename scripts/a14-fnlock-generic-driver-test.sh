@@ -51,7 +51,6 @@ restore_driver() {
     if [[ "$current" == hid-generic && -w /sys/bus/hid/drivers/hid-generic/unbind ]]; then
       printf '%s\n' "$HID_ID" >/sys/bus/hid/drivers/hid-generic/unbind || true
     fi
-    printf '\n' >"$TARGET/driver_override" 2>/dev/null || true
     modprobe hid_asus_ec 2>/dev/null || true
     if [[ "$ORIG_DRIVER" != unbound && -w "/sys/bus/hid/drivers/$ORIG_DRIVER/bind" ]]; then
       printf '%s\n' "$HID_ID" >"/sys/bus/hid/drivers/$ORIG_DRIVER/bind" 2>/dev/null || true
@@ -68,11 +67,25 @@ trap restore_driver EXIT INT TERM
 
 if [[ "$ORIG_DRIVER" != hid-generic ]]; then
   modprobe hid-generic
-  printf '%s\n' hid-generic >"$TARGET/driver_override"
+
+  if [[ "$ORIG_DRIVER" != unbound && ! -w "/sys/bus/hid/drivers/$ORIG_DRIVER/unbind" ]]; then
+    echo "A14_HID_GENERIC_TEST=ORIGINAL_UNBIND_NOT_WRITABLE" >&2
+    exit 4
+  fi
+  if [[ ! -w /sys/bus/hid/drivers/hid-generic/bind ]]; then
+    echo "A14_HID_GENERIC_TEST=GENERIC_BIND_NOT_WRITABLE" >&2
+    exit 4
+  fi
+
+  # Do not use the per-device driver_override attribute here. On this A14's
+  # HID device the kernel exposes it but rejects writes with EACCES even as
+  # root. A manual driver's bind node already performs the driver's normal
+  # match check, and hid-generic matches this HID device, so direct
+  # unbind/bind is sufficient and closer to the test we actually need.
+  RESTORE_NEEDED=1
   if [[ "$ORIG_DRIVER" != unbound ]]; then
     printf '%s\n' "$HID_ID" >"/sys/bus/hid/drivers/$ORIG_DRIVER/unbind"
   fi
-  RESTORE_NEEDED=1
   printf '%s\n' "$HID_ID" >/sys/bus/hid/drivers/hid-generic/bind
 fi
 
