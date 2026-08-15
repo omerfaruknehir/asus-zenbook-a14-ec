@@ -18,6 +18,19 @@ if [ ! -e "$kdir/Makefile" ]; then
     exit 1
 fi
 
+# Kbuild changes into $kdir before interpreting M=.  DKMS runs MAKE from its
+# private build directory, so a relative A14_MODULE_DIR would otherwise turn
+# into the kernel-header tree after `make -C`.  Canonicalize the external-module
+# directory while we are still in the caller's working directory.
+if [ ! -d "$module_dir" ]; then
+    echo "Missing A14 module source directory: $module_dir" >&2
+    exit 1
+fi
+module_dir=$(CDPATH= cd -- "$module_dir" && pwd -P)
+kdir=$(CDPATH= cd -- "$kdir" && pwd -P)
+
+echo "A14 kbuild: module_dir=$module_dir" >&2
+
 native_machine()
 {
     file=$1
