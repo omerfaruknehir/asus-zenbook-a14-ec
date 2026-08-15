@@ -2,24 +2,10 @@
 """Power-profiles-daemon compatible bridge for the ASUS Zenbook A14.
 
 Stock GNOME only understands the standard PPD trio, so the bridge normally
-publishes:
-
-    power-saver -> Whisper
-    balanced    -> ASUS Normal
-    performance -> ASUS Turbo
-
-When the repo's GNOME 50 five-profile rebuild is installed it drops a marker.
-Only then does this bridge advertise the two A14-specific names as well:
-
-    power-saver -> Whisper
-    quiet       -> ASUS Quiet
-    balanced    -> ASUS Normal
-    performance -> ASUS Turbo
-    full-speed  -> ASUS Full Speed
-
-The marker gate prevents stock GNOME from receiving unknown active-profile
-names. Driver-side Fn+F changes are consumed through sysfs POLLPRI notifications
-rather than a one-second timer; a slow timer remains as recovery fallback.
+publishes power-saver -> Whisper, balanced -> Normal, performance -> Turbo.
+When the native GNOME 50 five-mode rebuild marker is installed, it also exposes
+quiet and full-speed. Driver-side Fn+F changes are consumed via the kernel's
+sysfs POLLPRI notifications; a slow timer remains only as recovery fallback.
 """
 
 from __future__ import annotations
@@ -138,12 +124,11 @@ class PowerProfilesBridge(dbus.service.Object):
             self._prime_sysfs_fd(fd)
             channel = GLib.IOChannel.unix_new(fd)
             channel.set_encoding(None)
-            source_id = GLib.io_add_watch(
-                channel,
-                GLib.PRIORITY_DEFAULT,
+            source_id = channel.add_watch(
                 SYSFS_WATCH_CONDITION,
                 self._on_profile_event,
                 fd,
+                priority=GLib.PRIORITY_DEFAULT,
             )
             self._sysfs_watches.append((fd, channel, source_id))
             print(f"ppd-bridge: event watch ready: {PROFILE_PATH}", flush=True)
@@ -401,10 +386,7 @@ class PowerProfilesBridge(dbus.service.Object):
         self.restore_balanced()
         for fd, _channel, source_id in self._sysfs_watches:
             if source_id:
-                try:
-                    GLib.source_remove(source_id)
-                except GLib.Error:
-                    pass
+                GLib.source_remove(source_id)
             try:
                 os.close(fd)
             except OSError:
