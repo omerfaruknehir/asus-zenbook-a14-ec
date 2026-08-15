@@ -14,7 +14,7 @@ if [ "$ok" -eq 1 ]; then
 fi
 
 if [ "$ok" -eq 1 ]; then
-    python3 ./scripts/a14-gnome-native-five-profile.py || ok=0
+    python3 ./scripts/a14-gnome-native-five-profile-clean-ui.py || ok=0
 fi
 
 if [ "$ok" -eq 1 ]; then
