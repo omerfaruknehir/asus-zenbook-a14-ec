@@ -12,30 +12,21 @@ const OBJECT_PATH = '/io/github/omerfaruknehir/AsusA14';
 const ProfileIface = `
 <node>
   <interface name="io.github.omerfaruknehir.AsusA14.Profile1">
-    <method name="GetProfile">
-      <arg type="s" direction="out" name="profile"/>
-    </method>
-    <method name="GetProfiles">
-      <arg type="as" direction="out" name="profiles"/>
-    </method>
-    <method name="GetQuietEmergency">
-      <arg type="b" direction="out" name="active"/>
-    </method>
-    <method name="SetProfile">
-      <arg type="s" direction="in" name="profile"/>
-    </method>
-    <signal name="ProfileChanged">
-      <arg type="s" name="profile"/>
-    </signal>
-    <signal name="QuietEmergencyChanged">
-      <arg type="b" name="active"/>
-    </signal>
+    <method name="GetProfile"><arg type="s" direction="out" name="profile"/></method>
+    <method name="GetProfiles"><arg type="as" direction="out" name="profiles"/></method>
+    <method name="SetProfile"><arg type="s" direction="in" name="profile"/></method>
+    <signal name="ProfileChanged"><arg type="s" name="profile"/></signal>
   </interface>
 </node>`;
 
 const ProfileProxy = Gio.DBusProxy.makeProxyWrapper(ProfileIface);
 
 const PROFILE_INFO = {
+    'whisper': {
+        title: 'Whisper',
+        icon: 'audio-volume-muted-symbolic',
+        description: 'Minimum disturbance',
+    },
     'quiet': {
         title: 'Quiet',
         icon: 'audio-volume-low-symbolic',
@@ -58,7 +49,7 @@ const PROFILE_INFO = {
     },
 };
 
-const PROFILE_ORDER = ['quiet', 'normal', 'turbo', 'full-speed'];
+const PROFILE_ORDER = ['whisper', 'quiet', 'normal', 'turbo', 'full-speed'];
 
 const A14ModeToggle = GObject.registerClass(
 class A14ModeToggle extends QuickSettings.QuickMenuToggle {
@@ -72,14 +63,12 @@ class A14ModeToggle extends QuickSettings.QuickMenuToggle {
 
         this._panelIndicator = panelIndicator;
         this._profile = 'normal';
-        this._emergency = false;
         this._items = new Map();
         this.menuEnabled = true;
         this.menu.setHeader('power-profile-balanced-symbolic', 'A14 Mode');
 
         this._section = new PopupMenu.PopupMenuSection();
         this.menu.addMenuItem(this._section);
-
         for (const profile of PROFILE_ORDER) {
             const info = PROFILE_INFO[profile];
             const item = new PopupMenu.PopupImageMenuItem(info.title, info.icon);
@@ -87,7 +76,6 @@ class A14ModeToggle extends QuickSettings.QuickMenuToggle {
             this._items.set(profile, item);
             this._section.addMenuItem(item);
         }
-
         this.menu.addSettingsAction('Power Settings', 'gnome-power-panel.desktop');
 
         this._proxy = new ProfileProxy(
@@ -100,19 +88,31 @@ class A14ModeToggle extends QuickSettings.QuickMenuToggle {
                     this._setUnavailable();
                     return;
                 }
-
                 this._profileSignal = proxy.connectSignal(
                     'ProfileChanged', (_p, _sender, [profile]) => {
+                        const changed = profile !== this._profile;
                         this._profile = profile;
                         this._sync();
-                    });
-                this._emergencySignal = proxy.connectSignal(
-                    'QuietEmergencyChanged', (_p, _sender, [active]) => {
-                        this._emergency = active;
-                        this._sync();
+                        if (changed)
+                            this._showProfileOsd(profile);
                     });
                 this._refresh();
             });
+    }
+
+    _showProfileOsd(profile) {
+        const info = PROFILE_INFO[profile];
+        if (!info)
+            return;
+        const gicon = new Gio.ThemedIcon({name: info.icon});
+        const label = `${info.title} mode`;
+
+        // GNOME 50+ provides showAll(); older supported Shells use the
+        // monitor-index show() signature. Keep both without a notification.
+        if (typeof Main.osdWindowManager.showAll === 'function')
+            Main.osdWindowManager.showAll(gicon, label, null, -1);
+        else
+            Main.osdWindowManager.show(-1, gicon, label, null, -1);
     }
 
     _refresh() {
@@ -125,7 +125,6 @@ class A14ModeToggle extends QuickSettings.QuickMenuToggle {
             this._profile = result?.[0] ?? 'normal';
             this._sync();
         });
-
         this._proxy.GetProfilesRemote((result, error) => {
             if (error)
                 return;
@@ -139,9 +138,6 @@ class A14ModeToggle extends QuickSettings.QuickMenuToggle {
         this._proxy.SetProfileRemote(profile, (_result, error) => {
             if (error) {
                 logError(error, `ASUS A14 SetProfile(${profile})`);
-                Main.notifyError(
-                    'A14 Mode',
-                    `Could not switch to ${PROFILE_INFO[profile]?.title ?? profile}`);
                 this._refresh();
             }
         });
@@ -158,31 +154,22 @@ class A14ModeToggle extends QuickSettings.QuickMenuToggle {
         const info = PROFILE_INFO[this._profile] ?? {
             title: this._profile === 'custom' ? 'Custom' : 'Unavailable',
             icon: 'gnome-power-manager-symbolic',
-            description: '',
         };
-
         this.menuEnabled = true;
         this.subtitle = info.title;
         this.iconName = info.icon;
-
         for (const [profile, item] of this._items) {
-            item.setOrnament(
-                profile === this._profile
-                    ? PopupMenu.Ornament.CHECK
-                    : PopupMenu.Ornament.NONE);
+            item.setOrnament(profile === this._profile
+                ? PopupMenu.Ornament.CHECK
+                : PopupMenu.Ornament.NONE);
         }
-
         this.menu.setHeader(info.icon, 'A14 Mode');
         this._panelIndicator.visible = false;
     }
 
     destroy() {
-        if (this._proxy) {
-            if (this._profileSignal)
-                this._proxy.disconnectSignal(this._profileSignal);
-            if (this._emergencySignal)
-                this._proxy.disconnectSignal(this._emergencySignal);
-        }
+        if (this._proxy && this._profileSignal)
+            this._proxy.disconnectSignal(this._profileSignal);
         super.destroy();
     }
 });
@@ -194,7 +181,6 @@ class A14Indicator extends QuickSettings.SystemIndicator {
         this._indicator = this._addIndicator();
         this._indicator.icon_name = 'power-profile-balanced-symbolic';
         this._indicator.visible = false;
-
         this._toggle = new A14ModeToggle(this._indicator);
         this.quickSettingsItems.push(this._toggle);
     }
