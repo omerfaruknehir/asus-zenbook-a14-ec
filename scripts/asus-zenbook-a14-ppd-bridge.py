@@ -1,15 +1,25 @@
 #!/usr/bin/env python3
-"""Standards-compatible power-profiles-daemon fallback for the A14.
+"""Power-profiles-daemon compatible bridge for the ASUS Zenbook A14.
 
-The A14-specific five-mode UI is provided by the Profile1 service/Quick Settings
-extension. This fallback keeps the standard PPD vocabulary intact for generic
-Linux clients and maps it onto the nearest A14 policy:
+Stock GNOME only understands the standard PPD trio, so the bridge normally
+publishes:
 
     power-saver -> Whisper
     balanced    -> ASUS Normal
     performance -> ASUS Turbo
 
-ASUS Quiet and Full Speed remain available through the A14-specific interface.
+When the repo's GNOME 50 five-profile rebuild is installed it drops a marker.
+Only then does this bridge advertise the two A14-specific names as well:
+
+    power-saver -> Whisper
+    quiet       -> ASUS Quiet
+    balanced    -> ASUS Normal
+    performance -> ASUS Turbo
+    full-speed  -> ASUS Full Speed
+
+The marker gate prevents stock GNOME from receiving unknown active-profile
+names. Driver-side Fn+F changes are consumed through sysfs POLLPRI notifications
+rather than a one-second timer; a slow timer remains as recovery fallback.
 """
 
 from __future__ import annotations
@@ -37,14 +47,23 @@ KNOWN_INTERFACES = {INTERFACE, LEGACY_INTERFACE}
 
 PROFILE_PATH = Path("/sys/devices/platform/asus_zenbook_a14_ec/profile")
 STATE_PATH = Path("/var/lib/asus-zenbook-a14-ec/ppd-profile")
-PROFILE_ORDER = ("power-saver", "balanced", "performance")
-PROFILE_TO_DRIVER = {
+NATIVE_GNOME_MARKER = Path("/usr/share/asus-zenbook-a14-ec/native-gnome-five-profile")
+STANDARD_PROFILE_ORDER = ("power-saver", "balanced", "performance")
+FIVE_PROFILE_ORDER = ("power-saver", "quiet", "balanced", "performance", "full-speed")
+STANDARD_PROFILE_TO_DRIVER = {
     "power-saver": "whisper",
     "balanced": "normal",
     "performance": "turbo",
 }
-DRIVER_TO_PROFILE = {value: key for key, value in PROFILE_TO_DRIVER.items()}
+FIVE_PROFILE_TO_DRIVER = {
+    "power-saver": "whisper",
+    "quiet": "quiet",
+    "balanced": "normal",
+    "performance": "turbo",
+    "full-speed": "full-speed",
+}
 HOLD_PROFILES = ("power-saver", "performance")
+SYSFS_WATCH_CONDITION = GLib.IO_PRI | GLib.IO_ERR | GLib.IO_HUP
 
 
 class BridgeError(dbus.DBusException):
@@ -65,9 +84,17 @@ class PowerProfilesBridge(dbus.service.Object):
             LEGACY_BUS_NAME, bus, do_not_queue=True)
         super().__init__(bus, OBJECT_PATH)
         self.add_to_connection(bus, LEGACY_OBJECT_PATH)
+        self._native_five = NATIVE_GNOME_MARKER.exists()
+        self._profile_order = FIVE_PROFILE_ORDER if self._native_five else STANDARD_PROFILE_ORDER
+        self._profile_to_driver = (
+            FIVE_PROFILE_TO_DRIVER if self._native_five else STANDARD_PROFILE_TO_DRIVER)
+        self._driver_to_profile = {
+            value: key for key, value in self._profile_to_driver.items()
+        }
         self._holds: dict[int, dict[str, Any]] = {}
         self._next_cookie = 1
         self._battery_aware = False
+        self._sysfs_watches: list[tuple[int, GLib.IOChannel, int]] = []
         self._active_profile = self._load_initial_profile()
         self._apply_effective_profile()
         bus.add_signal_receiver(
@@ -77,11 +104,15 @@ class PowerProfilesBridge(dbus.service.Object):
             bus_name="org.freedesktop.DBus",
             path="/org/freedesktop/DBus",
         )
-        GLib.timeout_add_seconds(1, self._poll_driver_state)
+        self._add_profile_watch()
+        GLib.timeout_add_seconds(5, self._poll_driver_state)
+        print(
+            "ppd-bridge: ui-mode=" + ("native-five" if self._native_five else "stock-three"),
+            flush=True,
+        )
 
-    @staticmethod
-    def _validate_profile(profile: str, *, hold: bool = False) -> str:
-        valid = HOLD_PROFILES if hold else PROFILE_ORDER
+    def _validate_profile(self, profile: str, *, hold: bool = False) -> str:
+        valid = HOLD_PROFILES if hold else self._profile_order
         if profile not in valid:
             raise InvalidProfileError(f"Invalid profile: {profile}")
         return profile
@@ -93,23 +124,73 @@ class PowerProfilesBridge(dbus.service.Object):
         except OSError:
             return None
 
-    def _poll_driver_state(self) -> bool:
+    @staticmethod
+    def _prime_sysfs_fd(fd: int) -> None:
+        os.lseek(fd, 0, os.SEEK_SET)
+        try:
+            os.read(fd, 4096)
+        except BlockingIOError:
+            pass
+
+    def _add_profile_watch(self) -> None:
+        try:
+            fd = os.open(PROFILE_PATH, os.O_RDONLY | os.O_NONBLOCK)
+            self._prime_sysfs_fd(fd)
+            channel = GLib.IOChannel.unix_new(fd)
+            channel.set_encoding(None)
+            source_id = GLib.io_add_watch(
+                channel,
+                GLib.PRIORITY_DEFAULT,
+                SYSFS_WATCH_CONDITION,
+                self._on_profile_event,
+                fd,
+            )
+            self._sysfs_watches.append((fd, channel, source_id))
+            print(f"ppd-bridge: event watch ready: {PROFILE_PATH}", flush=True)
+        except (OSError, GLib.Error) as exc:
+            print(
+                f"ppd-bridge: cannot watch {PROFILE_PATH}; 5s fallback polling remains: {exc}",
+                file=sys.stderr,
+            )
+
+    def _on_profile_event(
+        self,
+        _channel: GLib.IOChannel,
+        condition: GLib.IOCondition,
+        fd: int,
+    ) -> bool:
+        if condition & GLib.IO_PRI:
+            try:
+                self._prime_sysfs_fd(fd)
+            except OSError as exc:
+                print(f"ppd-bridge: cannot acknowledge profile event: {exc}", file=sys.stderr)
+                return False
+            self._sync_driver_state()
+        if condition & (GLib.IO_ERR | GLib.IO_HUP):
+            print("ppd-bridge: profile sysfs watch ended", file=sys.stderr)
+            return False
+        return True
+
+    def _sync_driver_state(self) -> None:
         driver = self._read_driver_profile()
-        mapped = DRIVER_TO_PROFILE.get(driver or "")
+        mapped = self._driver_to_profile.get(driver or "")
         if not self._holds and mapped and mapped != self._active_profile:
             self._active_profile = mapped
             self._save_profile()
             self._emit_properties(("ActiveProfile",))
+
+    def _poll_driver_state(self) -> bool:
+        self._sync_driver_state()
         return GLib.SOURCE_CONTINUE
 
     def _load_initial_profile(self) -> str:
         try:
             saved = STATE_PATH.read_text().strip()
-            if saved in PROFILE_ORDER:
+            if saved in self._profile_order:
                 return saved
         except OSError:
             pass
-        return DRIVER_TO_PROFILE.get(self._read_driver_profile() or "", "balanced")
+        return self._driver_to_profile.get(self._read_driver_profile() or "", "balanced")
 
     def _save_profile(self) -> None:
         try:
@@ -127,7 +208,7 @@ class PowerProfilesBridge(dbus.service.Object):
         return self._active_profile
 
     def _write_driver_profile(self, profile: str) -> None:
-        driver_profile = PROFILE_TO_DRIVER[profile]
+        driver_profile = self._profile_to_driver[profile]
         try:
             PROFILE_PATH.write_text(f"{driver_profile}\n")
         except OSError as exc:
@@ -143,7 +224,7 @@ class PowerProfilesBridge(dbus.service.Object):
         self._write_driver_profile(effective)
         print(
             f"ppd-bridge: active={self._active_profile} effective={effective} "
-            f"driver={PROFILE_TO_DRIVER[effective]}", flush=True)
+            f"driver={self._profile_to_driver[effective]}", flush=True)
 
     def _emit_properties(self, names: tuple[str, ...]) -> None:
         changed = {name: self._get_property(name) for name in names}
@@ -181,7 +262,7 @@ class PowerProfilesBridge(dbus.service.Object):
                 "Driver": dbus.String("asus-zenbook-a14-ec"),
                 "PlatformDriver": dbus.String("asus-zenbook-a14-ec"),
             }, signature="sv")
-            for profile in PROFILE_ORDER
+            for profile in self._profile_order
         ], signature="a{sv}")
 
     def _holds_property(self) -> dbus.Array:
@@ -208,7 +289,7 @@ class PowerProfilesBridge(dbus.service.Object):
         if prop == "ActiveProfileHolds":
             return self._holds_property()
         if prop == "Version":
-            return dbus.String("0.5.1-a14-whisper")
+            return dbus.String("0.5.6-a14-five-ui")
         if prop == "BatteryAware":
             return dbus.Boolean(self._battery_aware)
         raise dbus.exceptions.DBusException(
@@ -316,6 +397,20 @@ class PowerProfilesBridge(dbus.service.Object):
         except BridgeError as exc:
             print(f"ppd-bridge: shutdown restore failed: {exc}", file=sys.stderr)
 
+    def shutdown(self) -> None:
+        self.restore_balanced()
+        for fd, _channel, source_id in self._sysfs_watches:
+            if source_id:
+                try:
+                    GLib.source_remove(source_id)
+                except GLib.Error:
+                    pass
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        self._sysfs_watches.clear()
+
 
 def main() -> int:
     if not PROFILE_PATH.exists():
@@ -331,7 +426,7 @@ def main() -> int:
     loop = GLib.MainLoop()
 
     def stop(_signum: int, _frame: object) -> None:
-        bridge.restore_balanced()
+        bridge.shutdown()
         loop.quit()
 
     signal.signal(signal.SIGTERM, stop)
