@@ -25,22 +25,22 @@ const ProfileProxy = Gio.DBusProxy.makeProxyWrapper(ProfileIface);
 const PROFILE_INFO = {
     'whisper': {
         title: 'Whisper',
-        icon: 'power-profile-power-saver-symbolic',
+        icon: 'a14-power-profile-whisper-symbolic',
         description: 'Minimum disturbance',
     },
     'quiet': {
         title: 'Quiet',
-        icon: 'audio-volume-low-symbolic',
+        icon: 'a14-power-profile-quiet-symbolic',
         description: 'ASUS Quiet firmware mode',
     },
     'normal': {
         title: 'Normal',
-        icon: 'power-profile-balanced-symbolic',
+        icon: 'a14-power-profile-normal-symbolic',
         description: 'ASUS Normal firmware mode',
     },
     'turbo': {
         title: 'Turbo',
-        icon: 'power-profile-performance-symbolic',
+        icon: 'a14-power-profile-turbo-symbolic',
         description: 'ASUS Turbo firmware mode',
     },
     'full-speed': {
@@ -106,7 +106,7 @@ class A14ModeToggle extends QuickSettings.QuickMenuToggle {
         super({
             title: 'A14 Mode',
             subtitle: 'Connecting…',
-            iconName: 'power-profile-balanced-symbolic',
+            iconName: 'a14-power-profile-normal-symbolic',
             toggleMode: false,
         });
 
@@ -114,7 +114,7 @@ class A14ModeToggle extends QuickSettings.QuickMenuToggle {
         this._profile = 'normal';
         this._items = new Map();
         this.menuEnabled = true;
-        this.menu.setHeader('power-profile-balanced-symbolic', 'A14 Mode');
+        this.menu.setHeader('a14-power-profile-normal-symbolic', 'A14 Mode');
 
         this._section = new PopupMenu.PopupMenuSection();
         this.menu.addMenuItem(this._section);
@@ -219,7 +219,7 @@ class A14Indicator extends QuickSettings.SystemIndicator {
     constructor() {
         super();
         this._indicator = this._addIndicator();
-        this._indicator.icon_name = 'power-profile-balanced-symbolic';
+        this._indicator.icon_name = 'a14-power-profile-normal-symbolic';
         this._indicator.visible = false;
         this._toggle = new A14ModeToggle(this._indicator);
         this.quickSettingsItems.push(this._toggle);

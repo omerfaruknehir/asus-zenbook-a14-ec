@@ -59,6 +59,17 @@ install -m 0644 "$repo/systemd/asus-zenbook-a14-profile.service" "$root/usr/lib/
 install -m 0644 "$repo/dbus-1/system.d/io.github.omerfaruknehir.AsusA14.conf" "$root/usr/share/dbus-1/system.d/"
 install -m 0644 "$repo/gnome-shell/$ext_uuid/metadata.json" "$ext_dir/metadata.json"
 install -m 0644 "$repo/gnome-shell/$ext_uuid/extension.js" "$ext_dir/extension.js"
+install -d -m 0755 "$ext_dir/icons" "$root/usr/share/icons/hicolor/scalable/status"
+for profile in whisper quiet normal turbo full-speed; do
+  icon="a14-power-profile-$profile-symbolic.svg"
+  if ! cmp -s "$repo/userspace/gnome/icons/$icon" "$repo/gnome-shell/$ext_uuid/icons/$icon"; then
+    echo "GNOME icon copies differ: $icon" >&2
+    exit 1
+  fi
+  install -m 0644 "$repo/gnome-shell/$ext_uuid/icons/$icon" "$ext_dir/icons/$icon"
+  install -m 0644 "$repo/userspace/gnome/icons/$icon" \
+    "$root/usr/share/icons/hicolor/scalable/status/$icon"
+done
 install -m 0644 "$repo/xdg/autostart/asus-zenbook-a14-gnome-extension.desktop" "$root/etc/xdg/autostart/"
 install -m 0644 "$repo/modprobe.d/asus-zenbook-a14-ec.conf" "$root/etc/modprobe.d/"
 install -m 0644 "$repo/README.md" "$root/usr/share/doc/$package/README.md"
@@ -83,6 +94,17 @@ Files: scripts/asus-zenbook-a14-ppd-bridge.py scripts/asus-zenbook-a14-profile-s
 Copyright: 2026 Sombre-Osmoze <sombre@osmoze.xyz>
            2026 Ömer Faruk Nehir <omerfaruknehir@gmail.com>
 License: GPL-2.0-or-later
+
+Files: userspace/gnome/icons/*.svg gnome-shell/asus-a14-modes@omerfaruknehir/icons/*.svg
+Copyright: Yaru contributors
+License: MPL-2.0
+Comment: Meter artwork is derived from ubuntu/yaru.dart assets/icons/meter.
+ The gauge geometry is unchanged; the gray fill is adapted to currentColor for
+ symbolic GNOME theming.
+
+License: MPL-2.0
+ On Debian systems, the complete text of the Mozilla Public License 2.0 can be
+ found in /usr/share/common-licenses/MPL-2.0.
 COPYRIGHT
 
 installed_size=$(du -sk "$root" | awk '{print $1}')
@@ -139,6 +161,10 @@ if command -v update-initramfs >/dev/null 2>&1; then
   update-initramfs -u -k "\$kernel"
 elif command -v dracut >/dev/null 2>&1; then
   dracut --force "/boot/initramfs-\$kernel.img" "\$kernel"
+fi
+
+if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+  gtk-update-icon-cache -f -t /usr/share/icons/hicolor >/dev/null 2>&1 || true
 fi
 
 systemctl daemon-reload >/dev/null 2>&1 || true
@@ -202,6 +228,9 @@ kernel="$(uname -r)"
 systemctl daemon-reload >/dev/null 2>&1 || true
 if command -v busctl >/dev/null 2>&1; then
   busctl call org.freedesktop.DBus /org/freedesktop/DBus org.freedesktop.DBus ReloadConfig >/dev/null 2>&1 || true
+fi
+if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+  gtk-update-icon-cache -f -t /usr/share/icons/hicolor >/dev/null 2>&1 || true
 fi
 depmod -a "$kernel" >/dev/null 2>&1 || true
 if command -v update-initramfs >/dev/null 2>&1; then

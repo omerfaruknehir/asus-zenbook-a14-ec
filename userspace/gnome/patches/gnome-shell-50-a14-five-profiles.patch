@@ -5,7 +5,8 @@ The A14 bridge uses standard PPD wire names where possible while the hardware
 policy is Whisper / Quiet / Normal / Turbo / Full Speed. GNOME Shell 50 filters
 profiles through PROFILE_PARAMS and labels the standard three with generic
 names, so teach the existing Power Mode tile both A14-specific names and the
-A14 presentation labels.
+A14 presentation labels. All five presentation icons use the same A14 symbolic
+API names, backed by the ordered Yaru meter family.
 
 Internal PPD name -> A14 UI name:
   power-saver -> Whisper
@@ -26,20 +27,23 @@ Internal PPD name -> A14 UI name:
 +
      'performance': {
 -        name: C_('Power profile', 'Performance'),
+-        iconName: 'power-profile-performance-symbolic',
 +        name: C_('Power profile', 'Turbo'),
-         iconName: 'power-profile-performance-symbolic',
++        iconName: 'a14-power-profile-turbo-symbolic',
      },
  
      'balanced': {
 -        name: C_('Power profile', 'Balanced'),
+-        iconName: 'power-profile-balanced-symbolic',
 +        name: C_('Power profile', 'Normal'),
-         iconName: 'power-profile-balanced-symbolic',
++        iconName: 'a14-power-profile-normal-symbolic',
      },
  
      'power-saver': {
 -        name: C_('Power profile', 'Power Saver'),
+-        iconName: 'power-profile-power-saver-symbolic',
 +        name: C_('Power profile', 'Whisper'),
-         iconName: 'power-profile-power-saver-symbolic',
++        iconName: 'a14-power-profile-whisper-symbolic',
      },
 +
 +    'quiet': {

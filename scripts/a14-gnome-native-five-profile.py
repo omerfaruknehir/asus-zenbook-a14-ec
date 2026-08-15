@@ -99,14 +99,38 @@ def patch_shell_semantic(src: Path) -> None:
 
     s = replace_once(
         s,
-        """const PROFILE_PARAMS = {\n    'performance': {\n""",
-        """const PROFILE_PARAMS = {\n    'full-speed': {\n        name: C_('Power profile', 'Full Speed'),\n        iconName: 'a14-power-profile-full-speed-symbolic',\n    },\n\n    'performance': {\n""",
+        """const PROFILE_PARAMS = {
+    'performance': {
+""",
+        """const PROFILE_PARAMS = {
+    'full-speed': {
+        name: C_('Power profile', 'Full Speed'),
+        iconName: 'a14-power-profile-full-speed-symbolic',
+    },
+
+    'performance': {
+""",
         "shell-full-speed-profile",
     )
     s = replace_once(
         s,
-        """    'power-saver': {\n        name: C_('Power profile', 'Power Saver'),\n        iconName: 'power-profile-power-saver-symbolic',\n    },\n};\n""",
-        """    'power-saver': {\n        name: C_('Power profile', 'Power Saver'),\n        iconName: 'power-profile-power-saver-symbolic',\n    },\n\n    'quiet': {\n        name: C_('Power profile', 'Quiet'),\n        iconName: 'a14-power-profile-quiet-symbolic',\n    },\n};\n""",
+        """    'power-saver': {
+        name: C_('Power profile', 'Power Saver'),
+        iconName: 'power-profile-power-saver-symbolic',
+    },
+};
+""",
+        """    'power-saver': {
+        name: C_('Power profile', 'Power Saver'),
+        iconName: 'a14-power-profile-whisper-symbolic',
+    },
+
+    'quiet': {
+        name: C_('Power profile', 'Quiet'),
+        iconName: 'a14-power-profile-quiet-symbolic',
+    },
+};
+""",
         "shell-quiet-profile",
     )
 
@@ -115,6 +139,8 @@ def patch_shell_semantic(src: Path) -> None:
         ("name: C_('Power profile', 'Performance')", "name: C_('Power profile', 'Turbo')", "shell-turbo-label"),
         ("name: C_('Power profile', 'Balanced')", "name: C_('Power profile', 'Normal')", "shell-normal-label"),
         ("name: C_('Power profile', 'Power Saver')", "name: C_('Power profile', 'Whisper')", "shell-whisper-label"),
+        ("iconName: 'power-profile-performance-symbolic'", "iconName: 'a14-power-profile-turbo-symbolic'", "shell-turbo-icon"),
+        ("iconName: 'power-profile-balanced-symbolic'", "iconName: 'a14-power-profile-normal-symbolic'", "shell-normal-icon"),
     )
     for old, new, label in replacements:
         s = replace_once(s, old, new, label)
@@ -127,7 +153,10 @@ def patch_shell_semantic(src: Path) -> None:
         "C_('Power profile', 'Normal')",
         "C_('Power profile', 'Whisper')",
         "C_('Power profile', 'Quiet')",
+        "a14-power-profile-whisper-symbolic",
         "a14-power-profile-quiet-symbolic",
+        "a14-power-profile-normal-symbolic",
+        "a14-power-profile-turbo-symbolic",
         "a14-power-profile-full-speed-symbolic",
         "this._proxy.ActiveProfile = profile",
     )
@@ -148,28 +177,148 @@ def patch_control_center_semantic(src: Path) -> None:
 
     hs = replace_once(
         hs,
-        """typedef enum\n{\n  CC_POWER_PROFILE_PERFORMANCE,\n  CC_POWER_PROFILE_BALANCED,\n  CC_POWER_PROFILE_POWER_SAVER,\n  NUM_CC_POWER_PROFILES,\n""",
-        """typedef enum\n{\n  CC_POWER_PROFILE_FULL_SPEED,\n  CC_POWER_PROFILE_PERFORMANCE,\n  CC_POWER_PROFILE_BALANCED,\n  CC_POWER_PROFILE_POWER_SAVER,\n  CC_POWER_PROFILE_QUIET,\n  NUM_CC_POWER_PROFILES,\n""",
+        """typedef enum
+{
+  CC_POWER_PROFILE_PERFORMANCE,
+  CC_POWER_PROFILE_BALANCED,
+  CC_POWER_PROFILE_POWER_SAVER,
+  NUM_CC_POWER_PROFILES,
+""",
+        """typedef enum
+{
+  CC_POWER_PROFILE_FULL_SPEED,
+  CC_POWER_PROFILE_PERFORMANCE,
+  CC_POWER_PROFILE_BALANCED,
+  CC_POWER_PROFILE_POWER_SAVER,
+  CC_POWER_PROFILE_QUIET,
+  NUM_CC_POWER_PROFILES,
+""",
         "control-center-five-profile-enum",
     )
 
     cs = replace_once(
         cs,
-        """  CcPowerProfileRow *self;\n  const char *text, *subtext;\n\n  self = g_object_new (CC_TYPE_POWER_PROFILE_ROW, NULL);\n\n  self->power_profile = power_profile;\n  switch (self->power_profile)\n    {\n      case CC_POWER_PROFILE_PERFORMANCE:\n        text = C_(\"Power profile\", \"P_erformance\");\n        subtext = _(\"High performance and power usage\");\n        break;\n      case CC_POWER_PROFILE_BALANCED:\n        text = C_(\"Power profile\", \"Ba_lanced\");\n        subtext = _(\"Standard performance and power usage\");\n        break;\n      case CC_POWER_PROFILE_POWER_SAVER:\n        text = C_(\"Power profile\", \"P_ower Saver\");\n        subtext = _(\"Reduced performance and power usage\");\n        break;\n      default:\n        g_assert_not_reached ();\n    }\n\n  adw_preferences_row_set_title (ADW_PREFERENCES_ROW (self), text);\n""",
-        """  CcPowerProfileRow *self;\n  const char *text, *subtext;\n\n  self = g_object_new (CC_TYPE_POWER_PROFILE_ROW, NULL);\n\n  self->power_profile = power_profile;\n  switch (self->power_profile)\n    {\n      case CC_POWER_PROFILE_FULL_SPEED:\n        text = C_(\"Power profile\", \"_Full Speed\");\n        subtext = _(\"ASUS Full Speed firmware mode\");\n        break;\n      case CC_POWER_PROFILE_PERFORMANCE:\n        text = C_(\"Power profile\", \"_Turbo\");\n        subtext = _(\"ASUS Turbo firmware mode\");\n        break;\n      case CC_POWER_PROFILE_BALANCED:\n        text = C_(\"Power profile\", \"_Normal\");\n        subtext = _(\"ASUS Normal firmware mode\");\n        break;\n      case CC_POWER_PROFILE_POWER_SAVER:\n        text = C_(\"Power profile\", \"_Whisper\");\n        subtext = _(\"Minimum disturbance; may throttle CPU and GPU\");\n        break;\n      case CC_POWER_PROFILE_QUIET:\n        text = C_(\"Power profile\", \"_Quiet\");\n        subtext = _(\"ASUS Quiet firmware mode\");\n        break;\n      default:\n        g_assert_not_reached ();\n    }\n\n  adw_preferences_row_set_title (ADW_PREFERENCES_ROW (self), text);\n""",
+        """  CcPowerProfileRow *self;
+  const char *text, *subtext;
+
+  self = g_object_new (CC_TYPE_POWER_PROFILE_ROW, NULL);
+
+  self->power_profile = power_profile;
+  switch (self->power_profile)
+    {
+      case CC_POWER_PROFILE_PERFORMANCE:
+        text = C_("Power profile", "P_erformance");
+        subtext = _("High performance and power usage");
+        break;
+      case CC_POWER_PROFILE_BALANCED:
+        text = C_("Power profile", "Ba_lanced");
+        subtext = _("Standard performance and power usage");
+        break;
+      case CC_POWER_PROFILE_POWER_SAVER:
+        text = C_("Power profile", "P_ower Saver");
+        subtext = _("Reduced performance and power usage");
+        break;
+      default:
+        g_assert_not_reached ();
+    }
+
+  adw_preferences_row_set_title (ADW_PREFERENCES_ROW (self), text);
+""",
+        """  CcPowerProfileRow *self;
+  const char *text, *subtext;
+
+  self = g_object_new (CC_TYPE_POWER_PROFILE_ROW, NULL);
+
+  self->power_profile = power_profile;
+  switch (self->power_profile)
+    {
+      case CC_POWER_PROFILE_FULL_SPEED:
+        text = C_("Power profile", "_Full Speed");
+        subtext = _("ASUS Full Speed firmware mode");
+        break;
+      case CC_POWER_PROFILE_PERFORMANCE:
+        text = C_("Power profile", "_Turbo");
+        subtext = _("ASUS Turbo firmware mode");
+        break;
+      case CC_POWER_PROFILE_BALANCED:
+        text = C_("Power profile", "_Normal");
+        subtext = _("ASUS Normal firmware mode");
+        break;
+      case CC_POWER_PROFILE_POWER_SAVER:
+        text = C_("Power profile", "_Whisper");
+        subtext = _("Minimum disturbance; may throttle CPU and GPU");
+        break;
+      case CC_POWER_PROFILE_QUIET:
+        text = C_("Power profile", "_Quiet");
+        subtext = _("ASUS Quiet firmware mode");
+        break;
+      default:
+        g_assert_not_reached ();
+    }
+
+  adw_preferences_row_set_title (ADW_PREFERENCES_ROW (self), text);
+""",
         "control-center-a14-five-mode-rows",
     )
 
     cs = replace_once(
         cs,
-        """CcPowerProfile\ncc_power_profile_from_str (const char *profile)\n{\n  if (g_strcmp0 (profile, \"power-saver\") == 0)\n    return CC_POWER_PROFILE_POWER_SAVER;\n  if (g_strcmp0 (profile, \"balanced\") == 0)\n    return CC_POWER_PROFILE_BALANCED;\n  if (g_strcmp0 (profile, \"performance\") == 0)\n    return CC_POWER_PROFILE_PERFORMANCE;\n""",
-        """CcPowerProfile\ncc_power_profile_from_str (const char *profile)\n{\n  if (g_strcmp0 (profile, \"full-speed\") == 0)\n    return CC_POWER_PROFILE_FULL_SPEED;\n  if (g_strcmp0 (profile, \"power-saver\") == 0)\n    return CC_POWER_PROFILE_POWER_SAVER;\n  if (g_strcmp0 (profile, \"balanced\") == 0)\n    return CC_POWER_PROFILE_BALANCED;\n  if (g_strcmp0 (profile, \"performance\") == 0)\n    return CC_POWER_PROFILE_PERFORMANCE;\n  if (g_strcmp0 (profile, \"quiet\") == 0)\n    return CC_POWER_PROFILE_QUIET;\n""",
+        """CcPowerProfile
+cc_power_profile_from_str (const char *profile)
+{
+  if (g_strcmp0 (profile, "power-saver") == 0)
+    return CC_POWER_PROFILE_POWER_SAVER;
+  if (g_strcmp0 (profile, "balanced") == 0)
+    return CC_POWER_PROFILE_BALANCED;
+  if (g_strcmp0 (profile, "performance") == 0)
+    return CC_POWER_PROFILE_PERFORMANCE;
+""",
+        """CcPowerProfile
+cc_power_profile_from_str (const char *profile)
+{
+  if (g_strcmp0 (profile, "full-speed") == 0)
+    return CC_POWER_PROFILE_FULL_SPEED;
+  if (g_strcmp0 (profile, "power-saver") == 0)
+    return CC_POWER_PROFILE_POWER_SAVER;
+  if (g_strcmp0 (profile, "balanced") == 0)
+    return CC_POWER_PROFILE_BALANCED;
+  if (g_strcmp0 (profile, "performance") == 0)
+    return CC_POWER_PROFILE_PERFORMANCE;
+  if (g_strcmp0 (profile, "quiet") == 0)
+    return CC_POWER_PROFILE_QUIET;
+""",
         "control-center-profile-from-string",
     )
     cs = replace_once(
         cs,
-        """const char *\ncc_power_profile_to_str (CcPowerProfile profile)\n{\n  switch (profile)\n  {\n  case CC_POWER_PROFILE_POWER_SAVER:\n    return \"power-saver\";\n  case CC_POWER_PROFILE_BALANCED:\n    return \"balanced\";\n  case CC_POWER_PROFILE_PERFORMANCE:\n    return \"performance\";\n""",
-        """const char *\ncc_power_profile_to_str (CcPowerProfile profile)\n{\n  switch (profile)\n  {\n  case CC_POWER_PROFILE_FULL_SPEED:\n    return \"full-speed\";\n  case CC_POWER_PROFILE_POWER_SAVER:\n    return \"power-saver\";\n  case CC_POWER_PROFILE_BALANCED:\n    return \"balanced\";\n  case CC_POWER_PROFILE_PERFORMANCE:\n    return \"performance\";\n  case CC_POWER_PROFILE_QUIET:\n    return \"quiet\";\n""",
+        """const char *
+cc_power_profile_to_str (CcPowerProfile profile)
+{
+  switch (profile)
+  {
+  case CC_POWER_PROFILE_POWER_SAVER:
+    return "power-saver";
+  case CC_POWER_PROFILE_BALANCED:
+    return "balanced";
+  case CC_POWER_PROFILE_PERFORMANCE:
+    return "performance";
+""",
+        """const char *
+cc_power_profile_to_str (CcPowerProfile profile)
+{
+  switch (profile)
+  {
+  case CC_POWER_PROFILE_FULL_SPEED:
+    return "full-speed";
+  case CC_POWER_PROFILE_POWER_SAVER:
+    return "power-saver";
+  case CC_POWER_PROFILE_BALANCED:
+    return "balanced";
+  case CC_POWER_PROFILE_PERFORMANCE:
+    return "performance";
+  case CC_POWER_PROFILE_QUIET:
+    return "quiet";
+""",
         "control-center-profile-to-string",
     )
 
@@ -240,7 +389,10 @@ def install_icons() -> None:
     dest = Path("/usr/share/icons/hicolor/scalable/status")
     run(["sudo", "install", "-d", "-m", "0755", str(dest)])
     for icon in (
+        ICON_DIR / "a14-power-profile-whisper-symbolic.svg",
         ICON_DIR / "a14-power-profile-quiet-symbolic.svg",
+        ICON_DIR / "a14-power-profile-normal-symbolic.svg",
+        ICON_DIR / "a14-power-profile-turbo-symbolic.svg",
         ICON_DIR / "a14-power-profile-full-speed-symbolic.svg",
     ):
         if not icon.is_file():
