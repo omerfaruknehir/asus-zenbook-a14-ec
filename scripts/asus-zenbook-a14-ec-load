@@ -9,6 +9,15 @@ case "$model" in
     ;;
 esac
 
+# Hamoa/X1E exposes Oryon DVFS through the ARM SCMI Performance protocol over
+# the Qualcomm CPUCP mailbox. On distro kernels these pieces may be modules.
+# Attempt the standard chain before loading the A14 EC so Whisper can attach
+# freq_qos requests immediately. Every step is non-fatal: native ASUS modes and
+# Whisper's safe Quiet fallback remain usable if this kernel lacks CPUFreq.
+modprobe qcom_cpucp_mbox 2>/dev/null || true
+modprobe scmi_transport_mailbox 2>/dev/null || true
+modprobe scmi_cpufreq 2>/dev/null || true
+
 # HID support is independent of the direct EC path and is safe to load first.
 modprobe hid_asus_ec || true
 
