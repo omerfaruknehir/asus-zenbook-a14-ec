@@ -1,0 +1,14 @@
+--- a/src/aegis_hello/capture.py
++++ b/src/aegis_hello/capture.py
+@@ -433,7 +433,10 @@ def set_continuous_illumination(percent: float) -> int:
+         # Stop the SOF-gated/strobe path first, then select the driver's dedicated
+         # continuous Torch mode and its real current control.  The A14 exposes
+         # led_mode=2 (Torch) and intensity_torch_mode in microamps.
+-        _write_required(dev / "force_off", 1)
++        # A14_IR_TORCH_FORCE_GATE_RELEASE: force_off=1 is the immediate-LOW
++        # safety gate used by synchronized flash windows. Continuous Torch has
++        # no timed window to override it, so release that gate before Torch ON.
++        _write_required(dev / "force_off", 0)
+         _write_required(led / "flash_strobe", 0)
+         _write_required(led / "brightness", 0)
+         _set_v4l2_controls(flash, "led_mode=0")
