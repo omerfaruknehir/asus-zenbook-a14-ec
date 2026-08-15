@@ -14,7 +14,7 @@ find_hwmon() {
 }
 
 profile_path=/sys/devices/platform/asus_zenbook_a14_ec/profile
-emergency_path=/sys/devices/platform/asus_zenbook_a14_ec/quiet_emergency
+whisper_level_path=/sys/devices/platform/asus_zenbook_a14_ec/whisper_level
 hwmon=$(find_hwmon 2>/dev/null || true)
 
 need_driver() {
@@ -45,13 +45,17 @@ standard_platform_profile_present() {
 
 show_status() {
   need_driver
-  printf 'profile: %s\n' "$(cat "$profile_path")"
-  if [ -r "$emergency_path" ]; then
-    if [ "$(cat "$emergency_path" 2>/dev/null)" = 1 ]; then
-      echo 'quiet emergency cooling: ACTIVE'
-    else
-      echo 'quiet emergency cooling: inactive'
-    fi
+  profile=$(cat "$profile_path")
+  printf 'profile: %s\n' "$profile"
+  if [ "$profile" = whisper ] && [ -r "$whisper_level_path" ]; then
+    level=$(cat "$whisper_level_path")
+    case "$level" in
+      0) detail='fanless / light throttling' ;;
+      1) detail='fanless / medium throttling' ;;
+      2) detail='fanless / strong throttling' ;;
+      *) detail='native Quiet cooling / strong throttling' ;;
+    esac
+    printf 'whisper state: %s (%s)\n' "$level" "$detail"
   fi
   [ -r "$hwmon/temp1_input" ] && awk '{printf "EC temperature: %.1f C\n", $1/1000}' "$hwmon/temp1_input"
   [ -r "$hwmon/fan1_input" ] && printf 'left fan: %s RPM (PWM %s)\n' "$(cat "$hwmon/fan1_input")" "$(cat "$hwmon/pwm1")"
@@ -66,29 +70,19 @@ show_status() {
   printf 'system power-profiles-daemon: %s\n' "$(unit_state "$PPD_SERVICE")"
   printf 'A14 PPD fallback bridge: %s\n' "$(unit_state "$BRIDGE_SERVICE")"
   if standard_platform_profile_present; then
-    echo 'GNOME profile backend: native Linux platform_profile'
+    echo 'GNOME profile backend: native Linux platform_profile + A14 mode extension'
   else
-    echo 'GNOME profile backend: A14 PPD-compatible fallback (when installed/enabled)'
+    echo 'GNOME profile backend: A14 PPD-compatible fallback'
   fi
 }
 
 bridge_status() {
   printf 'system power-profiles-daemon: %s\n' "$(unit_state "$PPD_SERVICE")"
   printf 'A14 PPD bridge: %s\n' "$(unit_state "$BRIDGE_SERVICE")"
-  if standard_platform_profile_present; then
-    echo 'standard platform_profile backend: available; bridge is normally unnecessary'
-  else
-    echo 'standard platform_profile backend: unavailable'
-  fi
 }
 
 bridge_enable() {
-  need_root
-  [ -e "/usr/lib/systemd/system/$BRIDGE_SERVICE" ] || {
-    echo "$BRIDGE_SERVICE is not installed" >&2
-    exit 1
-  }
-  need_driver
+  need_root; need_driver
   systemctl mask --now "$PPD_SERVICE" 2>/dev/null || true
   systemctl unmask "$BRIDGE_SERVICE" 2>/dev/null || true
   systemctl enable --now "$BRIDGE_SERVICE"
@@ -119,33 +113,26 @@ usage() {
   cat <<'USAGE'
 Usage:
   asus-a14-control status
-  sudo asus-a14-control profile quiet|power-saver|balanced|performance|full-speed
+  sudo asus-a14-control profile whisper|quiet|normal|turbo|full-speed
   sudo asus-a14-control auto
   sudo asus-a14-control manual PWM
   sudo asus-a14-control fan left|right PWM
   sudo asus-a14-control backlight 0|1|2|3
   sudo asus-a14-control profile-backend refresh
   asus-a14-control ppd-bridge status
-  sudo asus-a14-control ppd-bridge enable
-  sudo asus-a14-control ppd-bridge disable
+  sudo asus-a14-control ppd-bridge enable|disable
 
-Named policies:
-  quiet       Acoustic-first: strong CPU QoS cap + native Quiet fan curve.
-              If temperature becomes genuinely unsafe, CPU throttling remains
-              active while firmware cooling is temporarily promoted to Turbo.
-  power-saver Normal firmware fan curve + moderate CPU QoS cap; maps to GNOME
-              Power Saver / Linux low-power.
-  balanced    Native Normal curve with no artificial CPU cap.
-  performance Native Turbo curve with no artificial CPU cap.
-  full-speed  Native Full Speed policy + literal PWM 255, with no artificial
-              CPU cap. Hardware thermal protection remains in force.
+Ordered modes:
+  whisper     Minimum-disturbance policy. Tries 0 RPM and progressively caps
+              CPU/GPU; silently falls back to native ASUS Quiet cooling when
+              required, then retries fanless operation after cooling down.
+  quiet       Native ASUS Quiet firmware mode.
+  normal      Native ASUS Normal firmware mode.
+  turbo       Native ASUS Turbo firmware mode.
+  full-speed  Native ASUS Full Speed firmware mode.
 
-Direct manual PWM values are 75-255 and are treated as CUSTOM. A kernel safety
-monitor returns CUSTOM manual control to firmware AUTO if temperatures become
-unsafe or temperature readings repeatedly fail.
-
-The installer automatically selects native Linux platform_profile for GNOME
-when available and otherwise enables the PPD-compatible fallback bridge.
+Fn+F cycles: Whisper -> Quiet -> Normal -> Turbo -> Full Speed -> Whisper.
+Direct manual PWM values remain 75-255 and are treated as CUSTOM.
 USAGE
 }
 
@@ -157,9 +144,11 @@ case "$cmd" in
   profile)
     need_driver; need_root
     case "${2:-}" in
-      quiet|power-saver|balanced|performance|full-speed)
+      whisper|quiet|normal|turbo|full-speed)
         printf '%s\n' "$2" >"$profile_path"
         ;;
+      balanced) printf 'normal\n' >"$profile_path" ;;
+      performance) printf 'turbo\n' >"$profile_path" ;;
       *) usage; exit 2 ;;
     esac
     show_status
@@ -202,17 +191,9 @@ case "$cmd" in
     ;;
   ppd-bridge)
     case "${2:-status}" in
-      status) bridge_status;;
-      enable) bridge_enable;;
-      disable) bridge_disable;;
-      *) usage; exit 2;;
+      status) bridge_status;; enable) bridge_enable;; disable) bridge_disable;; *) usage; exit 2;;
     esac
     ;;
-  -h|--help|help)
-    usage
-    ;;
-  *)
-    usage
-    exit 2
-    ;;
+  -h|--help|help) usage ;;
+  *) usage; exit 2 ;;
 esac
