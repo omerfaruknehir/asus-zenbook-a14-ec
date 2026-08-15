@@ -13,6 +13,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Validate archived patches and IR helpers
+        shell: bash
+        run: |
+          bash -n scripts/a14-ir-torch-smoke.sh \
+            scripts/a14-apply-aegis-ir-torch-fix.sh \
+            scripts/a14-hotfix-installed-aegis-ir-torch.sh
+          (cd desktop/resources/patches && sha256sum -c SHA256SUMS)
+          (cd userspace/aegis-hello/patches && sha256sum -c SHA256SUMS)
+          grep -q 'led_mode=2' userspace/aegis-hello/patches/aegis-hello-0.8.3-v4l2-torch.patch
+          grep -q 'intensity_torch_mode' userspace/aegis-hello/patches/aegis-hello-0.8.3-v4l2-torch-runtime.patch
+          grep -q 'modprobe asus_zenbook_a14_ec' scripts/asus-zenbook-a14-ec-load
+          grep -q 'modprobe hid_asus_ec' scripts/asus-zenbook-a14-ec-load
       - name: Validate Resources CPU frequency repair
         run: |
           python3 -m py_compile desktop/resources/repair-a14-cpu-frequency.py
