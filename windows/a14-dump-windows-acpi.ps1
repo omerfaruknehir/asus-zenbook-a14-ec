@@ -95,6 +95,52 @@ function Get-VerifiedAcpicaTool {
     return $path
 }
 
+function Invoke-NativeCaptured {
+    param(
+        [Parameter(Mandatory=$true)][string]$FilePath,
+        [Parameter(Mandatory=$true)][string[]]$ArgumentList,
+        [Parameter(Mandatory=$true)][string]$LogBase
+    )
+
+    # Windows PowerShell 5.1 turns text written by native programs to stderr
+    # into ErrorRecord objects. With $ErrorActionPreference='Stop' that makes
+    # normal ACPICA diagnostics (for example iasl's "File appears to be binary")
+    # abort the script. Run the native tool through Start-Process instead and
+    # capture stdout/stderr as ordinary files.
+    $stdout = "$LogBase.stdout.log"
+    $stderr = "$LogBase.stderr.log"
+    Remove-Item -Force $stdout,$stderr -ErrorAction SilentlyContinue
+
+    $quoted = @()
+    foreach ($arg in $ArgumentList) {
+        if ($arg -match '[\s"]') {
+            $quoted += ('"' + ($arg -replace '"','\"') + '"')
+        } else {
+            $quoted += $arg
+        }
+    }
+
+    $p = Start-Process -FilePath $FilePath `
+        -ArgumentList $quoted `
+        -RedirectStandardOutput $stdout `
+        -RedirectStandardError $stderr `
+        -Wait -PassThru
+
+    $lines = @()
+    if (Test-Path $stdout) { $lines += @(Get-Content $stdout) }
+    if (Test-Path $stderr) { $lines += @(Get-Content $stderr) }
+    $combined = "$LogBase.log"
+    $lines | Set-Content -Encoding UTF8 $combined
+    if ($lines.Count -gt 0) { $lines | Out-Host }
+
+    [pscustomobject]@{
+        ExitCode = $p.ExitCode
+        Log      = $combined
+        Stdout   = $stdout
+        Stderr   = $stderr
+    }
+}
+
 Write-Host '===== A14 WINDOWS FIRMWARE / ASUS SCI DUMP ====='
 Write-Host "output=$OutputDir"
 
@@ -154,7 +200,7 @@ Write-Host "SYSTEM=$systemPath"
 
 # First try the normal Win32 firmware-table provider. Some Windows/firmware
 # combinations do not expose DSDT as a directly retrievable ACPI table even
-# though the AML is of course loaded by Windows, so failure here is not fatal.
+# though the AML is loaded by Windows, so failure here is not fatal.
 $dsdtPath = Join-Path $OutputDir 'DSDT.aml'
 $apiDsdt = [A14FirmwareTables]::TryGetAcpiTable('DSDT')
 if ($null -ne $apiDsdt -and $apiDsdt.Length -gt 36) {
@@ -184,7 +230,11 @@ if ($needAcpica) {
     Push-Location $tablesDir
     try {
         Write-Host 'Dumping binary ACPI tables with ACPICA acpidump...'
-        (& $acpidump -b 2>&1 | Tee-Object -FilePath (Join-Path $OutputDir 'acpidump.log')) | Out-Host
+        $dumpRun = Invoke-NativeCaptured -FilePath $acpidump -ArgumentList @('-b') -LogBase (Join-Path $OutputDir 'acpidump')
+        if ($dumpRun.ExitCode -ne 0) {
+            throw "ACPICA acpidump exited with code $($dumpRun.ExitCode); see $($dumpRun.Log)"
+        }
+
         $dsdtDat = Get-ChildItem -File -Filter 'dsdt*.dat' | Sort-Object Name | Select-Object -First 1
         if (-not $dsdtDat) {
             throw 'ACPICA acpidump completed but no dsdt*.dat file was produced'
@@ -194,19 +244,42 @@ if ($needAcpica) {
 
         # Disassemble the DSDT itself for immediate inspection. Keep all binary
         # tables in the ZIP as well so we can redo an external-table-aware
-        # disassembly on Linux if references cross into SSDTs.
+        # disassembly later if references cross into SSDTs.
         $dslBase = Join-Path $OutputDir 'DSDT'
-        (& $iasl -p $dslBase -d $dsdtDat.FullName 2>&1 |
-            Tee-Object -FilePath (Join-Path $OutputDir 'iasl-dsdt.log')) | Out-Host
+        $iaslRun = Invoke-NativeCaptured -FilePath $iasl -ArgumentList @('-p', $dslBase, '-d', $dsdtDat.FullName) -LogBase (Join-Path $OutputDir 'iasl-dsdt')
         $dslPath = "$dslBase.dsl"
         if (Test-Path $dslPath) {
             Write-Host "DSDT_DSL=$dslPath"
+            if ($iaslRun.ExitCode -ne 0) {
+                Write-Warning "iasl exited with code $($iaslRun.ExitCode), but DSDT.dsl was produced; preserving it and all binary tables."
+            }
         } else {
-            Write-Warning 'iasl did not produce DSDT.dsl; binary DSDT is still preserved.'
+            Write-Warning "iasl did not produce DSDT.dsl (exit=$($iaslRun.ExitCode)); binary DSDT and all tables are still preserved."
         }
     }
     finally {
         Pop-Location
+    }
+} else {
+    # A prior interrupted run may already have DSDT.aml. If DSDT.dsl is absent,
+    # don't silently skip the useful disassembly; reuse verified cached tools and
+    # the previously dumped dsdt*.dat when available.
+    $dslPath = Join-Path $OutputDir 'DSDT.dsl'
+    $tablesDir = Join-Path $OutputDir 'acpi-tables'
+    $dsdtDat = if (Test-Path $tablesDir) { Get-ChildItem -Path $tablesDir -File -Filter 'dsdt*.dat' | Sort-Object Name | Select-Object -First 1 } else { $null }
+    if (-not (Test-Path $dslPath) -and $dsdtDat) {
+        $toolsDir = Join-Path $OutputDir 'tools'
+        New-Item -ItemType Directory -Force -Path $toolsDir | Out-Null
+        $headers = @{ 'User-Agent' = 'asus-zenbook-a14-ec-windows-probe' }
+        $release = Invoke-RestMethod -Headers $headers -Uri 'https://api.github.com/repos/acpica/acpica/releases/latest'
+        $iasl = Get-VerifiedAcpicaTool -Name 'iasl.exe' -ToolsDir $toolsDir -Release $release
+        $dslBase = Join-Path $OutputDir 'DSDT'
+        $iaslRun = Invoke-NativeCaptured -FilePath $iasl -ArgumentList @('-p', $dslBase, '-d', $dsdtDat.FullName) -LogBase (Join-Path $OutputDir 'iasl-dsdt')
+        if (Test-Path $dslPath) {
+            Write-Host "DSDT_DSL=$dslPath"
+        } else {
+            Write-Warning "iasl did not produce DSDT.dsl (exit=$($iaslRun.ExitCode)); continuing with binary tables."
+        }
     }
 }
 
