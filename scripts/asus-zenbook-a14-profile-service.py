@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
-"""System D-Bus API for the ASUS Zenbook A14 EC profile driver.
+"""System D-Bus API for the ASUS Zenbook A14 profile driver.
 
-This intentionally exposes only the four recovered ASUS firmware modes in their
-native order: Quiet, Normal, Turbo, Full Speed. It never provides raw EC, PWM,
-register, firmware-mailbox, or MMIO access.
+Profiles are ordered Whisper < Quiet < Normal < Turbo < Full Speed. The four
+ASUS modes are direct firmware modes. Whisper is acoustic-first: the kernel
+controls CPU/fans, while this root service applies a matching GPU devfreq cap.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import pwd
+import signal
 import sys
 import syslog
 from pathlib import Path
@@ -22,12 +24,12 @@ from gi.repository import GLib
 BUS_NAME = "io.github.omerfaruknehir.AsusA14"
 OBJECT_PATH = "/io/github/omerfaruknehir/AsusA14"
 INTERFACE = "io.github.omerfaruknehir.AsusA14.Profile1"
-
 PROFILE_PATH = Path("/sys/devices/platform/asus_zenbook_a14_ec/profile")
 CHOICES_PATH = Path("/sys/devices/platform/asus_zenbook_a14_ec/profile_choices")
-EMERGENCY_PATH = Path("/sys/devices/platform/asus_zenbook_a14_ec/quiet_emergency")
-
-PROFILES = ("quiet", "normal", "turbo", "full-speed")
+WHISPER_LEVEL_PATH = Path("/sys/devices/platform/asus_zenbook_a14_ec/whisper_level")
+GPU_STATE_PATH = Path("/run/asus-zenbook-a14-ec/whisper-gpu.json")
+PROFILES = ("whisper", "quiet", "normal", "turbo", "full-speed")
+GPU_PERCENT = {0: 60, 1: 45, 2: 30, 3: 30}
 
 
 class A14Error(dbus.DBusException):
@@ -48,8 +50,13 @@ class ProfileService(dbus.service.Object):
         self._bus_name = dbus.service.BusName(BUS_NAME, bus, do_not_queue=True)
         super().__init__(bus, OBJECT_PATH)
         self._dbus = bus.get_object("org.freedesktop.DBus", "/org/freedesktop/DBus")
+        self._gpu_originals = self._load_gpu_state()
         self._last_profile = self._read_profile()
-        self._last_emergency = self._read_emergency()
+        self._last_whisper_level = self._read_whisper_level()
+        if self._last_profile == "whisper":
+            self._apply_gpu_whisper(self._last_whisper_level)
+        else:
+            self._restore_gpu()
         GLib.timeout_add_seconds(1, self._poll_state)
 
     def _sender_uid(self, sender: str) -> int:
@@ -67,10 +74,8 @@ class ProfileService(dbus.service.Object):
             pw = pwd.getpwuid(uid)
         except KeyError as exc:
             raise AccessDeniedError("Unknown caller uid") from exc
-        if uid < 1000 or not Path(f"/run/user/{uid}/bus").exists():
+        if uid < 1000 or not Path(f"/run/user/{uid}/bus").exists() or pw.pw_uid != uid:
             raise AccessDeniedError("A local logged-in user session is required")
-        if pw.pw_uid != uid:
-            raise AccessDeniedError("Caller identity mismatch")
         return uid
 
     @staticmethod
@@ -82,24 +87,107 @@ class ProfileService(dbus.service.Object):
         return value if value in PROFILES else "custom"
 
     @staticmethod
-    def _read_emergency() -> bool:
+    def _read_whisper_level() -> int:
         try:
-            return EMERGENCY_PATH.read_text().strip() == "1"
+            return max(0, min(3, int(WHISPER_LEVEL_PATH.read_text().strip())))
+        except (OSError, ValueError):
+            return 3
+
+    @staticmethod
+    def _gpu_nodes() -> list[Path]:
+        nodes: list[Path] = []
+        root = Path("/sys/class/devfreq")
+        if not root.is_dir():
+            return nodes
+        for node in root.iterdir():
+            try:
+                name = (node / "name").read_text().strip().lower()
+            except OSError:
+                name = ""
+            identity = f"{name} {node.name} {node.resolve()}".lower()
+            if ("gpu" in identity or "adreno" in identity) and (node / "max_freq").exists():
+                nodes.append(node)
+        return nodes
+
+    @staticmethod
+    def _frequencies(node: Path) -> list[int]:
+        try:
+            values = [int(v) for v in (node / "available_frequencies").read_text().split()]
+            return sorted(set(v for v in values if v > 0))
+        except (OSError, ValueError):
+            return []
+
+    def _load_gpu_state(self) -> dict[str, int]:
+        try:
+            raw = json.loads(GPU_STATE_PATH.read_text())
+            return {str(k): int(v) for k, v in raw.items()}
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            return {}
+
+    def _save_gpu_state(self) -> None:
+        GPU_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        GPU_STATE_PATH.write_text(json.dumps(self._gpu_originals, sort_keys=True))
+
+    def _apply_gpu_whisper(self, level: int) -> None:
+        percent = GPU_PERCENT.get(level, 30)
+        changed = False
+        for node in self._gpu_nodes():
+            path = str(node.resolve())
+            max_path = node / "max_freq"
+            if path not in self._gpu_originals:
+                try:
+                    self._gpu_originals[path] = int(max_path.read_text().strip())
+                    changed = True
+                except (OSError, ValueError):
+                    continue
+            freqs = self._frequencies(node)
+            if not freqs:
+                continue
+            target_raw = freqs[-1] * percent // 100
+            target = max((f for f in freqs if f <= target_raw), default=freqs[0])
+            try:
+                max_path.write_text(f"{target}\n")
+            except OSError as exc:
+                print(f"profile-service: cannot cap GPU {node.name}: {exc}", file=sys.stderr)
+        if changed:
+            try:
+                self._save_gpu_state()
+            except OSError as exc:
+                print(f"profile-service: cannot save GPU state: {exc}", file=sys.stderr)
+
+    def _restore_gpu(self) -> None:
+        if not self._gpu_originals:
+            return
+        for node in self._gpu_nodes():
+            path = str(node.resolve())
+            if path not in self._gpu_originals:
+                continue
+            try:
+                (node / "max_freq").write_text(f"{self._gpu_originals[path]}\n")
+            except OSError as exc:
+                print(f"profile-service: cannot restore GPU {node.name}: {exc}", file=sys.stderr)
+        self._gpu_originals.clear()
+        try:
+            GPU_STATE_PATH.unlink(missing_ok=True)
         except OSError:
-            return False
+            pass
 
     def _poll_state(self) -> bool:
         try:
             profile = self._read_profile()
         except A14Error:
             profile = "unavailable"
-        emergency = self._read_emergency()
+        level = self._read_whisper_level()
+
         if profile != self._last_profile:
             self._last_profile = profile
             self.ProfileChanged(profile)
-        if emergency != self._last_emergency:
-            self._last_emergency = emergency
-            self.QuietEmergencyChanged(emergency)
+        if profile == "whisper":
+            if level != self._last_whisper_level or not self._gpu_originals:
+                self._apply_gpu_whisper(level)
+        elif self._gpu_originals:
+            self._restore_gpu()
+        self._last_whisper_level = level
         return GLib.SOURCE_CONTINUE
 
     @dbus.service.method(INTERFACE, in_signature="", out_signature="s")
@@ -117,7 +205,7 @@ class ProfileService(dbus.service.Object):
 
     @dbus.service.method(INTERFACE, in_signature="", out_signature="b")
     def GetQuietEmergency(self) -> dbus.Boolean:
-        return dbus.Boolean(self._read_emergency())
+        return dbus.Boolean(False)
 
     @dbus.service.method(INTERFACE, in_signature="s", out_signature="", sender_keyword="sender")
     def SetProfile(self, profile: str, sender: str) -> None:
@@ -132,6 +220,10 @@ class ProfileService(dbus.service.Object):
         applied = self._read_profile()
         if applied != profile:
             raise A14Error(f"Driver reported {applied} after requesting {profile}")
+        if applied == "whisper":
+            self._apply_gpu_whisper(self._read_whisper_level())
+        else:
+            self._restore_gpu()
         self._last_profile = applied
         self.ProfileChanged(applied)
         syslog.openlog("asus-a14-profile-service")
@@ -145,6 +237,9 @@ class ProfileService(dbus.service.Object):
     def QuietEmergencyChanged(self, active: bool) -> None:
         pass
 
+    def shutdown(self) -> None:
+        self._restore_gpu()
+
 
 def main() -> int:
     if not PROFILE_PATH.exists():
@@ -154,14 +249,17 @@ def main() -> int:
     bus = dbus.SystemBus()
     try:
         service = ProfileService(bus)
-    except dbus.DBusException as exc:
-        print(f"a14-profile-service: D-Bus setup failed: {exc}", file=sys.stderr)
+    except (dbus.DBusException, A14Error) as exc:
+        print(f"a14-profile-service: setup failed: {exc}", file=sys.stderr)
         return os.EX_UNAVAILABLE
-    except A14Error as exc:
-        print(f"a14-profile-service: driver unavailable: {exc}", file=sys.stderr)
-        return os.EX_UNAVAILABLE
-    _service = service
     loop = GLib.MainLoop()
+
+    def stop(_signum: int, _frame: object) -> None:
+        service.shutdown()
+        loop.quit()
+
+    signal.signal(signal.SIGTERM, stop)
+    signal.signal(signal.SIGINT, stop)
     loop.run()
     return 0
 
