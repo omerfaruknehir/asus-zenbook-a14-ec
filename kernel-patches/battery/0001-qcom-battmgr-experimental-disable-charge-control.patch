@@ -1,0 +1,89 @@
+From 446fcf494691da4e685923e5fad02b163955fc0e Mon Sep 17 00:00:00 2001
+From: Val Packett <val@packett.cool>
+Date: Mon, 3 Nov 2025 01:01:57 +0100
+Subject: [PATCH] power: supply: qcom_battmgr: support disabling charge control
+
+EXPERIMENTAL A14 TEST COPY ONLY.
+
+This is the upstream change that was later reverted because the Qualcomm
+firmware disable bit behaved unexpectedly on some systems. It is kept out
+of the normal A14 kernel composition and is only applied by the explicit
+battery test helper.
+
+Existing userspace (in particular, upower) disables charge control by
+setting the start threshold to 0 and the stop threshold to 100.
+
+Handle that by actually setting the enable bit to 0 when a start
+threshold of 0 was requested.
+
+---
+ drivers/power/supply/qcom_battmgr.c | 13 ++++++++-----
+ 1 file changed, 8 insertions(+), 5 deletions(-)
+
+diff --git a/drivers/power/supply/qcom_battmgr.c b/drivers/power/supply/qcom_battmgr.c
+index 000000000000..111111111111 100644
+--- a/drivers/power/supply/qcom_battmgr.c
++++ b/drivers/power/supply/qcom_battmgr.c
+@@ -257,6 +257,7 @@ struct qcom_battmgr_info {
+ 	unsigned int capacity_warning;
+ 	unsigned int cycle_count;
+ 	unsigned int charge_count;
++	bool charge_ctrl_enable;
+ 	unsigned int charge_ctrl_start;
+ 	unsigned int charge_ctrl_end;
+ 	char model_number[BATTMGR_STRING_LEN];
+@@ -659,13 +660,13 @@ static int qcom_battmgr_bat_get_property(struct power_supply *psy,
+ }
+ 
+ static int qcom_battmgr_set_charge_control(struct qcom_battmgr *battmgr,
+-					   u32 target_soc, u32 delta_soc)
++					   bool enable, u32 target_soc, u32 delta_soc)
+ {
+ 	struct qcom_battmgr_charge_ctrl_request request = {
+ 		.hdr.owner = cpu_to_le32(PMIC_GLINK_OWNER_BATTMGR),
+ 		.hdr.type = cpu_to_le32(PMIC_GLINK_REQ_RESP),
+ 		.hdr.opcode = cpu_to_le32(BATTMGR_CHG_CTRL_LIMIT_EN),
+-		.enable = cpu_to_le32(1),
++		.enable = cpu_to_le32(enable),
+ 		.target_soc = cpu_to_le32(target_soc),
+ 		.delta_soc = cpu_to_le32(delta_soc),
+ 	};
+@@ -677,6 +678,7 @@ static int qcom_battmgr_set_charge_start_threshold(struct qcom_battmgr *battmgr,
+ {
+ 	u32 target_soc, delta_soc;
+ 	int ret;
++	bool enable = start_soc != 0;
+ 
+ 	start_soc = clamp(start_soc, CHARGE_CTRL_START_THR_MIN, CHARGE_CTRL_START_THR_MAX);
+ 
+@@ -696,9 +698,10 @@ static int qcom_battmgr_set_charge_start_threshold(struct qcom_battmgr *battmgr,
+ 	}
+ 
+ 	mutex_lock(&battmgr->lock);
+-	ret = qcom_battmgr_set_charge_control(battmgr, target_soc, delta_soc);
++	ret = qcom_battmgr_set_charge_control(battmgr, enable, target_soc, delta_soc);
+ 	mutex_unlock(&battmgr->lock);
+ 	if (!ret) {
++		battmgr->info.charge_ctrl_enable = enable;
+ 		battmgr->info.charge_ctrl_start = start_soc;
+ 		battmgr->info.charge_ctrl_end = target_soc;
+ 	}
+@@ -710,14 +713,15 @@ static int qcom_battmgr_set_charge_end_threshold(struct qcom_battmgr *battmgr, int end_soc)
+ {
+ 	u32 delta_soc = CHARGE_CTRL_DELTA_SOC;
+ 	int ret;
++	bool enable = battmgr->info.charge_ctrl_enable;
+ 
+ 	end_soc = clamp(end_soc, CHARGE_CTRL_END_THR_MIN, CHARGE_CTRL_END_THR_MAX);
+ 
+ 	if (battmgr->info.charge_ctrl_start && end_soc > battmgr->info.charge_ctrl_start)
+ 		delta_soc = end_soc - battmgr->info.charge_ctrl_start;
+ 
+ 	mutex_lock(&battmgr->lock);
+-	ret = qcom_battmgr_set_charge_control(battmgr, end_soc, delta_soc);
++	ret = qcom_battmgr_set_charge_control(battmgr, enable, end_soc, delta_soc);
+ 	mutex_unlock(&battmgr->lock);
+ 	if (!ret) {
+ 		battmgr->info.charge_ctrl_start = end_soc - delta_soc;
+-- 
+2.51.0
