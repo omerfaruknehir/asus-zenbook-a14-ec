@@ -53,9 +53,17 @@ if s.count(old_target) != 1:
     raise SystemExit(f"Quiet safety prerequisite: expected one source anchor, found {s.count(old_target)}")
 s = s.replace(old_target, new_target, 1)
 
+# The late-QoS recovery path must remain fail-closed when the temperature
+# prerequisite is absent. A successful QoS retry alone is not enough to permit
+# zero fan PWM.
+old_recovery = '''\t\tif (ec->quiet_qos_unavailable) {\n\t\t\tret = asus_ec_freq_qos_retry_attach(ec);\n\t\t\tif (!ret) {\n'''
+new_recovery = '''\t\tif (ec->quiet_qos_unavailable) {\n\t\t\tret = ec->num_zones ? asus_ec_freq_qos_retry_attach(ec) : -ENODEV;\n\t\t\tif (!ret) {\n'''
+if s.count(old_recovery) != 1:
+    raise SystemExit(f"Quiet late-recovery safety: expected one source anchor, found {s.count(old_recovery)}")
+s = s.replace(old_recovery, new_recovery, 1)
+
 # Make the diagnostic reason truthful if the CPU-temperature safety sensor is
-# what is missing. Keep the existing uevent reason string compatible while the
-# log explains which prerequisite failed.
+# what is missing.
 old_warn = '''\t\tdev_warn(ec->dev,\n\t\t\t "Quiet CPU QoS unavailable; forcing Turbo cooling while Quiet remains selected\\n");\n\t\tasus_ec_emit_quiet_emergency(ec, true, temp, "qos-unavailable");\n'''
 new_warn = '''\t\tif (!ec->num_freq_requests)\n\t\t\tdev_warn(ec->dev,\n\t\t\t\t "Quiet CPU QoS unavailable; forcing Turbo cooling while Quiet remains selected\\n");\n\t\telse\n\t\t\tdev_warn(ec->dev,\n\t\t\t\t "Quiet CPU thermal safety zones unavailable; forcing Turbo cooling while Quiet remains selected\\n");\n\t\tasus_ec_emit_quiet_emergency(ec, true, temp,\n\t\t\t\t\t     ec->num_freq_requests ? "thermal-sensor-unavailable" :\n\t\t\t\t\t     "qos-unavailable");\n'''
 if s.count(old_warn) != 1:
@@ -72,6 +80,7 @@ required = (
     '"cpuss2-top-thermal"',
     "monitoring %u A14 CPU thermal zones",
     "!ec->num_freq_requests || !ec->num_zones",
+    "ret = ec->num_zones ? asus_ec_freq_qos_retry_attach(ec) : -ENODEV",
     "thermal-sensor-unavailable",
 )
 missing = [token for token in required if token not in s]
