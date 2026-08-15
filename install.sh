@@ -57,7 +57,30 @@ case "$deb" in
   *) echo "build-deb.sh returned a non-DEB path: $deb" >&2; exit 1;;
 esac
 
-sudo apt-get install -y "$deb"
+# Explicitly reinstall even when the local package version matches. The A14
+# package carries GNOME assets, so a same-version development rebuild must not
+# leave stale icon files from an earlier build on disk.
+sudo apt-get install -y --reinstall "$deb"
+
+icon_dest=/usr/share/icons/hicolor/scalable/status
+ext_dest=/usr/share/gnome-shell/extensions/asus-a14-modes@omerfaruknehir/icons
+for profile in whisper quiet normal turbo full-speed; do
+  icon="a14-power-profile-$profile-symbolic.svg"
+  src="$repo/userspace/gnome/icons/$icon"
+  if ! cmp -s "$src" "$icon_dest/$icon"; then
+    echo "Installed GNOME icon does not match repository asset: $icon_dest/$icon" >&2
+    exit 1
+  fi
+  if ! cmp -s "$src" "$ext_dest/$icon"; then
+    echo "Installed extension icon does not match repository asset: $ext_dest/$icon" >&2
+    exit 1
+  fi
+done
+
+if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+  sudo gtk-update-icon-cache -f -t /usr/share/icons/hicolor >/dev/null 2>&1 || true
+fi
+
 echo
 echo "Installed. Current status:"
 sudo asus-a14-control status || true
