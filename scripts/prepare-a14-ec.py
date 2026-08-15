@@ -56,8 +56,6 @@ def final_missing() -> list[str]:
     )
     missing = [token for token in required if token not in s]
 
-    # Named power profiles must be pure ASUS firmware modes. Manual PWM remains
-    # available only through the explicit CUSTOM hwmon/control path.
     forbidden = (
         "A14_PROFILE_POLICY_V2",
         "A14_QUIET_FANLESS",
@@ -101,12 +99,24 @@ def main() -> None:
 
     compose_ec()
     run("apply-a14-hid-fnlock.py")
+    run("apply-a14-hid-profile-hotkey.py")
 
     missing = final_missing()
     if missing:
         raise SystemExit("a14_ec_stack=incomplete: " + ", ".join(missing))
 
+    hid = (ROOT / "hid_asus_ec.c").read_text()
+    hid_required = (
+        "A14_HID_NATIVE_PROFILE_HOTKEY",
+        "asus_a14_cycle_native_profile();",
+        "schedule_work(&data->profile_work);",
+    )
+    hid_missing = [token for token in hid_required if token not in hid]
+    if hid_missing:
+        raise SystemExit("a14_hid_stack=incomplete: " + ", ".join(hid_missing))
+
     print("a14_ec_native_profiles=quiet,normal,turbo,full-speed")
+    print("a14_fn_f_cycle=quiet,normal,turbo,full-speed")
     print("a14_ec_stack=current")
 
 
