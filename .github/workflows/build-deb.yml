@@ -74,19 +74,27 @@ jobs:
           for mode in Whisper Quiet Normal Turbo 'Full Speed'; do
             grep -Fq "$mode" scripts/a14-gnome-native-five-profile.py
           done
+          grep -Fq '+a14.3' scripts/a14-gnome-native-five-profile.py
           grep -Fq 'NATIVE_GNOME_MARKER = Path("/usr/share/asus-zenbook-a14-ec/native-gnome-five-profile")' \
             scripts/asus-zenbook-a14-ppd-bridge.py
           grep -Fq 'FIVE_PROFILE_ORDER = ("power-saver", "quiet", "balanced", "performance", "full-speed")' \
             scripts/asus-zenbook-a14-ppd-bridge.py
-          grep -Fq 'channel.add_watch(' scripts/asus-zenbook-a14-profile-service.py
-          grep -Fq 'GLib.IO_PRI' scripts/asus-zenbook-a14-profile-service.py
-          grep -Fq 'channel.add_watch(' scripts/asus-zenbook-a14-ppd-bridge.py
-          grep -Fq 'GLib.IO_PRI' scripts/asus-zenbook-a14-ppd-bridge.py
+
+          for service in scripts/asus-zenbook-a14-profile-service.py scripts/asus-zenbook-a14-ppd-bridge.py; do
+            grep -Fq 'SYSFS_CHANGE_CONDITION = GLib.IO_PRI | GLib.IO_ERR' "$service"
+            grep -Fq 'SYSFS_FATAL_CONDITION = GLib.IO_HUP | GLib.IO_NVAL' "$service"
+            grep -Fq 'if condition & SYSFS_CHANGE_CONDITION:' "$service"
+            grep -Fq 'if condition & SYSFS_FATAL_CONDITION:' "$service"
+            grep -Fq 'channel.add_watch(' "$service"
+          done
+
           grep -Fq "const NATIVE_UI_MARKER = '/usr/share/asus-zenbook-a14-ec/native-gnome-five-profile';" \
             gnome-shell/asus-a14-modes@omerfaruknehir/extension.js
           grep -Fq 'new ProfileOsdListener()' gnome-shell/asus-a14-modes@omerfaruknehir/extension.js
           grep -Fq 'gnome-extensions enable "$UUID"' scripts/asus-zenbook-a14-enable-gnome-extension
           grep -Fq "name: C_('Power profile', 'Whisper')" userspace/gnome/patches/gnome-shell-50-a14-five-profiles.patch
+          grep -Fq "name: C_('Power profile', 'Normal')" userspace/gnome/patches/gnome-shell-50-a14-five-profiles.patch
+          grep -Fq "name: C_('Power profile', 'Turbo')" userspace/gnome/patches/gnome-shell-50-a14-five-profiles.patch
           grep -Fq 'text = C_("Power profile", "_Turbo")' userspace/gnome/patches/gnome-control-center-50-a14-five-profiles.patch
           ! grep -Fq 'EC_NATIVE_FAN1_RPM_LO' scripts/prepare-a14-ec.py
           grep -Fq 'automatic (ASUS firmware owns PWM)' scripts/asus-a14-control
@@ -131,9 +139,12 @@ jobs:
           extension="$root/usr/share/gnome-shell/extensions/asus-a14-modes@omerfaruknehir/extension.js"
           control="$root/usr/sbin/asus-a14-control"
           grep -Fq 'PROFILES = ("whisper", "quiet", "normal", "turbo", "full-speed")' "$service"
-          grep -Fq 'channel.add_watch(' "$service"
+          grep -Fq 'SYSFS_CHANGE_CONDITION = GLib.IO_PRI | GLib.IO_ERR' "$service"
+          grep -Fq 'SYSFS_FATAL_CONDITION = GLib.IO_HUP | GLib.IO_NVAL' "$service"
           grep -Fq 'FIVE_PROFILE_ORDER = ("power-saver", "quiet", "balanced", "performance", "full-speed")' "$bridge"
-          grep -Fq 'channel.add_watch(' "$bridge"
+          grep -Fq 'SYSFS_CHANGE_CONDITION = GLib.IO_PRI | GLib.IO_ERR' "$bridge"
+          grep -Fq 'SYSFS_FATAL_CONDITION = GLib.IO_HUP | GLib.IO_NVAL' "$bridge"
+          grep -Fq '0.5.7-a14-five-ui' "$bridge"
           grep -Fq "const PROFILE_ORDER = ['whisper', 'quiet', 'normal', 'turbo', 'full-speed'];" "$extension"
           grep -Fq 'new ProfileOsdListener()' "$extension"
           grep -q 'osdWindowManager.show' "$extension"
