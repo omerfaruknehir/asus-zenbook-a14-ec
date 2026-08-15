@@ -6,8 +6,9 @@ commands are deliberately sent at their real command lengths; in particular
 Fn-lock is exactly 4 bytes: 5a d0 4e <0|1>.
 
 The ``functions`` action mirrors upstream asus_kbd_get_functions(): it sends
-5a 05 20 31 00 08, immediately performs GET_REPORT, and prints response byte 6,
-which upstream treats as the keyboard-function capability bitmap.
+5a 05 20 31 00 08, immediately performs GET_REPORT, and prints response byte 6.
+Current upstream hid-asus defines only bit 0 of that byte as
+SUPPORT_KBD_BACKLIGHT. It does not define an Fn-lock capability bit there.
 
 This does not change driver bindings. It can probe ASUS 0B05:0220 (keyboard)
 and 0B05:4543 (HDTL auxiliary endpoint) independently.
@@ -25,6 +26,7 @@ PRODUCTS = {0x0220, 0x4543}
 REPORT_ID = 0x5A
 GET_REPORT_LEN = 64
 FUNCTION_QUERY = bytes((0x5A, 0x05, 0x20, 0x31, 0x00, 0x08))
+SUPPORT_KBD_BACKLIGHT = 0x01
 
 _IOC_NRBITS = 8
 _IOC_TYPEBITS = 8
@@ -181,8 +183,13 @@ def main() -> int:
                     )
                     print(f"  feature_5a={response.hex(' ')}")
                     print(f"  function_bits_byte6=0x{bits:02x}")
-                    if bits == 0:
-                        print("  GENERIC_ASUS_FUNCTION_BITMAP=EMPTY")
+                    print(
+                        "  SUPPORT_KBD_BACKLIGHT="
+                        + ("YES" if bits & SUPPORT_KBD_BACKLIGHT else "NO")
+                    )
+                    unknown = bits & ~SUPPORT_KBD_BACKLIGHT
+                    print(f"  unknown_function_bits=0x{unknown:02x}")
+                    print("  FNLOCK_CAPABILITY_BIT=NOT_DEFINED_BY_UPSTREAM_QUERY")
                 elif action == "init":
                     asus_init(fd)
                     print("  ASUS_INIT=SET_REPORT_ACCEPTED lengths=16,6,6,6")
