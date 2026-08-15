@@ -39,7 +39,7 @@ once(
     'state')
 
 anchor = '''static int asus_hid_set_backlight_hw(struct asus_hid_data *data,\n\t\t\t\t    unsigned int level)\n'''
-helper = '''#define A14_HID_FNLOCK_EXACT_SET_REPORT 1\n\nstatic int asus_hid_set_fnlock_hw(struct asus_hid_data *data, bool enabled)\n{\n\tu8 command[] = {\n\t\tA14_EC_REPORT_ID, 0xd0, 0x4e, enabled ? 1 : 0,\n\t};\n\tint ret;\n\n\t/*\n\t * ASUS' upstream HID implementation sends Fn-lock as the exact four-byte\n\t * feature report. Padding this command to A14_EC_REPORT_SIZE (64) is not\n\t * equivalent on all firmware, even though GET_REPORT uses a 64-byte buffer.\n\t */\n\tmutex_lock(&data->io_lock);\n\tret = hid_hw_raw_request(data->hdev, A14_EC_REPORT_ID, command,\n\t\t\t\t sizeof(command), HID_FEATURE_REPORT, HID_REQ_SET_REPORT);\n\tmutex_unlock(&data->io_lock);\n\treturn ret < 0 ? ret : 0;\n}\n\nstatic void asus_fnlock_work(struct work_struct *work)\n{\n\tstruct asus_hid_data *data = container_of(work, struct asus_hid_data,\n\t\t\t\t\t\t  fnlock_work);\n\tbool requested = atomic_read(&data->desired_fn_lock);\n\tint ret;\n\n\tif (READ_ONCE(data->suspended))\n\t\treturn;\n\tret = asus_hid_set_fnlock_hw(data, requested);\n\tif (ret) {\n\t\tatomic_set(&data->desired_fn_lock, data->fn_lock);\n\t\tdev_warn(&data->hdev->dev, "Fn-lock update failed: %d\\n", ret);\n\t\treturn;\n\t}\n\tdata->fn_lock = requested;\n}\n\n'''
+helper = '''#define A14_HID_FNLOCK_WINDOWS_FULL_FEATURE_REPORT 1\n\nstatic int asus_hid_set_fnlock_hw(struct asus_hid_data *data, bool enabled)\n{\n\tu8 command[A14_EC_REPORT_SIZE] = {\n\t\tA14_EC_REPORT_ID, 0xd0, 0x4e, enabled ? 1 : 0,\n\t};\n\n\t/*\n\t * UX3407RA Windows reference, ASUSOptimization.exe 2.1.75.0:\n\t *   VID 0b05 / PID 0220 / UsagePage ff31 / Usage 0076\n\t *   FeatureReportByteLength = 64\n\t *   payload = 5a d0 4e <state>, zero-padded to all 64 bytes\n\t *   HidD_SetFeature(handle, payload, 64)\n\t *\n\t * On the real machine state 0 selects ASUS/media actions as the primary\n\t * F-row behavior and state 1 selects ordinary F1..F12 as primary.  The\n\t * existing A14 HID raw-request helper already submits a full 64-byte feature\n\t * report, matching that Windows transport exactly.\n\t */\n\treturn asus_hid_raw_request(data, command, HID_REQ_SET_REPORT);\n}\n\nstatic void asus_fnlock_work(struct work_struct *work)\n{\n\tstruct asus_hid_data *data = container_of(work, struct asus_hid_data,\n\t\t\t\t\t\t  fnlock_work);\n\tbool requested = atomic_read(&data->desired_fn_lock);\n\tint ret;\n\n\tif (READ_ONCE(data->suspended))\n\t\treturn;\n\tret = asus_hid_set_fnlock_hw(data, requested);\n\tif (ret) {\n\t\tatomic_set(&data->desired_fn_lock, data->fn_lock);\n\t\tdev_warn(&data->hdev->dev, "Fn-lock update failed: %d\\n", ret);\n\t\treturn;\n\t}\n\tdata->fn_lock = requested;\n}\n\n'''
 once(anchor, helper + anchor, 'fnlock helper')
 
 once(
@@ -54,7 +54,7 @@ once(
 
 once(
     '\tif (ret)\n\t\treturn ret;\n\treturn asus_hid_set_backlight_hw(data, level);\n}\n',
-    '\tif (ret)\n\t\treturn ret;\n\tret = asus_hid_set_backlight_hw(data, level);\n\tif (ret)\n\t\treturn ret;\n\tif (data->fn_lock)\n\t\tschedule_work(&data->fnlock_work);\n\treturn 0;\n}\n',
+    '\tif (ret)\n\t\treturn ret;\n\tret = asus_hid_set_backlight_hw(data, level);\n\tif (ret)\n\t\treturn ret;\n\t/* Firmware may lose the Fn-row mode across suspend; always restore it. */\n\tret = asus_hid_set_fnlock_hw(data, data->fn_lock);\n\tif (ret)\n\t\tdev_warn(&data->hdev->dev, "Fn-lock resume restore failed: %d\\n", ret);\n\treturn 0;\n}\n',
     'resume')
 
 once(
@@ -62,10 +62,17 @@ once(
     '\tINIT_WORK(&data->backlight_work, asus_backlight_work);\n\tINIT_WORK(&data->fnlock_work, asus_fnlock_work);\n\tatomic_set(&data->desired_fn_lock, 0);\n\tdata->fn_lock = false;\n\tatomic_set(&data->desired_brightness,\n',
     'probe init')
 
+# Establish a deterministic state at driver bind.  Windows state 0 means the
+# normal ASUS action-key-first behavior.  Fn+Esc then toggles to state 1.
+once(
+    '\tret = asus_hid_set_backlight_hw(data,\n\t\t\t\t\tatomic_read(&data->desired_brightness));\n\tif (ret)\n\t\tgoto err_led;\n\n\tif (enable_debug_commands) {\n',
+    '\tret = asus_hid_set_backlight_hw(data,\n\t\t\t\t\tatomic_read(&data->desired_brightness));\n\tif (ret)\n\t\tgoto err_led;\n\tret = asus_hid_set_fnlock_hw(data, false);\n\tif (ret)\n\t\tdev_warn(&hdev->dev, "initial Fn-lock state setup failed: %d\\n", ret);\n\n\tif (enable_debug_commands) {\n',
+    'probe hardware init')
+
 once(
     '\tcancel_work_sync(&data->backlight_work);\n\tif (data->led_registered)\n',
     '\tcancel_work_sync(&data->backlight_work);\n\tcancel_work_sync(&data->fnlock_work);\n\tif (data->led_registered)\n',
     'remove')
 
 p.write_text(s)
-print('a14_hid_fnlock=applied')
+print('a14_hid_fnlock=windows-full-feature-report')
