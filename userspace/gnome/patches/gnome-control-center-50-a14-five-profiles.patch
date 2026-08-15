@@ -1,11 +1,18 @@
 From: ASUS Zenbook A14 Linux support
-Subject: [PATCH] power: understand A14 Quiet and Full Speed profiles
+Subject: [PATCH] power: present the five current A14 modes
 
-GNOME Control Center 50 hard-codes exactly three power-profile enum values and
-silently ignores unknown profile names returned by power-profiles-daemon.
-Extend the existing Power Mode section to support the A14's validated five
-profiles while preserving GNOME Settings' stock row presentation. Profile
-icons remain a GNOME Shell Quick Settings concern and are not added here.
+GNOME Control Center 50 hard-codes exactly three PPD profile enum values and
+silently ignores unknown names. The A14 bridge uses standard PPD wire names
+where possible while presenting the actual hardware policy as:
+
+  power-saver -> Whisper
+  quiet       -> Quiet
+  balanced    -> Normal
+  performance -> Turbo
+  full-speed  -> Full Speed
+
+Extend the existing Power Mode section to all five while preserving GNOME
+Settings' stock icon-free row presentation.
 
 --- a/panels/power/cc-power-profile-row.h
 +++ b/panels/power/cc-power-profile-row.h
@@ -23,28 +30,38 @@ icons remain a GNOME Shell Quick Settings concern and are not added here.
    CC_POWER_PROFILE_UNKNOWN
 --- a/panels/power/cc-power-profile-row.c
 +++ b/panels/power/cc-power-profile-row.c
-@@ -106,6 +106,10 @@ cc_power_profile_row_new (CcPowerProfile power_profile)
+@@ -106,18 +106,26 @@ cc_power_profile_row_new (CcPowerProfile power_profile)
    self->power_profile = power_profile;
    switch (self->power_profile)
      {
 +      case CC_POWER_PROFILE_FULL_SPEED:
 +        text = C_("Power profile", "_Full Speed");
-+        subtext = _("Maximum cooling and no artificial CPU frequency cap");
++        subtext = _("ASUS Full Speed firmware mode");
 +        break;
        case CC_POWER_PROFILE_PERFORMANCE:
-         text = C_("Power profile", "P_erformance");
-         subtext = _("High performance and power usage");
-@@ -118,6 +122,10 @@ cc_power_profile_row_new (CcPowerProfile power_profile)
-         text = C_("Power profile", "P_ower Saver");
-         subtext = _("Reduced performance and power usage");
+-        text = C_("Power profile", "P_erformance");
+-        subtext = _("High performance and power usage");
++        text = C_("Power profile", "_Turbo");
++        subtext = _("ASUS Turbo firmware mode");
          break;
+       case CC_POWER_PROFILE_BALANCED:
+-        text = C_("Power profile", "Ba_lanced");
+-        subtext = _("Standard performance and power usage");
++        text = C_("Power profile", "_Normal");
++        subtext = _("ASUS Normal firmware mode");
+         break;
+       case CC_POWER_PROFILE_POWER_SAVER:
+-        text = C_("Power profile", "P_ower Saver");
+-        subtext = _("Reduced performance and power usage");
++        text = C_("Power profile", "_Whisper");
++        subtext = _("Minimum disturbance; may throttle CPU and GPU");
++        break;
 +      case CC_POWER_PROFILE_QUIET:
 +        text = C_("Power profile", "_Quiet");
-+        subtext = _("Acoustic-first mode with strong CPU throttling");
-+        break;
++        subtext = _("ASUS Quiet firmware mode");
+         break;
        default:
          g_assert_not_reached ();
-     }
 @@ -127,12 +135,16 @@ cc_power_profile_from_str (const char *profile)
  {
 +  if (g_strcmp0 (profile, "full-speed") == 0)
