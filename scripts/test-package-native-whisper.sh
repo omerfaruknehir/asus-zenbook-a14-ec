@@ -51,8 +51,18 @@ grep -q 'modprobe scmi_cpufreq' scripts/asus-zenbook-a14-ec-load
 for symbol in \
   CPU_FREQ CPU_FREQ_STAT CPU_FREQ_GOV_SCHEDUTIL PM_OPP MAILBOX \
   QCOM_CPUCP_MBOX ARM_SCMI_PROTOCOL ARM_SCMI_TRANSPORT_MAILBOX ARM_SCMI_CPUFREQ; do
-  grep -q "--enable \"\$symbol\"\|--enable \$symbol" scripts/a14-mainline-scmi-cpufreq-config.sh || {
-    echo "missing SCMI CPUFreq config requirement: $symbol" >&2
+  grep -Fq -- '"$cfg" --enable "$symbol"' scripts/a14-mainline-scmi-cpufreq-config.sh || {
+    echo "missing SCMI CPUFreq config loop: $symbol" >&2
+    exit 1
+  }
+done
+# The loop above intentionally has one generic command whose $symbol changes;
+# separately require every symbol to appear in the list feeding that loop.
+for symbol in \
+  CPU_FREQ CPU_FREQ_STAT CPU_FREQ_GOV_SCHEDUTIL PM_OPP MAILBOX \
+  QCOM_CPUCP_MBOX ARM_SCMI_PROTOCOL ARM_SCMI_TRANSPORT_MAILBOX ARM_SCMI_CPUFREQ; do
+  grep -qw "$symbol" scripts/a14-mainline-scmi-cpufreq-config.sh || {
+    echo "missing SCMI CPUFreq config symbol: $symbol" >&2
     exit 1
   }
 done
