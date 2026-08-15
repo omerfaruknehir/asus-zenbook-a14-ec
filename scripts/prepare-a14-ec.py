@@ -41,9 +41,12 @@ def final_missing() -> list[str]:
         "A14_PROFILE_POLICY_V2",
         "A14_PROFILE_EMERGENCY_NOTIFY",
         "A14_PROFILE_TRANSACTIONAL",
+        "A14_QUIET_FANLESS",
         "ASUS_EC_PROFILE_POWER_SAVER",
         "PLATFORM_PROFILE_MAX_POWER",
         "asus_ec_enter_manual_locked(ec, 255)",
+        "asus_ec_enter_manual_locked(ec, quiet_fan_pwm)",
+        "asus_ec_freq_qos_retry_attach",
     )
     return [token for token in required if token not in s]
 
@@ -51,19 +54,26 @@ def final_missing() -> list[str]:
 def compose_ec() -> None:
     # Resume from the highest completed semantic layer. Newer layers imply that
     # their historical prerequisites were already materialized in this source.
+    if has("A14_QUIET_FANLESS"):
+        print("a14_quiet_fanless=current")
+        return
+
     if has("A14_PROFILE_TRANSACTIONAL"):
         print("a14_profile_transactional=current")
+        run("apply-a14-quiet-fanless.py")
         return
 
     if has("A14_PROFILE_EMERGENCY_NOTIFY"):
         print("a14_profile_emergency_notify=current")
         run("apply-a14-profile-transactional.py")
+        run("apply-a14-quiet-fanless.py")
         return
 
     if has("A14_PROFILE_POLICY_V2"):
         print("a14_profile_policy_v2=current")
         run("apply-a14-profile-emergency-notify.py")
         run("apply-a14-profile-transactional.py")
+        run("apply-a14-quiet-fanless.py")
         return
 
     if has("static int asus_ec_force_auto_locked"):
@@ -87,6 +97,7 @@ def compose_ec() -> None:
     run("apply-a14-profile-policy-v2.py")
     run("apply-a14-profile-emergency-notify.py")
     run("apply-a14-profile-transactional.py")
+    run("apply-a14-quiet-fanless.py")
 
 
 def main() -> None:
