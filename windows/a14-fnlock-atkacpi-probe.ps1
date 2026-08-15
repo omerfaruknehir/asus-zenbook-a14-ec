@@ -90,20 +90,24 @@ function Invoke-AtkMethodRaw {
     param(
         [IntPtr]$Handle,
         [uint32]$Method,
-        [byte[]]$Parameters
+        [byte[]]$Args
     )
 
-    # IMPORTANT: this is the exact ATKACPI ABI used by G-Helper:
-    #   [4-byte method][raw parameters]
-    # There is NO parameter-length dword between them.
-    # DSTS input = 8 bytes:  method + device_id
-    # DEVS input = 12 bytes: method + device_id + control_status
-    $input = New-Object byte[] (4 + $Parameters.Length)
+    # Exact framing used by G-Helper AsusACPI.CallMethod():
+    #   dword MethodID
+    #   dword ArgsLength
+    #   byte  Args[ArgsLength]
+    # DeviceGet() passes an 8-byte DSTS argument block whose first dword is
+    # the device ID. DeviceSet() passes an 8-byte DEVS argument block containing
+    # device ID + status.
+    $input = New-Object byte[] (8 + $Args.Length)
     [BitConverter]::GetBytes($Method).CopyTo($input, 0)
-    if ($Parameters.Length -gt 0) {
-        $Parameters.CopyTo($input, 4)
+    [BitConverter]::GetBytes([uint32]$Args.Length).CopyTo($input, 4)
+    if ($Args.Length -gt 0) {
+        $Args.CopyTo($input, 8)
     }
 
+    # G-Helper uses a 16-byte result buffer for this IOCTL.
     $output = New-Object byte[] 16
     [uint32]$returned = 0
     $ok = [A14AtkAcpiNative]::DeviceIoControl(
@@ -116,7 +120,7 @@ function Invoke-AtkMethodRaw {
         [ref]$returned,
         [IntPtr]::Zero)
 
-    $result = if ($output.Length -ge 4) { [BitConverter]::ToInt32($output, 0) } else { 0 }
+    $result = [BitConverter]::ToInt32($output, 0)
     if (-not $ok) {
         $code = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
         return [pscustomobject]@{
@@ -187,12 +191,10 @@ function Invoke-WmiDevs {
 function Convert-DstsResult {
     param([uint32]$Raw, [string]$Transport)
 
-    # Match G-Helper DeviceGet(): positive DSTS values are returned minus
-    # 0x10000. Do NOT interpret the resulting value as a boolean Fn-lock state.
-    # G-Helper uses DeviceGet(FnLock) >= 0 only to decide that hardware Fn-lock
-    # is supported. On this A14 the observed value is 2 both before and after
-    # DEVS writes, so it is capability/status data, not an ON/OFF readback.
-    $decoded = if ($Raw -gt 0) { [int64]$Raw - 65536 } else { [int64]$Raw }
+    # Match G-Helper DeviceGet(): subtract 0x10000. For FnLock G-Helper uses
+    # DeviceGet(FnLock) >= 0 as a support/capability test; it does not use the
+    # returned value as the current boolean lock state.
+    $decoded = [int64]$Raw - 65536
     [pscustomobject]@{
         DeviceId       = ('0x{0:X8}' -f $FnLockDeviceId)
         Transport      = $Transport
@@ -200,8 +202,34 @@ function Convert-DstsResult {
         RawHex         = ('0x{0:X8}' -f $Raw)
         PresenceBit16  = (($Raw -band 0x00010000) -ne 0)
         DecodedValue   = $decoded
+        EndpointUsable = ($decoded -ge 0)
         BooleanState   = 'NOT_EXPOSED_BY_DSTS'
     }
+}
+
+function New-DstsArgs {
+    $args = New-Object byte[] 8
+    [BitConverter]::GetBytes($FnLockDeviceId).CopyTo($args, 0)
+    return $args
+}
+
+function New-DevsArgs {
+    param([ValidateSet(0,1)][int]$State)
+    $args = New-Object byte[] 8
+    [BitConverter]::GetBytes($FnLockDeviceId).CopyTo($args, 0)
+    [BitConverter]::GetBytes([uint32]$State).CopyTo($args, 4)
+    return $args
+}
+
+function Read-RequiredObservation {
+    param([Parameter(Mandatory=$true)][string]$Prompt)
+    do {
+        $value = Read-Host $Prompt
+        if ([string]::IsNullOrWhiteSpace($value)) {
+            Write-Host 'Please type no-change or describe the observed F-row behavior; blank is ambiguous.'
+        }
+    } while ([string]::IsNullOrWhiteSpace($value))
+    return $value
 }
 
 $atkHandle = [IntPtr]::Zero
@@ -214,23 +242,9 @@ catch {
 }
 $wmi = Get-AsusWmiInstance
 
-function New-DstsParameters {
-    $parameters = New-Object byte[] 4
-    [BitConverter]::GetBytes($FnLockDeviceId).CopyTo($parameters, 0)
-    return $parameters
-}
-
-function New-DevsParameters {
-    param([ValidateSet(0,1)][int]$State)
-    $parameters = New-Object byte[] 8
-    [BitConverter]::GetBytes($FnLockDeviceId).CopyTo($parameters, 0)
-    [BitConverter]::GetBytes([uint32]$State).CopyTo($parameters, 4)
-    return $parameters
-}
-
 function Get-FnLockFirmware {
     if ($atkHandle -ne [IntPtr]::Zero) {
-        $r = Invoke-AtkMethodRaw -Handle $atkHandle -Method $MethodDsts -Parameters (New-DstsParameters)
+        $r = Invoke-AtkMethodRaw -Handle $atkHandle -Method $MethodDsts -Args (New-DstsArgs)
         if ($r.Success) {
             return Convert-DstsResult -Raw ([uint32]$r.ResultInt32) -Transport 'ATKACPI-IOCTL'
         }
@@ -249,7 +263,7 @@ function Set-FnLockFirmware {
     param([ValidateSet(0,1)][int]$State)
 
     if ($atkHandle -ne [IntPtr]::Zero) {
-        $r = Invoke-AtkMethodRaw -Handle $atkHandle -Method $MethodDevs -Parameters (New-DevsParameters -State $State)
+        $r = Invoke-AtkMethodRaw -Handle $atkHandle -Method $MethodDevs -Args (New-DevsArgs -State $State)
         if ($r.Success) {
             return [pscustomobject]@{
                 DeviceId       = ('0x{0:X8}' -f $FnLockDeviceId)
@@ -285,7 +299,7 @@ function Show-Diagnostics {
     Write-Host ('ASUS_WMI_CLASS=' + $(if ($null -ne $wmi) { 'YES' } else { 'NO' }))
 
     if ($atkHandle -ne [IntPtr]::Zero) {
-        $r = Invoke-AtkMethodRaw -Handle $atkHandle -Method $MethodDsts -Parameters (New-DstsParameters)
+        $r = Invoke-AtkMethodRaw -Handle $atkHandle -Method $MethodDsts -Args (New-DstsArgs)
         Write-Host ('ATKACPI_DSTS_SUCCESS=' + $r.Success)
         Write-Host ('ATKACPI_DSTS_INPUT=' + $r.InputHex)
         if (-not $r.Success) {
@@ -353,26 +367,26 @@ try {
             Set-FnLockFirmware -State 0 | Format-List
             Start-Sleep -Milliseconds 250
             Show-Status -Label 'DSTS AFTER DEVS=0'
-            Write-Host 'Test F1-F12 and Fn+F1-F12 now. There is NO time limit.'
-            $result0 = Read-Host 'Describe what changed with DEVS=0 (or type no-change)'
+            Write-Host 'Test at least one ordinary F-row key and its Fn+key form. There is NO time limit.'
+            $result0 = Read-RequiredObservation 'Describe the behavior with DEVS=0 (or type no-change)'
 
             Write-Host "`n===== TEST DEVS=1 ====="
             Set-FnLockFirmware -State 1 | Format-List
             Start-Sleep -Milliseconds 250
             Show-Status -Label 'DSTS AFTER DEVS=1'
-            Write-Host 'Test F1-F12 and Fn+F1-F12 now. There is NO time limit.'
-            $result1 = Read-Host 'Describe what changed with DEVS=1 (or type no-change)'
+            Write-Host 'Test the same ordinary F-row key and its Fn+key form. There is NO time limit.'
+            $result1 = Read-RequiredObservation 'Describe the behavior with DEVS=1 (or type no-change)'
 
             Write-Host "`n===== OBSERVATION ====="
             Write-Host ('DEVS_0_OBSERVATION=' + $result0)
             Write-Host ('DEVS_1_OBSERVATION=' + $result1)
-            Write-Warning 'DSTS does not expose the boolean Fn-lock state on this A14, so this probe does not guess an automatic restore value.'
+            Write-Warning 'DSTS is a support/capability result for this endpoint, not a boolean Fn-lock readback; no automatic restore value is guessed.'
         }
         'fnesc' {
             $before = Get-FnLockFirmware
-            Write-Host "`nPress Fn+Esc ONCE in Windows, test one F-row key, then press Enter here."
+            Write-Host "`nPress Fn+Esc ONCE in Windows and test the same F-row key in both forms."
             Write-Host 'Do not toggle anything in MyASUS/Armoury Crate/G-Helper during this step.'
-            $behavior = Read-Host 'After Fn+Esc, describe the F-row change (or type no-change)'
+            $behavior = Read-RequiredObservation 'After Fn+Esc, describe the behavior (or type no-change)'
             $after = Get-FnLockFirmware
             Write-Host "`n===== PHYSICAL Fn+Esc OBSERVATION ====="
             Write-Host ('BEHAVIOR=' + $behavior)
