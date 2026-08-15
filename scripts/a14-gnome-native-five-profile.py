@@ -203,14 +203,14 @@ def patch_control_center_semantic(src: Path) -> None:
 
 def localize_version(src: Path) -> None:
     version = output(["dpkg-parsechangelog", "-S", "Version"], cwd=src)
-    if "+a14.2" in version:
+    if "+a14.3" in version:
         print(f"local_version=current:{version}")
         return
     # apt source normally yields an unmodified distro source. If a prior +a14
     # source tree is supplied, strip only the local suffix before adding ours.
     base_version = re.sub(r"\+a14(?:\.\d+)?$", "", version)
     distribution = output(["dpkg-parsechangelog", "-S", "Distribution"], cwd=src) or "UNRELEASED"
-    new_version = base_version + "+a14.2"
+    new_version = base_version + "+a14.3"
     env = os.environ.copy()
     env.setdefault("DEBFULLNAME", "ASUS Zenbook A14 Linux support")
     env.setdefault("DEBEMAIL", "omerfaruknehir@gmail.com")
