@@ -8,6 +8,10 @@ kernel=${1:-$(uname -r)}
 kdir=${KDIR:-/lib/modules/$kernel/build}
 module_dir=${A14_MODULE_DIR:-$(pwd)}
 target=${A14_KBUILD_TARGET:-modules}
+jobs=
+if [ -n "${A14_BUILD_JOBS:-}" ]; then
+    jobs="-j$A14_BUILD_JOBS"
+fi
 
 if [ ! -e "$kdir/Makefile" ]; then
     echo "Missing kernel build tree: $kdir" >&2
@@ -82,7 +86,7 @@ if [ -n "$helper" ]; then
     # variable. Preserve its dynamic symtypes/stable switches verbatim and only
     # replace the executable path.
     gd_override="$helper \$(if \$(KBUILD_SYMTYPES), --symtypes \$(@:.o=.symtypes)) \$(if \$(KBUILD_GENDWARFKSYMS_STABLE), --stable)"
-    exec make -C "$kdir" M="$module_dir" "gendwarfksyms=$gd_override" "$target"
+    exec make $jobs -C "$kdir" M="$module_dir" "gendwarfksyms=$gd_override" "$target"
 fi
 
-exec make -C "$kdir" M="$module_dir" "$target"
+exec make $jobs -C "$kdir" M="$module_dir" "$target"
