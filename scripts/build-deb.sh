@@ -27,6 +27,7 @@ install -m 0644 "$repo/asus_zenbook_a14_ec.c" "$repo/hid_asus_ec.c" \
 # Keep the installed DKMS source reproducible from either a clean checkout or
 # the already-composed source shipped in the package.
 for script in \
+  a14-kbuild-compat.sh \
   prepare-a14-ec.py \
   apply-a14-ec-hardening.py \
   apply-a14-native-fan-profile.py \
@@ -92,7 +93,7 @@ Section: kernel
 Priority: optional
 Architecture: all
 Maintainer: Ömer Faruk Nehir <omerfaruknehir@gmail.com>
-Depends: dkms, kmod, systemd, build-essential, python3, python3-dbus, python3-gi
+Depends: dkms, kmod, systemd, build-essential, binutils, python3, python3-dbus, python3-gi
 Recommends: power-profiles-daemon, gnome-shell, initramfs-tools
 Installed-Size: $installed_size
 Homepage: https://github.com/omerfaruknehir/asus-zenbook-a14-ec
