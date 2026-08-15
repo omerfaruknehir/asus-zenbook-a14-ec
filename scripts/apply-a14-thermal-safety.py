@@ -11,7 +11,7 @@ if "A14_THERMAL_SAFETY" in s:
 if "A14_QUIET_FANLESS" not in s:
     raise SystemExit("A14 thermal safety layer requires Quiet fanless layer first")
 
-old = '''static const char * const asus_ec_thermal_zone_names[] = {\n\t"cpu0-thermal",\n\t"cpu1-thermal",\n\t"cpu2-thermal",\n\t"soc-thermal",\n\t"skin-thermal",\n};\n'''
+old = '''static const char * const asus_ec_thermal_zone_names[] = {\n\t"cpu0-0-top-thermal",\n\t"cpu1-0-top-thermal",\n\t"cpu2-0-top-thermal",\n\t"gpuss-0-thermal",\n\t"cpu0-thermal",\n\t"cpu1-thermal",\n\t"cpu2-thermal",\n\t"soc-thermal",\n\t"skin-thermal",\n};\n'''
 
 # These names were recovered from the UX3407RA's actual /sys/class/thermal
 # inventory. Keep underscore aliases as well because older Qualcomm DT/thermal
@@ -26,16 +26,20 @@ for cluster in range(3):
         names.append(f'cpuss{cluster}-{side}-thermal')
         names.append(f'cpuss{cluster}_{side}_thermal')
 
-# Retain older generic/fallback names too; missing zones are harmless because
-# thermal_zone_get_zone_by_name() simply returns an error pointer.
-names += ["cpu0-thermal", "cpu1-thermal", "cpu2-thermal", "soc-thermal", "skin-thermal"]
+# Retain the already-known GPU and generic/fallback names too; missing zones are
+# harmless because thermal_zone_get_zone_by_name() simply returns an error pointer.
+names += [
+    "gpuss-0-thermal",
+    "cpu0-thermal", "cpu1-thermal", "cpu2-thermal",
+    "soc-thermal", "skin-thermal",
+]
 
 body = '#define A14_THERMAL_SAFETY 1\n\nstatic const char * const asus_ec_thermal_zone_names[] = {\n'
 body += ''.join(f'\t"{name}",\n' for name in names)
 body += '};\n'
 
 if s.count(old) != 1:
-    raise SystemExit(f"A14 thermal zone table: expected one source anchor, found {s.count(old)}")
+    raise SystemExit(f"A14 thermal zone table: expected one current source anchor, found {s.count(old)}")
 s = s.replace(old, body, 1)
 
 old_find = '''\tfor (i = 0; i < ARRAY_SIZE(asus_ec_thermal_zone_names); i++) {\n\t\tzone = thermal_zone_get_zone_by_name(asus_ec_thermal_zone_names[i]);\n\t\tif (!IS_ERR(zone))\n\t\t\tec->zones[ec->num_zones++] = zone;\n\t}\n\treturn 0;\n}\n'''
@@ -78,6 +82,7 @@ required = (
     '"cpuss0-top-thermal"',
     '"cpuss1-btm-thermal"',
     '"cpuss2-top-thermal"',
+    '"gpuss-0-thermal"',
     "monitoring %u A14 CPU thermal zones",
     "!ec->num_freq_requests || !ec->num_zones",
     "ret = ec->num_zones ? asus_ec_freq_qos_retry_attach(ec) : -ENODEV",
