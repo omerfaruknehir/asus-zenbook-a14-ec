@@ -13,9 +13,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Validate scripts and package
+      - name: Validate Whisper and native ASUS modes
         run: ./scripts/test-package.sh
-      - name: Verify A14 EC profile policy package
+      - name: Verify packaged profile contract
         shell: bash
         run: |
           deb=$(find dist -maxdepth 1 -name 'asus-zenbook-a14-ec-dkms_*_all.deb' -print -quit)
@@ -25,55 +25,29 @@ jobs:
           src=$(find "$root/usr/src" -maxdepth 1 -type d -name 'asus-zenbook-a14-ec-*' -print -quit)
           test -n "$src"
           ec="$src/asus_zenbook_a14_ec.c"
-          modconf="$root/etc/modprobe.d/asus-zenbook-a14-ec.conf"
+          hid="$src/hid_asus_ec.c"
 
-          grep -q '#define EC_FW_FAN_PROFILE_COMMAND        0x11' "$ec"
           grep -q '#define EC_FW_FAN_PROFILE_NORMAL         0x01' "$ec"
           grep -q '#define EC_FW_FAN_PROFILE_QUIET          0x02' "$ec"
           grep -q '#define EC_FW_FAN_PROFILE_TURBO          0x04' "$ec"
           grep -q '#define EC_FW_FAN_PROFILE_FULL_SPEED     0x10' "$ec"
-          grep -q 'A14_PROFILE_POLICY_V2' "$ec"
-          grep -q 'A14_PROFILE_EMERGENCY_NOTIFY' "$ec"
-          grep -q 'A14_PROFILE_TRANSACTIONAL' "$ec"
-          grep -q 'ASUS_EC_PROFILE_POWER_SAVER' "$ec"
-          grep -q 'quiet power-saver balanced performance full-speed' "$ec"
-          grep -q 'PLATFORM_PROFILE_LOW_POWER' "$ec"
-          grep -q 'PLATFORM_PROFILE_MAX_POWER' "$ec"
-          grep -q 'asus_ec_enter_manual_locked(ec, 255)' "$ec"
-          grep -q 'asus_ec_restore_profile_locked' "$ec"
-          grep -q 'A14_QUIET_EMERGENCY=' "$ec"
-          grep -q 'A14_EMERGENCY_REASON=' "$ec"
-          grep -q 'qos-unavailable' "$ec"
-          grep -q 'DEVICE_ATTR_RO(quiet_emergency)' "$ec"
+          grep -q 'A14_WHISPER_MODE' "$ec"
+          grep -q 'whisper quiet normal turbo full-speed' "$ec"
+          grep -q 'asus_ec_set_pwm_both(ec, 0)' "$ec"
+          grep -q 'DEVICE_ATTR_RO(whisper_level)' "$ec"
+          grep -q 'A14_HID_NATIVE_PROFILE_HOTKEY' "$hid"
+          grep -q 'asus_a14_cycle_native_profile();' "$hid"
 
-          if grep -q 'quiet_max_khz' "$ec"; then
-            echo 'obsolete hard-coded quiet GHz cap leaked into packaged EC source' >&2
-            false
-          fi
-          test -s "$modconf"
-          grep -q 'quiet_max_percent=45' "$modconf"
-          grep -q 'power_saver_max_percent=70' "$modconf"
-          grep -q 'quiet_emergency_mc=90000' "$modconf"
-          grep -q 'quiet_recover_mc=75000' "$modconf"
-          if grep -q 'quiet_max_khz' "$modconf"; then
-            echo 'obsolete quiet_max_khz leaked into packaged modprobe configuration' >&2
-            false
-          fi
+          for forbidden in A14_PROFILE_POLICY_V2 ASUS_EC_PROFILE_POWER_SAVER A14_QUIET_FANLESS; do
+            ! grep -q "$forbidden" "$ec"
+          done
 
-          test -x "$src/scripts/apply-a14-profile-policy-v2.py"
-          test -x "$src/scripts/apply-a14-profile-emergency-notify.py"
-          test -x "$src/scripts/apply-a14-profile-transactional.py"
-          test -x "$root/usr/libexec/asus-zenbook-a14-profile-service"
-          test -x "$root/usr/libexec/asus-zenbook-a14-emergency-notify"
-          test -x "$root/usr/libexec/asus-zenbook-a14-profile-integration"
-          test -x "$root/usr/libexec/asus-zenbook-a14-enable-gnome-extension"
-          test -s "$root/usr/lib/systemd/system/asus-zenbook-a14-profile.service"
-          test -s "$root/usr/lib/udev/rules.d/90-asus-zenbook-a14-ec.rules"
-          test -s "$root/usr/share/dbus-1/system.d/io.github.omerfaruknehir.AsusA14.conf"
-          test -s "$root/usr/share/gnome-shell/extensions/asus-a14-modes@omerfaruknehir/metadata.json"
-          test -s "$root/usr/share/gnome-shell/extensions/asus-a14-modes@omerfaruknehir/extension.js"
-          grep -q 'QuickSettings.QuickMenuToggle' "$root/usr/share/gnome-shell/extensions/asus-a14-modes@omerfaruknehir/extension.js"
-          make -C "$src" prepare
+          service="$root/usr/libexec/asus-zenbook-a14-profile-service"
+          extension="$root/usr/share/gnome-shell/extensions/asus-a14-modes@omerfaruknehir/extension.js"
+          grep -Fq 'PROFILES = ("whisper", "quiet", "normal", "turbo", "full-speed")' "$service"
+          grep -Fq "const PROFILE_ORDER = ['whisper', 'quiet', 'normal', 'turbo', 'full-speed'];" "$extension"
+          grep -q 'osdWindowManager.show' "$extension"
+          ! grep -q 'Main.notify\|Main.notifyError' "$extension"
       - uses: actions/upload-artifact@v4
         with:
           name: asus-zenbook-a14-ec-deb
