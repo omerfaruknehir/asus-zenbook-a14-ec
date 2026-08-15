@@ -151,13 +151,16 @@ def compose_ec() -> None:
 
 def fnlock_complete() -> bool:
     required = (
-        "A14_HID_FNLOCK_EXACT_SET_REPORT",
+        "A14_HID_FNLOCK_WINDOWS_FULL_FEATURE_REPORT",
         "struct work_struct fnlock_work;",
         "atomic_t desired_fn_lock;",
         "static int asus_hid_set_fnlock_hw",
-        "sizeof(command), HID_FEATURE_REPORT, HID_REQ_SET_REPORT",
+        "u8 command[A14_EC_REPORT_SIZE]",
+        "return asus_hid_raw_request(data, command, HID_REQ_SET_REPORT);",
         "schedule_work(&data->fnlock_work);",
         "INIT_WORK(&data->fnlock_work, asus_fnlock_work);",
+        "ret = asus_hid_set_fnlock_hw(data, false);",
+        "ret = asus_hid_set_fnlock_hw(data, data->fn_lock);",
     )
     return all(hid_has(token) for token in required)
 
@@ -182,10 +185,10 @@ def compose_hid() -> None:
 
     # A profile-hotkey transform is supposed to be layered on top of Fn-lock.
     # Never silently ship an old/partial composed source where Fn+F exists but
-    # Fn+Esc was skipped or still uses the old padded 64-byte command.
+    # Fn+Esc was skipped or still uses the disproven four-byte request.
     if profile and not fnlock:
         raise SystemExit(
-            "a14_hid_stack=partial: Fn+F profile hotkey exists but exact-length Fn-lock composition is missing"
+            "a14_hid_stack=partial: Fn+F profile hotkey exists but Windows-matched full-length Fn-lock composition is missing"
         )
 
     if not fnlock:
@@ -212,11 +215,14 @@ def main() -> None:
         "A14_HID_NATIVE_PROFILE_HOTKEY",
         "asus_a14_cycle_native_profile();",
         "schedule_work(&data->profile_work);",
-        "A14_HID_FNLOCK_EXACT_SET_REPORT",
+        "A14_HID_FNLOCK_WINDOWS_FULL_FEATURE_REPORT",
         "static int asus_hid_set_fnlock_hw",
-        "sizeof(command), HID_FEATURE_REPORT, HID_REQ_SET_REPORT",
+        "u8 command[A14_EC_REPORT_SIZE]",
+        "return asus_hid_raw_request(data, command, HID_REQ_SET_REPORT);",
         "schedule_work(&data->fnlock_work);",
         "INIT_WORK(&data->fnlock_work, asus_fnlock_work);",
+        "ret = asus_hid_set_fnlock_hw(data, false);",
+        "ret = asus_hid_set_fnlock_hw(data, data->fn_lock);",
     )
     hid_missing = [token for token in hid_required if token not in hid]
     if hid_missing:
@@ -225,7 +231,7 @@ def main() -> None:
     print("a14_profiles=whisper,quiet,normal,turbo,full-speed")
     print("a14_native_profiles=quiet,normal,turbo,full-speed")
     print("a14_fn_f_cycle=whisper,quiet,normal,turbo,full-speed")
-    print("a14_fn_lock=kernel-hid-exact-4-byte-set-report")
+    print("a14_fn_lock=kernel-hid-windows-full-64-byte-feature-report")
     print("a14_fan_telemetry=selector-calibrated")
     print("a14_ec_stack=current")
 
