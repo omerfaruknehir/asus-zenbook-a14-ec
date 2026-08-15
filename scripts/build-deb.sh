@@ -17,13 +17,15 @@ src="$root/usr/src/asus-zenbook-a14-ec-$version"
 ext_uuid=asus-a14-modes@omerfaruknehir
 ext_dir="$root/usr/share/gnome-shell/extensions/$ext_uuid"
 mkdir -p "$root/DEBIAN" "$src/scripts" "$root/usr/sbin" "$root/usr/libexec" \
-  "$root/usr/lib/systemd/system" "$root/usr/lib/udev/rules.d" \
-  "$root/usr/share/dbus-1/system.d" "$ext_dir" "$root/etc/xdg/autostart" \
-  "$root/etc/modprobe.d" "$root/usr/share/doc/$package" "$repo/dist"
+  "$root/usr/lib/systemd/system" "$root/usr/share/dbus-1/system.d" \
+  "$ext_dir" "$root/etc/xdg/autostart" "$root/etc/modprobe.d" \
+  "$root/usr/share/doc/$package" "$repo/dist"
 
 install -m 0644 "$repo/asus_zenbook_a14_ec.c" "$repo/hid_asus_ec.c" \
   "$repo/Kbuild" "$repo/Makefile" "$src/"
 
+# Keep the installed DKMS source reproducible from either a clean checkout or
+# the already-composed source shipped in the package.
 for script in \
   prepare-a14-ec.py \
   apply-a14-ec-hardening.py \
@@ -31,10 +33,10 @@ for script in \
   apply-a14-native-hardening-compat.py \
   apply-a14-native-max-power.py \
   apply-a14-native-fan-telemetry.py \
-  apply-a14-profile-policy-v2.py \
-  apply-a14-profile-emergency-notify.py \
-  apply-a14-profile-transactional.py \
-  apply-a14-hid-fnlock.py
+  apply-a14-native-mode-names-hotkey.py \
+  apply-a14-whisper.py \
+  apply-a14-hid-fnlock.py \
+  apply-a14-hid-profile-hotkey.py
 do
   install -m 0755 "$repo/scripts/$script" "$src/scripts/$script"
 done
@@ -48,13 +50,11 @@ install -m 0755 "$repo/scripts/asus-zenbook-a14-ec-unload" "$root/usr/libexec/as
 install -m 0755 "$repo/scripts/asus-zenbook-a14-ppd-bridge.py" "$root/usr/libexec/asus-zenbook-a14-ppd-bridge"
 install -m 0755 "$repo/scripts/asus-zenbook-a14-profile-integration" "$root/usr/libexec/asus-zenbook-a14-profile-integration"
 install -m 0755 "$repo/scripts/asus-zenbook-a14-profile-service.py" "$root/usr/libexec/asus-zenbook-a14-profile-service"
-install -m 0755 "$repo/scripts/asus-zenbook-a14-emergency-notify.py" "$root/usr/libexec/asus-zenbook-a14-emergency-notify"
 install -m 0755 "$repo/scripts/asus-zenbook-a14-enable-gnome-extension" "$root/usr/libexec/asus-zenbook-a14-enable-gnome-extension"
 
 install -m 0644 "$repo/systemd/asus-zenbook-a14-ec.service" "$root/usr/lib/systemd/system/"
 install -m 0644 "$repo/systemd/asus-zenbook-a14-ppd-bridge.service" "$root/usr/lib/systemd/system/"
 install -m 0644 "$repo/systemd/asus-zenbook-a14-profile.service" "$root/usr/lib/systemd/system/"
-install -m 0644 "$repo/udev/90-asus-zenbook-a14-ec.rules" "$root/usr/lib/udev/rules.d/"
 install -m 0644 "$repo/dbus-1/system.d/io.github.omerfaruknehir.AsusA14.conf" "$root/usr/share/dbus-1/system.d/"
 install -m 0644 "$repo/gnome-shell/$ext_uuid/metadata.json" "$ext_dir/metadata.json"
 install -m 0644 "$repo/gnome-shell/$ext_uuid/extension.js" "$ext_dir/extension.js"
@@ -78,7 +78,7 @@ Copyright: 2025 Alexandru Marc Serdeliuc <serdeliuk@yahoo.com>
            2026 Ömer Faruk Nehir <omerfaruknehir@gmail.com>
 License: GPL-2.0-or-later
 
-Files: scripts/asus-zenbook-a14-ppd-bridge.py scripts/asus-zenbook-a14-profile-service.py scripts/asus-zenbook-a14-emergency-notify.py gnome-shell/*/extension.js
+Files: scripts/asus-zenbook-a14-ppd-bridge.py scripts/asus-zenbook-a14-profile-service.py gnome-shell/*/extension.js
 Copyright: 2026 Sombre-Osmoze <sombre@osmoze.xyz>
            2026 Ömer Faruk Nehir <omerfaruknehir@gmail.com>
 License: GPL-2.0-or-later
@@ -92,16 +92,16 @@ Section: kernel
 Priority: optional
 Architecture: all
 Maintainer: Ömer Faruk Nehir <omerfaruknehir@gmail.com>
-Depends: dkms, kmod, systemd, build-essential, python3, python3-dbus, python3-gi, libnotify-bin
+Depends: dkms, kmod, systemd, build-essential, python3, python3-dbus, python3-gi
 Recommends: power-profiles-daemon, gnome-shell, initramfs-tools
 Installed-Size: $installed_size
 Homepage: https://github.com/omerfaruknehir/asus-zenbook-a14-ec
 Description: ASUS Zenbook A14 EC, keyboard and desktop integration (DKMS)
- Dual-fan monitoring/control, Quiet/Power Saver/Balanced/Performance/Full Speed
- policies, keyboard backlight and Fn hotkeys for ASUS Zenbook A14 UX3407RA/
- UX3407QA Snapdragon systems. Includes standard Linux platform-profile mapping,
- a five-mode GNOME Quick Settings menu, and critical desktop notifications when
- Quiet requires emergency cooling.
+ Dual-fan monitoring/control and ASUS native Quiet, Normal, Turbo and Full Speed
+ firmware modes for UX3407RA/UX3407QA Snapdragon systems. Adds an acoustic-first
+ Whisper mode that progressively limits CPU/GPU heat, attempts zero-RPM fans,
+ and silently falls back to ASUS Quiet cooling when required. Fn+F cycles the
+ five ordered modes and GNOME Quick Settings shows mode changes using OSD.
 CONTROL
 
 cat >"$root/DEBIAN/postinst" <<POSTINST
@@ -141,9 +141,6 @@ elif command -v dracut >/dev/null 2>&1; then
 fi
 
 systemctl daemon-reload >/dev/null 2>&1 || true
-if command -v udevadm >/dev/null 2>&1; then
-  udevadm control --reload-rules >/dev/null 2>&1 || true
-fi
 if command -v busctl >/dev/null 2>&1; then
   busctl call org.freedesktop.DBus /org/freedesktop/DBus org.freedesktop.DBus ReloadConfig >/dev/null 2>&1 || true
 fi
@@ -202,9 +199,6 @@ cat >"$root/DEBIAN/postrm" <<'POSTRM'
 set -e
 kernel="$(uname -r)"
 systemctl daemon-reload >/dev/null 2>&1 || true
-if command -v udevadm >/dev/null 2>&1; then
-  udevadm control --reload-rules >/dev/null 2>&1 || true
-fi
 if command -v busctl >/dev/null 2>&1; then
   busctl call org.freedesktop.DBus /org/freedesktop/DBus org.freedesktop.DBus ReloadConfig >/dev/null 2>&1 || true
 fi
