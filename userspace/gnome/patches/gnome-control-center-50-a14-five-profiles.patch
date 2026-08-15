@@ -12,7 +12,8 @@ where possible while presenting the actual hardware policy as:
   full-speed  -> Full Speed
 
 Extend the existing Power Mode section to all five while preserving GNOME
-Settings' stock icon-free row presentation.
+Settings' stock icon-free row presentation. Keep its conventional high-to-low
+ordering: Full Speed, Turbo, Normal, Quiet, Whisper.
 
 --- a/panels/power/cc-power-profile-row.h
 +++ b/panels/power/cc-power-profile-row.h
@@ -23,9 +24,10 @@ Settings' stock icon-free row presentation.
 +  CC_POWER_PROFILE_FULL_SPEED,
    CC_POWER_PROFILE_PERFORMANCE,
    CC_POWER_PROFILE_BALANCED,
-   CC_POWER_PROFILE_POWER_SAVER,
 +  CC_POWER_PROFILE_QUIET,
-   NUM_CC_POWER_PROFILES,
+   CC_POWER_PROFILE_POWER_SAVER,
+-  NUM_CC_POWER_PROFILES,
++  NUM_CC_POWER_PROFILES,
    /* The unknown profile is intentionally not counted as a profile. It exists to handle unsupported profiles. */
    CC_POWER_PROFILE_UNKNOWN
 --- a/panels/power/cc-power-profile-row.c
@@ -50,15 +52,19 @@ Settings' stock icon-free row presentation.
 +        text = C_("Power profile", "_Normal");
 +        subtext = _("ASUS Normal firmware mode");
          break;
-       case CC_POWER_PROFILE_POWER_SAVER:
--        text = C_("Power profile", "P_ower Saver");
--        subtext = _("Reduced performance and power usage");
-+        text = C_("Power profile", "_Whisper");
-+        subtext = _("Minimum disturbance; may throttle CPU and GPU");
-+        break;
 +      case CC_POWER_PROFILE_QUIET:
 +        text = C_("Power profile", "_Quiet");
 +        subtext = _("ASUS Quiet firmware mode");
++        break;
+       case CC_POWER_PROFILE_POWER_SAVER:
+-        text = C_("Power profile", "P_ower Saver");
+-        subtext = _("Reduced performance and power usage");
+-        break;
+-      case CC_POWER_PROFILE_QUIET:
+-        text = C_("Power profile", "_Quiet");
+-        subtext = _("ASUS Quiet firmware mode");
++        text = C_("Power profile", "_Whisper");
++        subtext = _("Minimum disturbance; may throttle CPU and GPU");
          break;
        default:
          g_assert_not_reached ();
