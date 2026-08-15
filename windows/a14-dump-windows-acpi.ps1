@@ -7,6 +7,7 @@ New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null
 
 $source = @'
 using System;
+using System.ComponentModel;
 using System.Runtime.InteropServices;
 
 public static class A14FirmwareTables
@@ -28,20 +29,18 @@ public static class A14FirmwareTables
                ((uint)(byte)s[3] << 24);
     }
 
-    public static byte[] GetAcpiTable(string signature)
+    public static byte[] TryGetAcpiTable(string signature)
     {
         uint provider = FourCC("ACPI");
         uint table = FourCC(signature);
         uint size = GetSystemFirmwareTable(provider, table, null, 0);
         if (size == 0)
-            throw new System.ComponentModel.Win32Exception(
-                Marshal.GetLastWin32Error(), "Unable to query ACPI table " + signature);
+            return null;
 
         byte[] data = new byte[size];
         uint actual = GetSystemFirmwareTable(provider, table, data, size);
         if (actual == 0)
-            throw new System.ComponentModel.Win32Exception(
-                Marshal.GetLastWin32Error(), "Unable to read ACPI table " + signature);
+            return null;
         if (actual != size)
             Array.Resize(ref data, (int)actual);
         return data;
@@ -53,15 +52,54 @@ if (-not ('A14FirmwareTables' -as [type])) {
     Add-Type -TypeDefinition $source -Language CSharp
 }
 
+function Get-VerifiedAcpicaTool {
+    param(
+        [Parameter(Mandatory=$true)][string]$Name,
+        [Parameter(Mandatory=$true)][string]$ToolsDir,
+        [Parameter(Mandatory=$true)][object]$Release
+    )
+
+    $existing = Get-Command $Name -ErrorAction SilentlyContinue
+    if ($existing) {
+        Write-Host "ACPICA_TOOL_${Name}=PATH:$($existing.Source)"
+        return $existing.Source
+    }
+
+    $asset = @($Release.assets | Where-Object { $_.name -eq $Name })[0]
+    if (-not $asset) {
+        throw "Official ACPICA release $($Release.tag_name) does not contain $Name"
+    }
+    if (-not $asset.digest -or $asset.digest -notmatch '^sha256:([0-9a-fA-F]{64})$') {
+        throw "Official ACPICA asset $Name has no SHA-256 digest in the GitHub release metadata"
+    }
+
+    $expected = $Matches[1].ToLowerInvariant()
+    $path = Join-Path $ToolsDir $Name
+    if (Test-Path $path) {
+        $current = (Get-FileHash -Algorithm SHA256 $path).Hash.ToLowerInvariant()
+        if ($current -eq $expected) {
+            Write-Host "ACPICA_TOOL_${Name}=CACHED:$path"
+            return $path
+        }
+        Remove-Item -Force $path
+    }
+
+    Write-Host "Downloading verified official ACPICA $Name release=$($Release.tag_name)"
+    Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $path -UseBasicParsing
+    $actual = (Get-FileHash -Algorithm SHA256 $path).Hash.ToLowerInvariant()
+    if ($actual -ne $expected) {
+        Remove-Item -Force $path -ErrorAction SilentlyContinue
+        throw "SHA-256 mismatch for $Name expected=$expected actual=$actual"
+    }
+    Write-Host "ACPICA_TOOL_${Name}=DOWNLOADED:$path sha256=$actual"
+    return $path
+}
+
 Write-Host '===== A14 WINDOWS FIRMWARE / ASUS SCI DUMP ====='
 Write-Host "output=$OutputDir"
 
-$dsdtPath = Join-Path $OutputDir 'DSDT.aml'
-$dsdt = [A14FirmwareTables]::GetAcpiTable('DSDT')
-[IO.File]::WriteAllBytes($dsdtPath, $dsdt)
-Write-Host "DSDT=$dsdtPath bytes=$($dsdt.Length)"
-
-# Record the exact Windows ASUS System Control Interface device and driver.
+# Record the exact Windows ASUS System Control Interface device and driver even
+# if ACPI table extraction fails later.
 $driverPath = Join-Path $OutputDir 'asus-system-control-interface.txt'
 $drivers = Get-CimInstance Win32_PnPSignedDriver |
     Where-Object {
@@ -84,6 +122,24 @@ Get-CimInstance Win32_PnPEntity |
     Set-Content -Encoding UTF8 $pnpPath
 Write-Host "ASUS_PNP=$pnpPath"
 
+$wmiPath = Join-Path $OutputDir 'asus-atk-wmi.txt'
+try {
+    $klass = Get-CimClass -Namespace root/wmi -ClassName AsusAtkWmi_WMNB -ErrorAction Stop
+    $inst = @(Get-CimInstance -Namespace root/wmi -ClassName AsusAtkWmi_WMNB -ErrorAction Stop)
+    @(
+        '===== CLASS ====='
+        ($klass | Format-List * | Out-String -Width 300)
+        '===== METHODS ====='
+        ($klass.CimClassMethods | Format-List * | Out-String -Width 300)
+        '===== INSTANCES ====='
+        ($inst | Format-List * | Out-String -Width 300)
+    ) | Set-Content -Encoding UTF8 $wmiPath
+}
+catch {
+    "AsusAtkWmi_WMNB unavailable: $($_.Exception.Message)" | Set-Content -Encoding UTF8 $wmiPath
+}
+Write-Host "ASUS_WMI=$wmiPath"
+
 $systemPath = Join-Path $OutputDir 'system.txt'
 @(
     "timestamp=$(Get-Date -Format o)"
@@ -96,12 +152,71 @@ $systemPath = Join-Path $OutputDir 'system.txt'
 ) | Set-Content -Encoding UTF8 $systemPath
 Write-Host "SYSTEM=$systemPath"
 
+# First try the normal Win32 firmware-table provider. Some Windows/firmware
+# combinations do not expose DSDT as a directly retrievable ACPI table even
+# though the AML is of course loaded by Windows, so failure here is not fatal.
+$dsdtPath = Join-Path $OutputDir 'DSDT.aml'
+$apiDsdt = [A14FirmwareTables]::TryGetAcpiTable('DSDT')
+if ($null -ne $apiDsdt -and $apiDsdt.Length -gt 36) {
+    [IO.File]::WriteAllBytes($dsdtPath, $apiDsdt)
+    Write-Host "DSDT_WIN32_API=$dsdtPath bytes=$($apiDsdt.Length)"
+} else {
+    Write-Host 'DSDT_WIN32_API=UNAVAILABLE; using ACPICA acpidump fallback'
+}
+
+$needAcpica = -not (Test-Path $dsdtPath)
+if ($needAcpica) {
+    $toolsDir = Join-Path $OutputDir 'tools'
+    New-Item -ItemType Directory -Force -Path $toolsDir | Out-Null
+
+    # Pull release metadata from the official ACPICA GitHub project, then verify
+    # each downloaded executable against the SHA-256 digest published in that
+    # release metadata before executing it.
+    $headers = @{ 'User-Agent' = 'asus-zenbook-a14-ec-windows-probe' }
+    $release = Invoke-RestMethod -Headers $headers -Uri 'https://api.github.com/repos/acpica/acpica/releases/latest'
+    "ACPICA_RELEASE=$($release.tag_name)" | Add-Content -Encoding UTF8 $systemPath
+
+    $acpidump = Get-VerifiedAcpicaTool -Name 'acpidump.exe' -ToolsDir $toolsDir -Release $release
+    $iasl = Get-VerifiedAcpicaTool -Name 'iasl.exe' -ToolsDir $toolsDir -Release $release
+
+    $tablesDir = Join-Path $OutputDir 'acpi-tables'
+    New-Item -ItemType Directory -Force -Path $tablesDir | Out-Null
+    Push-Location $tablesDir
+    try {
+        Write-Host 'Dumping binary ACPI tables with ACPICA acpidump...'
+        (& $acpidump -b 2>&1 | Tee-Object -FilePath (Join-Path $OutputDir 'acpidump.log')) | Out-Host
+        $dsdtDat = Get-ChildItem -File -Filter 'dsdt*.dat' | Sort-Object Name | Select-Object -First 1
+        if (-not $dsdtDat) {
+            throw 'ACPICA acpidump completed but no dsdt*.dat file was produced'
+        }
+        Copy-Item -Force $dsdtDat.FullName $dsdtPath
+        Write-Host "DSDT_ACPIDUMP=$dsdtPath bytes=$((Get-Item $dsdtPath).Length)"
+
+        # Disassemble the DSDT itself for immediate inspection. Keep all binary
+        # tables in the ZIP as well so we can redo an external-table-aware
+        # disassembly on Linux if references cross into SSDTs.
+        $dslBase = Join-Path $OutputDir 'DSDT'
+        (& $iasl -p $dslBase -d $dsdtDat.FullName 2>&1 |
+            Tee-Object -FilePath (Join-Path $OutputDir 'iasl-dsdt.log')) | Out-Host
+        $dslPath = "$dslBase.dsl"
+        if (Test-Path $dslPath) {
+            Write-Host "DSDT_DSL=$dslPath"
+        } else {
+            Write-Warning 'iasl did not produce DSDT.dsl; binary DSDT is still preserved.'
+        }
+    }
+    finally {
+        Pop-Location
+    }
+}
+
 $hashPath = Join-Path $OutputDir 'SHA256SUMS.txt'
-Get-ChildItem -File $OutputDir |
-    Where-Object Name -ne 'SHA256SUMS.txt' |
+Get-ChildItem -File -Recurse $OutputDir |
+    Where-Object FullName -ne $hashPath |
     ForEach-Object {
         $h = Get-FileHash -Algorithm SHA256 $_.FullName
-        "$($h.Hash.ToLowerInvariant())  $($_.Name)"
+        $rel = $_.FullName.Substring($OutputDir.Length).TrimStart('\')
+        "$($h.Hash.ToLowerInvariant())  $rel"
     } | Set-Content -Encoding ASCII $hashPath
 Write-Host "HASHES=$hashPath"
 
