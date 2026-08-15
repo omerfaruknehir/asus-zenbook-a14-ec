@@ -58,9 +58,19 @@ show_status() {
     printf 'whisper state: %s (%s)\n' "$level" "$detail"
   fi
   [ -r "$hwmon/temp1_input" ] && awk '{printf "EC temperature: %.1f C\n", $1/1000}' "$hwmon/temp1_input"
-  [ -r "$hwmon/fan1_input" ] && printf 'left fan: %s RPM (PWM %s)\n' "$(cat "$hwmon/fan1_input")" "$(cat "$hwmon/pwm1")"
-  [ -r "$hwmon/fan2_input" ] && printf 'right fan: %s RPM (PWM %s)\n' "$(cat "$hwmon/fan2_input")" "$(cat "$hwmon/pwm2")"
-  [ -r "$hwmon/pwm1_enable" ] && printf 'fan mode: %s\n' "$( [ "$(cat "$hwmon/pwm1_enable")" = 1 ] && echo manual || echo automatic )"
+
+  fan_enable=0
+  [ -r "$hwmon/pwm1_enable" ] && fan_enable=$(cat "$hwmon/pwm1_enable")
+  if [ "$fan_enable" = 1 ]; then
+    [ -r "$hwmon/fan1_input" ] && printf 'left fan: %s RPM (manual PWM %s)\n' "$(cat "$hwmon/fan1_input")" "$(cat "$hwmon/pwm1")"
+    [ -r "$hwmon/fan2_input" ] && printf 'right fan: %s RPM (manual PWM %s)\n' "$(cat "$hwmon/fan2_input")" "$(cat "$hwmon/pwm2")"
+    printf 'fan mode: manual\n'
+  else
+    [ -r "$hwmon/fan1_input" ] && printf 'left fan: %s RPM\n' "$(cat "$hwmon/fan1_input")"
+    [ -r "$hwmon/fan2_input" ] && printf 'right fan: %s RPM\n' "$(cat "$hwmon/fan2_input")"
+    printf 'fan mode: automatic (ASUS firmware owns PWM)\n'
+  fi
+
   if [ -r /sys/class/leds/asus::kbd_backlight/brightness ]; then
     printf 'keyboard backlight: %s/%s\n' \
       "$(cat /sys/class/leds/asus::kbd_backlight/brightness)" \
