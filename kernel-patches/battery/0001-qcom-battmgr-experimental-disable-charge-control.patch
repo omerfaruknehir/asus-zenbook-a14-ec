@@ -21,7 +21,6 @@ threshold of 0 was requested.
  1 file changed, 8 insertions(+), 5 deletions(-)
 
 diff --git a/drivers/power/supply/qcom_battmgr.c b/drivers/power/supply/qcom_battmgr.c
-index 000000000000..111111111111 100644
 --- a/drivers/power/supply/qcom_battmgr.c
 +++ b/drivers/power/supply/qcom_battmgr.c
 @@ -257,6 +257,7 @@ struct qcom_battmgr_info {
