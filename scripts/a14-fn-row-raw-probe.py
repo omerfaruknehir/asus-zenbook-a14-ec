@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
 """Capture the A14 keyboard's real F-row HID reports without changing bindings.
 
-The generic ASUS 5a d0 4e Fn-lock command is not proven on the Zenbook A14.
+The generic ASUS 5a d0 4e Fn-lock command is not sufficient on the Zenbook A14.
 This probe records what the firmware actually emits for plain F keys versus
 Fn-modified keys so the kernel driver can implement the correct software
 inversion instead of guessing another vendor command.
+
+Modes:
+  missing  Capture only Fn combinations still needed after the first A14 probe.
+  all      Capture representative plain/Fn pairs across the entire F-row.
 """
 
 from __future__ import annotations
@@ -13,6 +17,7 @@ import os
 from pathlib import Path
 import selectors
 import sys
+import termios
 import time
 
 ASUS_VENDOR = 0x0B05
@@ -82,7 +87,7 @@ def drain(sel: selectors.BaseSelector) -> None:
 def capture_step(sel: selectors.BaseSelector, label: str, seconds: float) -> None:
     print()
     print(f"=== {label} ===")
-    print(f"Press/release that key combination 3 times during the next {seconds:.1f}s.")
+    print(f"Press/release it once or twice during the next {seconds:.1f}s.")
     sys.stdout.flush()
     drain(sel)
     start = time.monotonic()
@@ -109,14 +114,42 @@ def capture_step(sel: selectors.BaseSelector, label: str, seconds: float) -> Non
         print("NO_HIDRAW_PACKETS")
 
 
+def tty_noecho() -> tuple[int, list] | None:
+    if not sys.stdin.isatty():
+        return None
+    fd = sys.stdin.fileno()
+    old = termios.tcgetattr(fd)
+    new = termios.tcgetattr(fd)
+    new[3] &= ~termios.ECHO
+    termios.tcsetattr(fd, termios.TCSANOW, new)
+    return fd, old
+
+
+def restore_tty(state: tuple[int, list] | None) -> None:
+    if state is None:
+        return
+    fd, old = state
+    try:
+        termios.tcsetattr(fd, termios.TCSANOW, old)
+    except termios.error:
+        pass
+
+
 def main() -> int:
-    duration = 2.5
-    if len(sys.argv) > 1:
+    mode = "missing"
+    duration = 1.8
+    args = sys.argv[1:]
+    if args and args[0] in {"missing", "all"}:
+        mode = args.pop(0)
+    if args:
         try:
-            duration = max(1.0, min(8.0, float(sys.argv[1])))
+            duration = max(1.0, min(8.0, float(args.pop(0))))
         except ValueError:
-            print(f"usage: sudo {sys.argv[0]} [seconds-per-step]", file=sys.stderr)
+            print(f"usage: sudo {sys.argv[0]} [missing|all] [seconds-per-step]", file=sys.stderr)
             return 2
+    if args:
+        print(f"usage: sudo {sys.argv[0]} [missing|all] [seconds-per-step]", file=sys.stderr)
+        return 2
 
     found = devices()
     if not found:
@@ -125,8 +158,10 @@ def main() -> int:
 
     sel = selectors.DefaultSelector()
     opened: list[int] = []
+    tty_state = None
     try:
         print("===== A14 F-ROW RAW HID PROBE =====")
+        print(f"mode={mode}")
         for node, product, driver, name in found:
             try:
                 fd = os.open(node, os.O_RDONLY | os.O_NONBLOCK)
@@ -140,28 +175,40 @@ def main() -> int:
         if not opened:
             return 4
 
+        tty_state = tty_noecho()
         print()
         print("Do not change Fn-lock state during this probe.")
         print("The probe only listens; normal key actions still reach the desktop.")
 
-        steps = (
-            "F1 ALONE",
-            "Fn+F1",
-            "F4 ALONE",
-            "Fn+F4",
-            "F5 ALONE",
-            "Fn+F5",
-            "F8 ALONE",
-            "Fn+F8",
-            "Fn+Esc",
-        )
+        if mode == "missing":
+            steps = (
+                "Fn+F2",
+                "Fn+F3",
+                "Fn+F6",
+                "Fn+F7",
+                "Fn+F9",
+                "Fn+F10",
+                "Fn+F11",
+                "Fn+F12",
+            )
+        else:
+            steps = tuple(
+                item
+                for number in range(1, 13)
+                for item in (f"F{number} ALONE", f"Fn+F{number}")
+            ) + ("Fn+Esc",)
+
         for label in steps:
             capture_step(sel, label, duration)
 
         print()
         print("A14_FN_ROW_RAW_PROBE=COMPLETE")
         return 0
+    except KeyboardInterrupt:
+        print("\nA14_FN_ROW_RAW_PROBE=INTERRUPTED")
+        return 130
     finally:
+        restore_tty(tty_state)
         sel.close()
         for fd in opened:
             try:
