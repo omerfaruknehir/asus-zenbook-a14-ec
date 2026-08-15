@@ -60,6 +60,9 @@ def final_missing() -> list[str]:
         "EXPORT_SYMBOL_GPL(asus_a14_cycle_native_profile)",
         "DEVICE_ATTR_RO(whisper_level)",
         "*value = (long)raw * EC_TACH_RPM_MULT;",
+        "A14_FNLOCK_EC_STAGE_DSDT",
+        "DEVICE_ATTR_WO(fnlock_firmware_stage)",
+        "EC_FNLOCK_STAGE_WMIN             0x84",
     )
     missing = [token for token in required if token not in s]
 
@@ -119,11 +122,19 @@ def ensure_math64_header() -> None:
     print("a14_whisper_math64=applied")
 
 
+def ensure_fnlock_ec_stage() -> None:
+    if has("A14_FNLOCK_EC_STAGE_DSDT"):
+        print("a14_fnlock_ec_stage=current")
+    else:
+        run("apply-a14-fnlock-ec-stage.py")
+
+
 def compose_ec() -> None:
     if has("A14_WHISPER_MODE") and has("A14_NATIVE_MODE_NAMES_HOTKEY"):
         print("a14_ec_composed=current")
         ensure_export_prototype()
         ensure_math64_header()
+        ensure_fnlock_ec_stage()
         return
 
     if has("static int asus_ec_force_auto_locked"):
@@ -143,6 +154,7 @@ def compose_ec() -> None:
     run("apply-a14-whisper.py")
     ensure_export_prototype()
     ensure_math64_header()
+    ensure_fnlock_ec_stage()
 
 
 def fnlock_complete() -> bool:
@@ -231,6 +243,7 @@ def main() -> None:
     print("a14_native_profiles=quiet,normal,turbo,full-speed")
     print("a14_fn_f_cycle=whisper,quiet,normal,turbo,full-speed")
     print("a14_fn_lock=kernel-hid-windows-init-plus-full-64-byte-feature-report")
+    print("a14_fn_lock_ec_stage=dsdt-eccw-02-84-04-08-test")
     print("a14_fan_telemetry=selector-calibrated")
     print("a14_ec_stack=current")
 
