@@ -42,7 +42,7 @@ once(
 )
 
 anchor = '''static ssize_t profile_choices_show(struct device *dev,\n'''
-cycle = '''/* Fn+F entry point used by hid_asus_ec. The HID interrupt handler schedules\n * this from process context, so firmware mailbox transactions may sleep. */\nint asus_a14_cycle_native_profile(void)\n{\n\tstruct asus_ec *ec;\n\tenum asus_ec_profile next;\n\tint ret;\n\n\tif (!asus_ec_pdev)\n\t\treturn -ENODEV;\n\tec = platform_get_drvdata(asus_ec_pdev);\n\tif (!ec)\n\t\treturn -ENODEV;\n\n\tmutex_lock(&ec->mode_lock);\n\tswitch (ec->active_profile) {\n\tcase ASUS_EC_PROFILE_QUIET:\n\t\tnext = ASUS_EC_PROFILE_BALANCED;\n\t\tbreak;\n\tcase ASUS_EC_PROFILE_BALANCED:\n\t\tnext = ASUS_EC_PROFILE_PERFORMANCE;\n\t\tbreak;\n\tcase ASUS_EC_PROFILE_PERFORMANCE:\n\t\tnext = ASUS_EC_PROFILE_FULL_SPEED;\n\t\tbreak;\n\tcase ASUS_EC_PROFILE_FULL_SPEED:\n\tdefault:\n\t\tnext = ASUS_EC_PROFILE_QUIET;\n\t\tbreak;\n\t}\n\n\tret = asus_ec_apply_profile_locked(ec, next);\n\tmutex_unlock(&ec->mode_lock);\n\tif (!ret) {\n\t\tsysfs_notify(&ec->dev->kobj, NULL, "profile");\n\t\tasus_ec_notify_profile(ec);\n\t}\n\treturn ret;\n}\nEXPORT_SYMBOL_GPL(asus_a14_cycle_native_profile);\n\n'''
+cycle = '''int asus_a14_cycle_native_profile(void);\n\n/* Fn+F entry point used by hid_asus_ec. The HID interrupt handler schedules\n * this from process context, so firmware mailbox transactions may sleep. */\nint asus_a14_cycle_native_profile(void)\n{\n\tstruct asus_ec *ec;\n\tenum asus_ec_profile next;\n\tint ret;\n\n\tif (!asus_ec_pdev)\n\t\treturn -ENODEV;\n\tec = platform_get_drvdata(asus_ec_pdev);\n\tif (!ec)\n\t\treturn -ENODEV;\n\n\tmutex_lock(&ec->mode_lock);\n\tswitch (ec->active_profile) {\n\tcase ASUS_EC_PROFILE_QUIET:\n\t\tnext = ASUS_EC_PROFILE_BALANCED;\n\t\tbreak;\n\tcase ASUS_EC_PROFILE_BALANCED:\n\t\tnext = ASUS_EC_PROFILE_PERFORMANCE;\n\t\tbreak;\n\tcase ASUS_EC_PROFILE_PERFORMANCE:\n\t\tnext = ASUS_EC_PROFILE_FULL_SPEED;\n\t\tbreak;\n\tcase ASUS_EC_PROFILE_FULL_SPEED:\n\tdefault:\n\t\tnext = ASUS_EC_PROFILE_QUIET;\n\t\tbreak;\n\t}\n\n\tret = asus_ec_apply_profile_locked(ec, next);\n\tmutex_unlock(&ec->mode_lock);\n\tif (!ret) {\n\t\tsysfs_notify(&ec->dev->kobj, NULL, "profile");\n\t\tasus_ec_notify_profile(ec);\n\t}\n\treturn ret;\n}\nEXPORT_SYMBOL_GPL(asus_a14_cycle_native_profile);\n\n'''
 if s.count(anchor) != 1:
     raise SystemExit(f"Fn+F cycle insertion anchor: expected one, found {s.count(anchor)}")
 s = s.replace(anchor, cycle + anchor, 1)
@@ -54,7 +54,7 @@ required = (
     'quiet normal turbo full-speed',
     'sysfs_streq(buf, "balanced")',
     'sysfs_streq(buf, "performance")',
-    'int asus_a14_cycle_native_profile(void)',
+    'int asus_a14_cycle_native_profile(void);',
     'EXPORT_SYMBOL_GPL(asus_a14_cycle_native_profile)',
     'next = ASUS_EC_PROFILE_BALANCED;',
     'next = ASUS_EC_PROFILE_PERFORMANCE;',
