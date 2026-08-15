@@ -1,15 +1,22 @@
 From: ASUS Zenbook A14 Linux support
-Subject: [PATCH] power-profiles: understand A14 Quiet and Full Speed
+Subject: [PATCH] power-profiles: present the five current A14 modes
 
-GNOME Shell 50 filters power profiles through PROFILE_PARAMS, so profiles
-advertised by the PPD-compatible backend but absent from that table never
-appear in Quick Settings.  Teach the existing Power Mode tile about the two
-additional validated A14 policies.  The standard three retain GNOME's stock
-icons; Quiet and Full Speed use package-installed symbolic icons.
+The A14 bridge uses standard PPD wire names where possible while the hardware
+policy is Whisper / Quiet / Normal / Turbo / Full Speed. GNOME Shell 50 filters
+profiles through PROFILE_PARAMS and labels the standard three with generic
+names, so teach the existing Power Mode tile both A14-specific names and the
+A14 presentation labels.
+
+Internal PPD name -> A14 UI name:
+  power-saver -> Whisper
+  quiet       -> Quiet
+  balanced    -> Normal
+  performance -> Turbo
+  full-speed  -> Full Speed
 
 --- a/js/ui/status/powerProfiles.js
 +++ b/js/ui/status/powerProfiles.js
-@@ -14,6 +14,12 @@ const PowerProfilesProxy = Gio.DBusProxy.makeProxyWrapper(PowerProfilesIface);
+@@ -14,21 +14,32 @@ const PowerProfilesProxy = Gio.DBusProxy.makeProxyWrapper(PowerProfilesIface);
  
  const PROFILE_PARAMS = {
 +    'full-speed': {
@@ -18,10 +25,20 @@ icons; Quiet and Full Speed use package-installed symbolic icons.
 +    },
 +
      'performance': {
-         name: C_('Power profile', 'Performance'),
+-        name: C_('Power profile', 'Performance'),
++        name: C_('Power profile', 'Turbo'),
          iconName: 'power-profile-performance-symbolic',
-@@ -28,6 +34,11 @@ const PROFILE_PARAMS = {
-         name: C_('Power profile', 'Power Saver'),
+     },
+ 
+     'balanced': {
+-        name: C_('Power profile', 'Balanced'),
++        name: C_('Power profile', 'Normal'),
+         iconName: 'power-profile-balanced-symbolic',
+     },
+ 
+     'power-saver': {
+-        name: C_('Power profile', 'Power Saver'),
++        name: C_('Power profile', 'Whisper'),
          iconName: 'power-profile-power-saver-symbolic',
      },
 +
@@ -30,5 +47,3 @@ icons; Quiet and Full Speed use package-installed symbolic icons.
 +        iconName: 'a14-power-profile-quiet-symbolic',
 +    },
  };
- 
- const FALLBACK_PARAMS = {
