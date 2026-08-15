@@ -7,6 +7,10 @@ case "$model" in
   *) echo "Unsupported device: ${model:-no device-tree model}" >&2; exit 1;;
 esac
 
+# These are exact assets supplied for the five A14 modes. Guard the semantic
+# mapping before packaging so Turbo can never silently become meter-max again.
+sh "$repo/scripts/a14-verify-meter-icons.sh"
+
 kernel=$(uname -r)
 headers="/lib/modules/$kernel/build/Makefile"
 need_bootstrap=false
@@ -84,6 +88,9 @@ fi
 echo
 echo "Installed. Current status:"
 sudo asus-a14-control status || true
+echo
+echo "GNOME Shell caches themed icons in-process. Log out and back in once after"
+echo "changing these meter assets; the files on disk have already been verified."
 echo
 echo "After testing, perform one controlled warm reboot. If boot ever stalls, hold"
 echo "power to cold-boot and disable the service from recovery with:"
