@@ -13,7 +13,8 @@ bash -n \
   scripts/a14-mainline-check.sh \
   scripts/a14-mainline-compose.sh \
   scripts/a14-mainline-scmi-cpufreq-config.sh \
-  scripts/a14-cpufreq-diag.sh
+  scripts/a14-cpufreq-diag.sh \
+  scripts/a14-mesa-26.2-system.sh
 
 python3 -m py_compile \
   scripts/prepare-a14-ec.py \
