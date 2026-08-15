@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Hardware smoke-test for the PM8550 V4L2 Torch path used by Aegis Hello.
+# Hardware-control smoke-test for the PM8550 V4L2 Torch path used by Aegis
+# Hello. IMPORTANT: successful control readback does not prove that the IR LED
+# emitted photons; use a camera or scripts/a14-ir-output-ab-test.sh for that.
 # Default 35% of the observed 500000 uA max is 175000 uA.
 percent=${1:-35}
 duration=${2:-2}
@@ -58,9 +60,9 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-# Establish a known-safe OFF state first. force_off=1 is the HM1092 immediate
-# LOW gate. It must be released for continuous Torch because no synchronized
-# frame-window operation exists to override it.
+# Establish a known-safe OFF state first when the optional HM1092 gate exists.
+# Some current kernels expose no such gate; in that case this script tests only
+# the standard V4L2/LED-class PM8550 control path.
 if [[ -n "$gate" ]]; then
   printf '1\n' | sudo tee "$gate" >/dev/null
 fi
@@ -78,10 +80,10 @@ if [[ -n "$gate" ]]; then
   printf 'force_off=' && cat "$gate"
 fi
 
-echo "Torch is enabled for ${duration}s"
+echo "Torch control is requested for ${duration}s"
 sleep "$duration"
 echo "Torch readback before shutdown:"
 v4l2-ctl -d "$flash" --get-ctrl=led_mode,intensity_torch_mode
 cleanup
 trap - EXIT INT TERM
-echo "A14_IR_TORCH_SMOKE=PASS"
+echo "A14_IR_TORCH_CONTROL_PATH=ACCEPTED_NO_OPTICAL_VERIFICATION"
