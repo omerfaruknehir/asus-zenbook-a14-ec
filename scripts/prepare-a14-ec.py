@@ -56,6 +56,7 @@ def final_missing() -> list[str]:
         "A14_WHISPER_MODE",
         "ASUS_EC_PROFILE_WHISPER",
         'return sysfs_emit(buf, "whisper quiet normal turbo full-speed\\n");',
+        "int asus_a14_cycle_native_profile(void);\n\nint asus_a14_cycle_native_profile(void)",
         "EXPORT_SYMBOL_GPL(asus_a14_cycle_native_profile)",
         "DEVICE_ATTR_RO(whisper_level)",
     )
@@ -77,11 +78,25 @@ def final_missing() -> list[str]:
     return missing
 
 
+def ensure_export_prototype() -> None:
+    expected = (
+        "int asus_a14_cycle_native_profile(void);\n\n"
+        "int asus_a14_cycle_native_profile(void)"
+    )
+    if has(expected):
+        print("a14_fn_f_export_prototype=current")
+    else:
+        run("apply-a14-export-prototype.py")
+
+
 def compose_ec() -> None:
     # Installed DKMS sources are packaged after composition. Do not require the
-    # repository-only transformer scripts again when all final markers exist.
+    # repository-only transformer scripts again when all final markers exist,
+    # but still verify the final exported prototype because Whisper rewrites
+    # the Fn+F cycle function after the native-mode layer creates it.
     if has("A14_WHISPER_MODE") and has("A14_NATIVE_MODE_NAMES_HOTKEY"):
         print("a14_ec_composed=current")
+        ensure_export_prototype()
         return
 
     if has("static int asus_ec_force_auto_locked"):
@@ -104,6 +119,7 @@ def compose_ec() -> None:
 
     run("apply-a14-native-mode-names-hotkey.py")
     run("apply-a14-whisper.py")
+    ensure_export_prototype()
 
 
 def compose_hid() -> None:
