@@ -5,9 +5,23 @@ UUID=asus-a14-modes@omerfaruknehir
 if ! command -v gnome-extensions >/dev/null 2>&1; then
     true
 else
-    # A system-wide extension may not be discovered until Shell starts a new
-    # session. At login this helper runs after GNOME has scanned /usr/share.
-    if gnome-extensions list 2>/dev/null | grep -qx "$UUID"; then
+    # The extension is only a fallback for stock GNOME, which filters the two
+    # A14-specific profile names. Once the locally rebuilt +a14 GNOME Shell is
+    # installed, its normal Power Mode tile is five-profile aware and the
+    # fallback must stay disabled to avoid duplicate controls.
+    native_five_profile=false
+    if command -v dpkg-query >/dev/null 2>&1; then
+        shell_version=$(dpkg-query -W -f='${Version}' gnome-shell 2>/dev/null || true)
+        case "$shell_version" in
+            *+a14.*) native_five_profile=true ;;
+        esac
+    fi
+
+    if [ "$native_five_profile" = true ]; then
+        gnome-extensions disable "$UUID" >/dev/null 2>&1 || true
+    elif gnome-extensions list 2>/dev/null | grep -qx "$UUID"; then
+        # A system-wide extension may not be discovered until Shell starts a
+        # new session. At login this helper runs after GNOME has scanned it.
         gnome-extensions enable "$UUID" >/dev/null 2>&1 || true
     fi
 fi
