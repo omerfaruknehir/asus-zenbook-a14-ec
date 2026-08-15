@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-2.0-or-later
 #
-# Temporary A14-only A/B test for Qualcomm charge-control disable semantics.
-# Nothing is installed into /lib/modules. The replacement qcom_battmgr module
-# remains active only until it is unloaded/rebooted.
+# A14-only A/B test and reversible persistent override for Qualcomm
+# charge-control disable semantics.
+#
+# The stock distro qcom_battmgr module is never overwritten. `persist` places
+# the tested replacement in /lib/modules/$kernel/updates/a14/ so normal module
+# precedence selects it; `unpersist` removes only that override and reloads the
+# stock module.
 
 repo=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 action=${1:-status}
@@ -12,6 +16,7 @@ base=${kernel%%-*}
 work=${A14_BATTMGR_TEST_DIR:-$HOME/Downloads/a14-qcom-battmgr-disable-test-$base}
 bat=/sys/class/power_supply/qcom-battmgr-bat
 patch_file="$repo/kernel-patches/battery/0001-qcom-battmgr-experimental-disable-charge-control.patch"
+installed_module="/lib/modules/$kernel/updates/a14/qcom_battmgr.ko"
 model=$(tr -d '\0' </proc/device-tree/model 2>/dev/null || true)
 ok=1
 
@@ -30,22 +35,31 @@ show_status()
         echo "battery_sysfs=missing"
     fi
     echo "loaded_qcom_battmgr=$(lsmod | awk '$1 == "qcom_battmgr" {print $1}' | head -n1)"
-    echo "stock_module=$(modinfo -n qcom_battmgr 2>/dev/null || true)"
+    echo "selected_module=$(modinfo -n qcom_battmgr 2>/dev/null || true)"
+    echo "persistent_override=$([ -f "$installed_module" ] && printf yes || printf no)"
+    if [ -f "$installed_module" ]; then
+        sha256sum "$installed_module" 2>/dev/null || true
+    fi
     if [ -f "$work/module/qcom_battmgr.ko" ]; then
         echo "test_module=$work/module/qcom_battmgr.ko"
         sha256sum "$work/module/qcom_battmgr.ko" 2>/dev/null || true
     fi
 }
 
-build_test_module()
+check_a14_model()
 {
     case "$model" in
-        *"ASUS Zenbook A14 (UX3407RA)"*) ;;
+        *"ASUS Zenbook A14 (UX3407RA)"*) return 0 ;;
         *)
-            echo "ERROR: refusing experimental battery module on unexpected model: $model" >&2
+            echo "ERROR: refusing A14 battery override on unexpected model: $model" >&2
             return 1
             ;;
     esac
+}
+
+build_test_module()
+{
+    check_a14_model || return 1
 
     cfg=/boot/config-$kernel
     if [ ! -r "$cfg" ] || ! grep -Fxq 'CONFIG_BATTERY_QCOM_BATTMGR=m' "$cfg"; then
@@ -119,21 +133,21 @@ load_test_module()
         build_test_module || return 1
     fi
 
-    echo "Unloading stock qcom_battmgr..."
+    echo "Unloading current qcom_battmgr..."
     if ! sudo modprobe -r qcom_battmgr; then
-        echo "ERROR: could not unload stock qcom_battmgr" >&2
+        echo "ERROR: could not unload qcom_battmgr" >&2
         return 1
     fi
 
     echo "Loading temporary experimental qcom_battmgr..."
     if ! sudo insmod "$work/module/qcom_battmgr.ko"; then
-        echo "ERROR: experimental module failed to load; restoring stock module" >&2
+        echo "ERROR: experimental module failed to load; restoring configured module" >&2
         sudo modprobe qcom_battmgr || true
         return 1
     fi
 
     if [ ! -d "$bat" ]; then
-        echo "ERROR: battery power_supply did not return; restoring stock module" >&2
+        echo "ERROR: battery power_supply did not return; restoring configured module" >&2
         sudo modprobe -r qcom_battmgr || true
         sudo modprobe qcom_battmgr || true
         return 1
@@ -151,13 +165,13 @@ run_disable_test()
     echo "Sending UPower-style Maximize request directly: start=0, end=100"
 
     if ! printf '0\n' | sudo tee "$bat/charge_control_start_threshold" >/dev/null; then
-        echo "ERROR: start=0 write failed; restoring stock module" >&2
+        echo "ERROR: start=0 write failed; restoring configured module" >&2
         sudo modprobe -r qcom_battmgr || true
         sudo modprobe qcom_battmgr || true
         return 1
     fi
     if ! printf '100\n' | sudo tee "$bat/charge_control_end_threshold" >/dev/null; then
-        echo "ERROR: end=100 write failed; restoring stock module" >&2
+        echo "ERROR: end=100 write failed; restoring configured module" >&2
         sudo modprobe -r qcom_battmgr || true
         sudo modprobe qcom_battmgr || true
         return 1
@@ -167,20 +181,87 @@ run_disable_test()
     echo "AFTER experimental disable:"
     show_status
     echo
-    echo "The test module is still loaded. Run this script with 'status' again after the charger state updates."
-    echo "Run this script with 'restore' to unload it and return to the stock kernel module."
+    echo "The test module is still loaded."
+    echo "Use 'persist' to install this tested override for the current kernel."
+    echo "Use 'restore' to unload the temporary module and return to the configured module."
 }
 
-restore_stock()
+refresh_module_indexes()
 {
-    echo "Restoring stock qcom_battmgr module..."
+    sudo depmod -a "$kernel" || return 1
+    if command -v update-initramfs >/dev/null 2>&1; then
+        echo "Refreshing initramfs for $kernel..."
+        sudo update-initramfs -u -k "$kernel" || return 1
+    fi
+}
+
+persist_override()
+{
+    check_a14_model || return 1
+    if [ ! -s "$work/module/qcom_battmgr.ko" ]; then
+        build_test_module || return 1
+    fi
+
+    echo "Installing A14 qcom_battmgr override for $kernel"
+    sudo install -D -m 0644 "$work/module/qcom_battmgr.ko" "$installed_module" || return 1
+    refresh_module_indexes || return 1
+
+    selected=$(modinfo -n qcom_battmgr 2>/dev/null || true)
+    if [ "$selected" != "$installed_module" ]; then
+        echo "ERROR: module precedence did not select $installed_module" >&2
+        echo "modinfo selected: $selected" >&2
+        return 1
+    fi
+
+    echo "Reloading qcom_battmgr from persistent override..."
+    if ! sudo modprobe -r qcom_battmgr; then
+        echo "ERROR: could not unload current qcom_battmgr" >&2
+        return 1
+    fi
+    if ! sudo modprobe qcom_battmgr; then
+        echo "ERROR: persistent override failed to load; removing it and restoring stock" >&2
+        sudo rm -f "$installed_module"
+        sudo depmod -a "$kernel" || true
+        sudo modprobe qcom_battmgr || true
+        return 1
+    fi
+
+    echo "A14_BATTMGR_PERSIST=PASS"
+    show_status
+}
+
+unpersist_override()
+{
+    echo "Removing A14 qcom_battmgr override for $kernel"
+    sudo modprobe -r qcom_battmgr || true
+    sudo rm -f "$installed_module" || return 1
+    refresh_module_indexes || return 1
+
+    if ! sudo modprobe qcom_battmgr; then
+        echo "ERROR: stock qcom_battmgr failed to load; reboot to restore the distro driver" >&2
+        return 1
+    fi
+
+    selected=$(modinfo -n qcom_battmgr 2>/dev/null || true)
+    if [ "$selected" = "$installed_module" ]; then
+        echo "ERROR: removed override is still selected by depmod" >&2
+        return 1
+    fi
+
+    echo "A14_BATTMGR_UNPERSIST=PASS"
+    show_status
+}
+
+restore_configured()
+{
+    echo "Reloading configured qcom_battmgr module..."
     sudo modprobe -r qcom_battmgr || true
     if sudo modprobe qcom_battmgr; then
-        echo "Stock module restored."
+        echo "Configured module restored."
         show_status
         return 0
     fi
-    echo "ERROR: stock qcom_battmgr failed to reload; reboot to restore the normal kernel driver" >&2
+    echo "ERROR: qcom_battmgr failed to reload; reboot to restore the normal kernel driver" >&2
     return 1
 }
 
@@ -191,14 +272,20 @@ case "$action" in
     test)
         run_disable_test || ok=0
         ;;
+    persist)
+        persist_override || ok=0
+        ;;
+    unpersist)
+        unpersist_override || ok=0
+        ;;
     restore)
-        restore_stock || ok=0
+        restore_configured || ok=0
         ;;
     status)
         show_status
         ;;
     *)
-        echo "usage: $0 {build|test|status|restore}" >&2
+        echo "usage: $0 {build|test|persist|unpersist|restore|status}" >&2
         ok=0
         ;;
 esac
