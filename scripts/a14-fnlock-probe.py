@@ -1,22 +1,26 @@
 #!/usr/bin/env python3
-"""Direct, dependency-free ASUS A14 Fn-lock feature-report probe.
+"""Direct, dependency-free ASUS A14 Fn-lock HID probe.
 
-This intentionally does not change driver bindings. It opens existing hidraw
-nodes for ASUS 0B05:0220 / 0B05:4543 and sends the documented 5A D0 4E state
-command so we can identify which physical HID endpoint owns Fn-lock.
+GET_REPORT uses a 64-byte buffer, matching upstream hid-asus. SET_REPORT
+commands are deliberately sent at their real command lengths; in particular
+Fn-lock is exactly 4 bytes: 5a d0 4e <0|1>.
+
+This does not change driver bindings. It can probe ASUS 0B05:0220 (keyboard)
+and 0B05:4543 (HDTL auxiliary endpoint) independently.
 """
 
 from __future__ import annotations
 
 import errno
 import fcntl
-import os
 from pathlib import Path
 import sys
+import time
 
 ASUS_VENDOR = 0x0B05
 PRODUCTS = {0x0220, 0x4543}
 REPORT_ID = 0x5A
+GET_REPORT_LEN = 64
 
 _IOC_NRBITS = 8
 _IOC_TYPEBITS = 8
@@ -67,9 +71,8 @@ def parse_hid_id(value: str) -> tuple[int, int] | None:
 
 
 def driver_name(device: Path) -> str:
-    link = device / "driver"
     try:
-        return link.resolve().name
+        return (device / "driver").resolve().name
     except OSError:
         return "unbound"
 
@@ -96,32 +99,33 @@ def candidates() -> list[tuple[Path, int, str, str]]:
     return found
 
 
-def feature_get(fd: int, length: int) -> bytes:
+def feature_get(fd: int, length: int = GET_REPORT_LEN) -> bytes:
     buf = bytearray(length)
     buf[0] = REPORT_ID
     fcntl.ioctl(fd, hid_iogfeature(length), buf, True)
     return bytes(buf)
 
 
-def feature_set(fd: int, payload: bytes, length: int) -> bytes:
-    if len(payload) + 1 > length:
-        raise ValueError("feature payload is too large")
-    buf = bytearray(length)
-    buf[0] = REPORT_ID
-    buf[1 : 1 + len(payload)] = payload
-    fcntl.ioctl(fd, hid_iocsfeature(length), buf, True)
+def feature_set_exact(fd: int, report: bytes) -> bytes:
+    if not report or report[0] != REPORT_ID:
+        raise ValueError("SET_REPORT must include report ID 0x5a as byte 0")
+    buf = bytearray(report)
+    fcntl.ioctl(fd, hid_iocsfeature(len(buf)), buf, True)
     return bytes(buf)
 
 
-def working_length(fd: int) -> int:
-    errors: list[str] = []
-    for length in (64, 16):
-        try:
-            feature_get(fd, length)
-            return length
-        except OSError as error:
-            errors.append(f"{length}:{error.errno}/{error.strerror}")
-    raise OSError(errno.EINVAL, "no usable 0x5a feature-report length (" + ", ".join(errors) + ")")
+def asus_init(fd: int) -> None:
+    # Mirrors the known ASUS keyboard bring-up without changing backlight.
+    commands = (
+        bytes((0x5A, 0x41, 0x53, 0x55, 0x53, 0x20, 0x54, 0x65,
+               0x63, 0x68, 0x2E, 0x49, 0x6E, 0x63, 0x2E, 0x00)),
+        bytes((0x5A, 0x05, 0x20, 0x31, 0x00, 0x08)),
+        bytes((0x5A, 0xD0, 0x8F, 0x01, 0x00, 0x00)),
+        bytes((0x5A, 0xD0, 0x85, 0xFF, 0x00, 0x00)),
+    )
+    for report in commands:
+        feature_set_exact(fd, report)
+        time.sleep(0.03)
 
 
 def selected(product_arg: str) -> list[tuple[Path, int, str, str]]:
@@ -135,8 +139,8 @@ def selected(product_arg: str) -> list[tuple[Path, int, str, str]]:
 def main() -> int:
     action = sys.argv[1] if len(sys.argv) > 1 else "status"
     product_arg = sys.argv[2].lower() if len(sys.argv) > 2 else "all"
-    if action not in {"status", "on", "off"} or product_arg not in {"all", "0220", "4543"}:
-        print(f"usage: {sys.argv[0]} {{status|on|off}} [all|0220|4543]", file=sys.stderr)
+    if action not in {"status", "init", "on", "off"} or product_arg not in {"all", "0220", "4543"}:
+        print(f"usage: {sys.argv[0]} {{status|init|on|off}} [all|0220|4543]", file=sys.stderr)
         return 2
 
     devices = selected(product_arg)
@@ -144,36 +148,35 @@ def main() -> int:
         print(f"No matching ASUS hidraw device found for {product_arg}.")
         return 3
 
+    failures = 0
     for node, product, name, driver in devices:
         print(f"device={node} product={product:04x} driver={driver} name={name}")
-        if action == "status":
-            try:
-                with node.open("rb+", buffering=0) as stream:
-                    length = working_length(stream.fileno())
-                    response = feature_get(stream.fileno(), length)
-                print(f"  report_len={length} feature_5a={response.hex(' ')}")
-            except (OSError, PermissionError) as error:
-                print(f"  read_error={error}")
-            continue
-
-        state = 1 if action == "on" else 0
         try:
             with node.open("rb+", buffering=0) as stream:
-                length = working_length(stream.fileno())
-                sent = feature_set(stream.fileno(), bytes((0xD0, 0x4E, state)), length)
-                try:
-                    response = feature_get(stream.fileno(), length)
-                    readback = response.hex(" ")
-                except OSError as error:
-                    readback = f"GET failed: {error}"
-            print(
-                f"  FNLOCK_SET state={state} report_len={length} "
-                f"sent={sent[:8].hex(' ')} readback={readback}"
-            )
+                fd = stream.fileno()
+                if action == "status":
+                    response = feature_get(fd)
+                    print(f"  get_report_len={GET_REPORT_LEN} feature_5a={response.hex(' ')}")
+                elif action == "init":
+                    asus_init(fd)
+                    print("  ASUS_INIT=SET_REPORT_ACCEPTED lengths=16,6,6,6")
+                else:
+                    state = 1 if action == "on" else 0
+                    sent = feature_set_exact(fd, bytes((0x5A, 0xD0, 0x4E, state)))
+                    print(
+                        f"  FNLOCK_SET state={state} set_report_len={len(sent)} "
+                        f"sent={sent.hex(' ')}"
+                    )
+                    try:
+                        response = feature_get(fd)
+                        print(f"  feature_5a_after={response.hex(' ')}")
+                    except OSError as error:
+                        print(f"  GET_REPORT_after_failed={error}")
         except (OSError, PermissionError) as error:
-            print(f"  write_error={error}")
+            failures += 1
+            print(f"  ERROR={error}")
 
-    return 0
+    return 1 if failures == len(devices) else 0
 
 
 if __name__ == "__main__":
