@@ -8,6 +8,7 @@ import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
 
 const BUS_NAME = 'io.github.omerfaruknehir.AsusA14';
 const OBJECT_PATH = '/io/github/omerfaruknehir/AsusA14';
+const NATIVE_UI_MARKER = '/usr/share/asus-zenbook-a14-ec/native-gnome-five-profile';
 
 const ProfileIface = `
 <node>
@@ -24,7 +25,7 @@ const ProfileProxy = Gio.DBusProxy.makeProxyWrapper(ProfileIface);
 const PROFILE_INFO = {
     'whisper': {
         title: 'Whisper',
-        icon: 'audio-volume-muted-symbolic',
+        icon: 'power-profile-power-saver-symbolic',
         description: 'Minimum disturbance',
     },
     'quiet': {
@@ -44,12 +45,60 @@ const PROFILE_INFO = {
     },
     'full-speed': {
         title: 'Full Speed',
-        icon: 'power-profile-performance-symbolic',
+        icon: 'a14-power-profile-full-speed-symbolic',
         description: 'ASUS Full Speed firmware mode',
     },
 };
 
 const PROFILE_ORDER = ['whisper', 'quiet', 'normal', 'turbo', 'full-speed'];
+
+function showProfileOsd(profile) {
+    const info = PROFILE_INFO[profile];
+    if (!info)
+        return;
+    const gicon = new Gio.ThemedIcon({name: info.icon});
+    const label = `${info.title} mode`;
+
+    if (typeof Main.osdWindowManager.showAll === 'function')
+        Main.osdWindowManager.showAll(gicon, label, null, -1);
+    else
+        Main.osdWindowManager.show(-1, gicon, label, null, -1);
+}
+
+class ProfileOsdListener {
+    constructor() {
+        this._profile = null;
+        this._profileSignal = 0;
+        this._proxy = new ProfileProxy(
+            Gio.DBus.system,
+            BUS_NAME,
+            OBJECT_PATH,
+            (proxy, error) => {
+                if (error) {
+                    logError(error, 'ASUS A14 OSD profile service');
+                    return;
+                }
+                proxy.GetProfileRemote((result, getError) => {
+                    if (!getError)
+                        this._profile = result?.[0] ?? null;
+                });
+                this._profileSignal = proxy.connectSignal(
+                    'ProfileChanged', (_p, _sender, [profile]) => {
+                        if (profile === this._profile)
+                            return;
+                        this._profile = profile;
+                        showProfileOsd(profile);
+                    });
+            });
+    }
+
+    destroy() {
+        if (this._proxy && this._profileSignal)
+            this._proxy.disconnectSignal(this._profileSignal);
+        this._profileSignal = 0;
+        this._proxy = null;
+    }
+}
 
 const A14ModeToggle = GObject.registerClass(
 class A14ModeToggle extends QuickSettings.QuickMenuToggle {
@@ -94,25 +143,10 @@ class A14ModeToggle extends QuickSettings.QuickMenuToggle {
                         this._profile = profile;
                         this._sync();
                         if (changed)
-                            this._showProfileOsd(profile);
+                            showProfileOsd(profile);
                     });
                 this._refresh();
             });
-    }
-
-    _showProfileOsd(profile) {
-        const info = PROFILE_INFO[profile];
-        if (!info)
-            return;
-        const gicon = new Gio.ThemedIcon({name: info.icon});
-        const label = `${info.title} mode`;
-
-        // GNOME 50+ provides showAll(); older supported Shells use the
-        // monitor-index show() signature. Keep both without a notification.
-        if (typeof Main.osdWindowManager.showAll === 'function')
-            Main.osdWindowManager.showAll(gicon, label, null, -1);
-        else
-            Main.osdWindowManager.show(-1, gicon, label, null, -1);
     }
 
     _refresh() {
@@ -135,9 +169,15 @@ class A14ModeToggle extends QuickSettings.QuickMenuToggle {
     }
 
     _setProfile(profile) {
+        // Optimistically update the tile immediately. The ProfileChanged signal
+        // from the root service remains authoritative and will reconcile it.
+        const previous = this._profile;
+        this._profile = profile;
+        this._sync();
         this._proxy.SetProfileRemote(profile, (_result, error) => {
             if (error) {
                 logError(error, `ASUS A14 SetProfile(${profile})`);
+                this._profile = previous;
                 this._refresh();
             }
         });
@@ -193,6 +233,16 @@ class A14Indicator extends QuickSettings.SystemIndicator {
 
 export default class AsusA14ModesExtension extends Extension {
     enable() {
+        const nativeFiveProfile = Gio.File.new_for_path(NATIVE_UI_MARKER).query_exists(null);
+        if (nativeFiveProfile) {
+            // Patched GNOME owns the one native Power Mode tile. Keep this
+            // extension loaded only to present an OSD for hardware Fn+F events.
+            this._osdListener = new ProfileOsdListener();
+            return;
+        }
+
+        // Stock GNOME filters Quiet and Full Speed, so provide the complete A14
+        // five-mode tile here. The same ProfileChanged signal also drives OSD.
         this._indicator = new A14Indicator();
         Main.panel.statusArea.quickSettings.addExternalIndicator(this._indicator);
     }
@@ -200,5 +250,7 @@ export default class AsusA14ModesExtension extends Extension {
     disable() {
         this._indicator?.destroy();
         this._indicator = null;
+        this._osdListener?.destroy();
+        this._osdListener = null;
     }
 }
