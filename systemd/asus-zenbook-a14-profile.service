@@ -22,7 +22,9 @@ ProtectKernelModules=true
 RestrictRealtime=true
 RestrictSUIDSGID=true
 LockPersonality=true
-ReadWritePaths=/sys/devices/platform/asus_zenbook_a14_ec
+ReadWritePaths=/sys/devices/platform/asus_zenbook_a14_ec /sys/class/devfreq /run/asus-zenbook-a14-ec
+RuntimeDirectory=asus-zenbook-a14-ec
+RuntimeDirectoryMode=0755
 
 [Install]
 WantedBy=multi-user.target
