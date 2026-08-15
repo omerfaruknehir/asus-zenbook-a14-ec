@@ -138,11 +138,7 @@ def compose_ec() -> None:
 
     run("apply-a14-native-hardening-compat.py")
     run("apply-a14-native-max-power.py")
-
-    # Validate/restore the calibrated selector/tach path and remove the
-    # discarded direct c6:18/c6:19 FAN1 telemetry experiment if present.
     run("apply-a14-native-fan-telemetry.py")
-
     run("apply-a14-native-mode-names-hotkey.py")
     run("apply-a14-whisper.py")
     ensure_export_prototype()
@@ -152,13 +148,16 @@ def compose_ec() -> None:
 def fnlock_complete() -> bool:
     required = (
         "A14_HID_FNLOCK_WINDOWS_FULL_FEATURE_REPORT",
+        "A14_HID_FNLOCK_WINDOWS_INIT_INPUT",
         "struct work_struct fnlock_work;",
         "atomic_t desired_fn_lock;",
+        "static int asus_hid_windows_init_input",
         "static int asus_hid_set_fnlock_hw",
         "u8 command[A14_EC_REPORT_SIZE]",
         "return asus_hid_raw_request(data, command, HID_REQ_SET_REPORT);",
         "schedule_work(&data->fnlock_work);",
         "INIT_WORK(&data->fnlock_work, asus_fnlock_work);",
+        "ret = asus_hid_windows_init_input(data);",
         "ret = asus_hid_set_fnlock_hw(data, false);",
         "ret = asus_hid_set_fnlock_hw(data, data->fn_lock);",
     )
@@ -183,12 +182,9 @@ def compose_hid() -> None:
         print("a14_hid_composed=current")
         return
 
-    # A profile-hotkey transform is supposed to be layered on top of Fn-lock.
-    # Never silently ship an old/partial composed source where Fn+F exists but
-    # Fn+Esc was skipped or still uses the disproven four-byte request.
     if profile and not fnlock:
         raise SystemExit(
-            "a14_hid_stack=partial: Fn+F profile hotkey exists but Windows-matched full-length Fn-lock composition is missing"
+            "a14_hid_stack=partial: Fn+F profile hotkey exists but Windows-matched Fn-lock initialization/composition is missing"
         )
 
     if not fnlock:
@@ -216,11 +212,14 @@ def main() -> None:
         "asus_a14_cycle_native_profile();",
         "schedule_work(&data->profile_work);",
         "A14_HID_FNLOCK_WINDOWS_FULL_FEATURE_REPORT",
+        "A14_HID_FNLOCK_WINDOWS_INIT_INPUT",
+        "static int asus_hid_windows_init_input",
         "static int asus_hid_set_fnlock_hw",
         "u8 command[A14_EC_REPORT_SIZE]",
         "return asus_hid_raw_request(data, command, HID_REQ_SET_REPORT);",
         "schedule_work(&data->fnlock_work);",
         "INIT_WORK(&data->fnlock_work, asus_fnlock_work);",
+        "ret = asus_hid_windows_init_input(data);",
         "ret = asus_hid_set_fnlock_hw(data, false);",
         "ret = asus_hid_set_fnlock_hw(data, data->fn_lock);",
     )
@@ -231,7 +230,7 @@ def main() -> None:
     print("a14_profiles=whisper,quiet,normal,turbo,full-speed")
     print("a14_native_profiles=quiet,normal,turbo,full-speed")
     print("a14_fn_f_cycle=whisper,quiet,normal,turbo,full-speed")
-    print("a14_fn_lock=kernel-hid-windows-full-64-byte-feature-report")
+    print("a14_fn_lock=kernel-hid-windows-init-plus-full-64-byte-feature-report")
     print("a14_fan_telemetry=selector-calibrated")
     print("a14_ec_stack=current")
 
