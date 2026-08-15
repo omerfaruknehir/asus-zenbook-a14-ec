@@ -1,9 +1,15 @@
 #!/usr/bin/env python3
-"""PPD-compatible bridge for the four ASUS Zenbook A14 firmware modes.
+"""Standards-compatible power-profiles-daemon fallback for the A14.
 
-User-selectable modes are exactly the recovered ASUS firmware modes:
-quiet, balanced/Normal, performance/Turbo, and full-speed. No named mode uses
-manual PWM or an artificial CPU-frequency cap.
+The A14-specific five-mode UI is provided by the Profile1 service/Quick Settings
+extension. This fallback keeps the standard PPD vocabulary intact for generic
+Linux clients and maps it onto the nearest A14 policy:
+
+    power-saver -> Whisper
+    balanced    -> ASUS Normal
+    performance -> ASUS Turbo
+
+ASUS Quiet and Full Speed remain available through the A14-specific interface.
 """
 
 from __future__ import annotations
@@ -30,10 +36,14 @@ PROPERTIES_INTERFACE = "org.freedesktop.DBus.Properties"
 KNOWN_INTERFACES = {INTERFACE, LEGACY_INTERFACE}
 
 PROFILE_PATH = Path("/sys/devices/platform/asus_zenbook_a14_ec/profile")
-STATE_PATH = Path("/var/lib/asus-zenbook-a14-ec/profile")
-PROFILE_ORDER = ("quiet", "balanced", "performance", "full-speed")
-# Keep standard PPD hold compatibility without creating a fifth user mode:
-# a power-saver hold temporarily selects the native ASUS Quiet firmware mode.
+STATE_PATH = Path("/var/lib/asus-zenbook-a14-ec/ppd-profile")
+PROFILE_ORDER = ("power-saver", "balanced", "performance")
+PROFILE_TO_DRIVER = {
+    "power-saver": "whisper",
+    "balanced": "normal",
+    "performance": "turbo",
+}
+DRIVER_TO_PROFILE = {value: key for key, value in PROFILE_TO_DRIVER.items()}
 HOLD_PROFILES = ("power-saver", "performance")
 
 
@@ -51,7 +61,8 @@ class PowerProfilesBridge(dbus.service.Object):
     def __init__(self, bus: dbus.SystemBus) -> None:
         self._bus = bus
         self._bus_name = dbus.service.BusName(BUS_NAME, bus, do_not_queue=True)
-        self._legacy_bus_name = dbus.service.BusName(LEGACY_BUS_NAME, bus, do_not_queue=True)
+        self._legacy_bus_name = dbus.service.BusName(
+            LEGACY_BUS_NAME, bus, do_not_queue=True)
         super().__init__(bus, OBJECT_PATH)
         self.add_to_connection(bus, LEGACY_OBJECT_PATH)
         self._holds: dict[int, dict[str, Any]] = {}
@@ -78,15 +89,15 @@ class PowerProfilesBridge(dbus.service.Object):
     @staticmethod
     def _read_driver_profile() -> str | None:
         try:
-            raw = PROFILE_PATH.read_text().strip()
+            return PROFILE_PATH.read_text().strip()
         except OSError:
             return None
-        return raw if raw in PROFILE_ORDER else None
 
     def _poll_driver_state(self) -> bool:
-        driver_profile = self._read_driver_profile()
-        if not self._holds and driver_profile and driver_profile != self._active_profile:
-            self._active_profile = driver_profile
+        driver = self._read_driver_profile()
+        mapped = DRIVER_TO_PROFILE.get(driver or "")
+        if not self._holds and mapped and mapped != self._active_profile:
+            self._active_profile = mapped
             self._save_profile()
             self._emit_properties(("ActiveProfile",))
         return GLib.SOURCE_CONTINUE
@@ -98,7 +109,7 @@ class PowerProfilesBridge(dbus.service.Object):
                 return saved
         except OSError:
             pass
-        return self._read_driver_profile() or "balanced"
+        return DRIVER_TO_PROFILE.get(self._read_driver_profile() or "", "balanced")
 
     def _save_profile(self) -> None:
         try:
@@ -110,24 +121,29 @@ class PowerProfilesBridge(dbus.service.Object):
     def _effective_profile(self) -> str:
         held = {str(item["Profile"]) for item in self._holds.values()}
         if "power-saver" in held:
-            return "quiet"
+            return "power-saver"
         if "performance" in held:
             return "performance"
         return self._active_profile
 
     def _write_driver_profile(self, profile: str) -> None:
+        driver_profile = PROFILE_TO_DRIVER[profile]
         try:
-            PROFILE_PATH.write_text(f"{profile}\n")
+            PROFILE_PATH.write_text(f"{driver_profile}\n")
         except OSError as exc:
-            raise BridgeError(f"Cannot apply {profile} through {PROFILE_PATH}: {exc}") from exc
+            raise BridgeError(
+                f"Cannot apply {profile} ({driver_profile}) through {PROFILE_PATH}: {exc}") from exc
         applied = self._read_driver_profile()
-        if applied != profile:
-            raise BridgeError(f"Driver reported {applied or 'unknown'} after requesting {profile}")
+        if applied != driver_profile:
+            raise BridgeError(
+                f"Driver reported {applied or 'unknown'} after requesting {driver_profile}")
 
     def _apply_effective_profile(self) -> None:
         effective = self._effective_profile()
         self._write_driver_profile(effective)
-        print(f"ppd-bridge: active={self._active_profile} effective={effective}", flush=True)
+        print(
+            f"ppd-bridge: active={self._active_profile} effective={effective} "
+            f"driver={PROFILE_TO_DRIVER[effective]}", flush=True)
 
     def _emit_properties(self, names: tuple[str, ...]) -> None:
         changed = {name: self._get_property(name) for name in names}
@@ -135,7 +151,8 @@ class PowerProfilesBridge(dbus.service.Object):
         self.PropertiesChanged(LEGACY_INTERFACE, changed, [])
 
     def _emit_profile_released(self, cookie: int, destination: str) -> None:
-        message = dbus.lowlevel.SignalMessage(OBJECT_PATH, INTERFACE, "ProfileReleased")
+        message = dbus.lowlevel.SignalMessage(
+            OBJECT_PATH, INTERFACE, "ProfileReleased")
         message.append(dbus.UInt32(cookie), signature="u")
         message.set_destination(destination)
         self._bus.send_message(message)
@@ -158,26 +175,24 @@ class PowerProfilesBridge(dbus.service.Object):
             self._release_holds(owner=str(old_owner), emit=False)
 
     def _profiles_property(self) -> dbus.Array:
-        entries = [
+        return dbus.Array([
             dbus.Dictionary({
                 "Profile": dbus.String(profile),
                 "Driver": dbus.String("asus-zenbook-a14-ec"),
                 "PlatformDriver": dbus.String("asus-zenbook-a14-ec"),
             }, signature="sv")
             for profile in PROFILE_ORDER
-        ]
-        return dbus.Array(entries, signature="a{sv}")
+        ], signature="a{sv}")
 
     def _holds_property(self) -> dbus.Array:
-        entries = [
+        return dbus.Array([
             dbus.Dictionary({
                 "ApplicationId": dbus.String(str(hold["ApplicationId"])),
                 "Profile": dbus.String(str(hold["Profile"])),
                 "Reason": dbus.String(str(hold["Reason"])),
             }, signature="sv")
             for hold in self._holds.values()
-        ]
-        return dbus.Array(entries, signature="a{sv}")
+        ], signature="a{sv}")
 
     def _get_property(self, prop: str) -> Any:
         if prop == "ActiveProfile":
@@ -193,36 +208,41 @@ class PowerProfilesBridge(dbus.service.Object):
         if prop == "ActiveProfileHolds":
             return self._holds_property()
         if prop == "Version":
-            return dbus.String("0.5.1-a14-native")
+            return dbus.String("0.5.1-a14-whisper")
         if prop == "BatteryAware":
             return dbus.Boolean(self._battery_aware)
-        if prop == "A14QuietEmergency":
-            return dbus.Boolean(False)
         raise dbus.exceptions.DBusException(
-            f"Unknown property: {prop}", name="org.freedesktop.DBus.Error.UnknownProperty")
+            f"Unknown property: {prop}",
+            name="org.freedesktop.DBus.Error.UnknownProperty")
 
     @dbus.service.method(PROPERTIES_INTERFACE, in_signature="ss", out_signature="v")
     def Get(self, interface: str, prop: str) -> Any:
         if interface not in KNOWN_INTERFACES:
             raise dbus.exceptions.DBusException(
-                f"Unknown interface: {interface}", name="org.freedesktop.DBus.Error.UnknownInterface")
+                f"Unknown interface: {interface}",
+                name="org.freedesktop.DBus.Error.UnknownInterface")
         return self._get_property(prop)
 
     @dbus.service.method(PROPERTIES_INTERFACE, in_signature="s", out_signature="a{sv}")
     def GetAll(self, interface: str) -> dbus.Dictionary:
         if interface not in KNOWN_INTERFACES:
             raise dbus.exceptions.DBusException(
-                f"Unknown interface: {interface}", name="org.freedesktop.DBus.Error.UnknownInterface")
-        names = ("ActiveProfile", "PerformanceInhibited", "PerformanceDegraded",
-                 "Profiles", "Actions", "ActionsInfo", "ActiveProfileHolds",
-                 "Version", "BatteryAware", "A14QuietEmergency")
-        return dbus.Dictionary({name: self._get_property(name) for name in names}, signature="sv")
+                f"Unknown interface: {interface}",
+                name="org.freedesktop.DBus.Error.UnknownInterface")
+        names = (
+            "ActiveProfile", "PerformanceInhibited", "PerformanceDegraded",
+            "Profiles", "Actions", "ActionsInfo", "ActiveProfileHolds",
+            "Version", "BatteryAware",
+        )
+        return dbus.Dictionary(
+            {name: self._get_property(name) for name in names}, signature="sv")
 
     @dbus.service.method(PROPERTIES_INTERFACE, in_signature="ssv", out_signature="")
     def Set(self, interface: str, prop: str, value: Any) -> None:
         if interface not in KNOWN_INTERFACES:
             raise dbus.exceptions.DBusException(
-                f"Unknown interface: {interface}", name="org.freedesktop.DBus.Error.UnknownInterface")
+                f"Unknown interface: {interface}",
+                name="org.freedesktop.DBus.Error.UnknownInterface")
         if prop == "ActiveProfile":
             profile = self._validate_profile(str(value))
             self._release_holds(emit=True)
@@ -245,28 +265,35 @@ class PowerProfilesBridge(dbus.service.Object):
             name="org.freedesktop.DBus.Error.PropertyReadOnly")
 
     @dbus.service.signal(PROPERTIES_INTERFACE, signature="sa{sv}as")
-    def PropertiesChanged(self, interface: str, changed: dict[str, Any], invalidated: list[str]) -> None:
+    def PropertiesChanged(self, interface: str, changed: dict[str, Any],
+                          invalidated: list[str]) -> None:
         pass
 
-    @dbus.service.method(INTERFACE, in_signature="sss", out_signature="u", sender_keyword="sender")
-    def HoldProfile(self, profile: str, reason: str, application_id: str, sender: str) -> dbus.UInt32:
+    @dbus.service.method(
+        INTERFACE, in_signature="sss", out_signature="u", sender_keyword="sender")
+    def HoldProfile(self, profile: str, reason: str, application_id: str,
+                    sender: str) -> dbus.UInt32:
         profile = self._validate_profile(str(profile), hold=True)
         cookie = self._next_cookie
         self._next_cookie += 1
         self._holds[cookie] = {
-            "Profile": profile, "Reason": str(reason),
-            "ApplicationId": str(application_id), "Owner": str(sender),
+            "Profile": profile,
+            "Reason": str(reason),
+            "ApplicationId": str(application_id),
+            "Owner": str(sender),
         }
         self._apply_effective_profile()
         self._emit_properties(("ActiveProfile", "ActiveProfileHolds"))
         return dbus.UInt32(cookie)
 
-    @dbus.service.method(INTERFACE, in_signature="u", out_signature="", sender_keyword="sender")
+    @dbus.service.method(
+        INTERFACE, in_signature="u", out_signature="", sender_keyword="sender")
     def ReleaseProfile(self, cookie: int, sender: str) -> None:
         hold = self._holds.get(int(cookie))
         if hold is None or hold["Owner"] != str(sender):
             raise dbus.exceptions.DBusException(
-                f"Unknown profile hold cookie: {cookie}", name="org.freedesktop.DBus.Error.InvalidArgs")
+                f"Unknown profile hold cookie: {cookie}",
+                name="org.freedesktop.DBus.Error.InvalidArgs")
         self._holds.pop(int(cookie))
         self._apply_effective_profile()
         self._emit_properties(("ActiveProfile", "ActiveProfileHolds"))
@@ -274,7 +301,8 @@ class PowerProfilesBridge(dbus.service.Object):
     @dbus.service.method(INTERFACE, in_signature="sb", out_signature="")
     def SetActionEnabled(self, action: str, enabled: bool) -> None:
         raise dbus.exceptions.DBusException(
-            f"Unknown action: {action}", name="org.freedesktop.DBus.Error.InvalidArgs")
+            f"Unknown action: {action}",
+            name="org.freedesktop.DBus.Error.InvalidArgs")
 
     @dbus.service.signal(INTERFACE, signature="u")
     def ProfileReleased(self, cookie: int) -> None:
@@ -297,11 +325,8 @@ def main() -> int:
     bus = dbus.SystemBus()
     try:
         bridge = PowerProfilesBridge(bus)
-    except dbus.DBusException as exc:
-        print(f"ppd-bridge: cannot claim D-Bus service: {exc}", file=sys.stderr)
-        return os.EX_UNAVAILABLE
-    except BridgeError as exc:
-        print(f"ppd-bridge: driver profile setup failed: {exc}", file=sys.stderr)
+    except (dbus.DBusException, BridgeError) as exc:
+        print(f"ppd-bridge: setup failed: {exc}", file=sys.stderr)
         return os.EX_UNAVAILABLE
     loop = GLib.MainLoop()
 
