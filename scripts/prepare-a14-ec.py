@@ -5,6 +5,7 @@ import sys
 
 ROOT = Path(__file__).resolve().parent.parent
 SOURCE = ROOT / "asus_zenbook_a14_ec.c"
+HID_SOURCE = ROOT / "hid_asus_ec.c"
 SCRIPTS = ROOT / "scripts"
 
 
@@ -16,8 +17,14 @@ def has(token: str) -> bool:
     return token in read_source()
 
 
+def hid_has(token: str) -> bool:
+    return HID_SOURCE.is_file() and token in HID_SOURCE.read_text()
+
+
 def run(script: str) -> None:
     path = SCRIPTS / script
+    if not path.is_file():
+        raise SystemExit(f"missing composition helper: {path}")
     print(f"compose_run={script}", flush=True)
     subprocess.run([sys.executable, str(path)], cwd=ROOT, check=True)
 
@@ -71,6 +78,12 @@ def final_missing() -> list[str]:
 
 
 def compose_ec() -> None:
+    # Installed DKMS sources are packaged after composition. Do not require the
+    # repository-only transformer scripts again when all final markers exist.
+    if has("A14_WHISPER_MODE") and has("A14_NATIVE_MODE_NAMES_HOTKEY"):
+        print("a14_ec_composed=current")
+        return
+
     if has("static int asus_ec_force_auto_locked"):
         print("a14_ec_hardening=current")
     else:
@@ -93,19 +106,28 @@ def compose_ec() -> None:
     run("apply-a14-whisper.py")
 
 
+def compose_hid() -> None:
+    if hid_has("A14_HID_NATIVE_PROFILE_HOTKEY"):
+        print("a14_hid_composed=current")
+        return
+    run("apply-a14-hid-fnlock.py")
+    run("apply-a14-hid-profile-hotkey.py")
+
+
 def main() -> None:
     if not SOURCE.is_file():
         raise SystemExit(f"missing source: {SOURCE}")
+    if not HID_SOURCE.is_file():
+        raise SystemExit(f"missing source: {HID_SOURCE}")
 
     compose_ec()
-    run("apply-a14-hid-fnlock.py")
-    run("apply-a14-hid-profile-hotkey.py")
+    compose_hid()
 
     missing = final_missing()
     if missing:
         raise SystemExit("a14_ec_stack=incomplete: " + ", ".join(missing))
 
-    hid = (ROOT / "hid_asus_ec.c").read_text()
+    hid = HID_SOURCE.read_text()
     hid_required = (
         "A14_HID_NATIVE_PROFILE_HOTKEY",
         "asus_a14_cycle_native_profile();",
