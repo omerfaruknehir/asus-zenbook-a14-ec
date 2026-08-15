@@ -38,9 +38,22 @@ trap cleanup EXIT INT TERM
 
 CAM_LIST=$(cam -l 2>&1 || true)
 printf '%s\n' "$CAM_LIST"
-IR_INDEX=$(printf '%s\n' "$CAM_LIST" | awk '/camera@24/ { gsub(":", "", $1); print $1; exit }')
-[[ -n "$IR_INDEX" ]] || {
-  echo "Could not find HM1092 camera@24 in cam -l." >&2
+
+# libcamera log lines also contain camera@24, for example:
+#   [0:16:42.408877979] ... Adding camera '.../camera@24'
+# Only accept the actual numbered `cam -l` inventory row:
+#   1: Internal front camera (.../camera@24)
+IR_INDEX=$(
+  printf '%s\n' "$CAM_LIST" |
+    awk '/^[[:space:]]*[0-9]+:.*camera@24/ {
+      index = $1
+      sub(/:$/, "", index)
+      print index
+      exit
+    }'
+)
+[[ "$IR_INDEX" =~ ^[0-9]+$ ]] || {
+  echo "Could not find a numeric HM1092 camera@24 index in cam -l." >&2
   exit 3
 }
 
@@ -58,7 +71,7 @@ for _ in $(seq 1 50); do
   if ! kill -0 "$CAM_PID" 2>/dev/null; then
     break
   fi
-  if grep -qE 'seq:[[:space:]]*[0-9]+|Capture [0-9]+ frames|configuring streams' "$CAM_LOG"; then
+  if grep -qE 'seq:[[:space:]]*[0-9]+|Capture [0-9]+ frames|configuring streams|Using camera ' "$CAM_LOG"; then
     STREAM_READY=1
     break
   fi
