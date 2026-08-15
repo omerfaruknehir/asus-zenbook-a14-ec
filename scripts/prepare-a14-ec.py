@@ -55,6 +55,7 @@ def final_missing() -> list[str]:
         "A14_NATIVE_MODE_NAMES_HOTKEY",
         "A14_WHISPER_MODE",
         "ASUS_EC_PROFILE_WHISPER",
+        '#include <linux/math64.h>',
         'return sysfs_emit(buf, "whisper quiet normal turbo full-speed\\n");',
         "int asus_a14_cycle_native_profile(void);\n\nint asus_a14_cycle_native_profile(void)",
         "EXPORT_SYMBOL_GPL(asus_a14_cycle_native_profile)",
@@ -79,24 +80,56 @@ def final_missing() -> list[str]:
 
 
 def ensure_export_prototype() -> None:
-    expected = (
-        "int asus_a14_cycle_native_profile(void);\n\n"
-        "int asus_a14_cycle_native_profile(void)"
-    )
-    if has(expected):
+    prototype = "int asus_a14_cycle_native_profile(void);"
+    definition = "int asus_a14_cycle_native_profile(void)\n{"
+    expected = prototype + "\n\n" + definition
+    s = read_source()
+
+    if expected in s:
         print("a14_fn_f_export_prototype=current")
-    else:
-        run("apply-a14-export-prototype.py")
+        return
+    if definition not in s:
+        raise SystemExit("Fn+F cycle definition missing")
+
+    # Keep the final DKMS source self-contained: installed /usr/src does not
+    # need a repository-only transform just to repair an exported prototype.
+    s = s.replace(prototype + "\n\n", "")
+    if s.count(definition) != 1:
+        raise SystemExit(f"Fn+F cycle definition count={s.count(definition)}")
+    s = s.replace(definition, expected, 1)
+    if s.count(prototype) != 1 or s.count(definition) != 1:
+        raise SystemExit("Fn+F exported prototype finalization failed")
+    SOURCE.write_text(s)
+    print("a14_fn_f_export_prototype=applied")
+
+
+def ensure_math64_header() -> None:
+    s = read_source()
+    if "A14_WHISPER_MODE" not in s:
+        return
+    include = "#include <linux/math64.h>\n"
+    if include in s:
+        print("a14_whisper_math64=current")
+        return
+
+    # Whisper uses div_u64() for percentage-based CPU caps. Linux 7.1 keeps
+    # div_u64() in linux/math64.h; relying on incidental architecture includes
+    # can compile on one CI host and fail on ARM64.
+    anchor = "#include <linux/kernel.h>\n"
+    if s.count(anchor) != 1:
+        raise SystemExit("kernel include anchor missing for math64")
+    s = s.replace(anchor, anchor + include, 1)
+    SOURCE.write_text(s)
+    print("a14_whisper_math64=applied")
 
 
 def compose_ec() -> None:
     # Installed DKMS sources are packaged after composition. Do not require the
-    # repository-only transformer scripts again when all final markers exist,
-    # but still verify the final exported prototype because Whisper rewrites
-    # the Fn+F cycle function after the native-mode layer creates it.
+    # repository-only transformer scripts again when all final markers exist.
     if has("A14_WHISPER_MODE") and has("A14_NATIVE_MODE_NAMES_HOTKEY"):
         print("a14_ec_composed=current")
         ensure_export_prototype()
+        ensure_math64_header()
         return
 
     if has("static int asus_ec_force_auto_locked"):
@@ -120,6 +153,7 @@ def compose_ec() -> None:
     run("apply-a14-native-mode-names-hotkey.py")
     run("apply-a14-whisper.py")
     ensure_export_prototype()
+    ensure_math64_header()
 
 
 def compose_hid() -> None:
