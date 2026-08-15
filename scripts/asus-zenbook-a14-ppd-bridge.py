@@ -4,8 +4,9 @@
 Stock GNOME only understands the standard PPD trio, so the bridge normally
 publishes power-saver -> Whisper, balanced -> Normal, performance -> Turbo.
 When the native GNOME 50 five-mode rebuild marker is installed, it also exposes
-quiet and full-speed. Driver-side Fn+F changes are consumed via the kernel's
-sysfs POLLPRI notifications; a slow timer remains only as recovery fallback.
+quiet and full-speed. Driver-side Fn+F changes arrive through sysfs_notify();
+kernfs reports a change as POLLPRI|POLLERR, so both bits are treated as data.
+A slow timer remains solely as recovery fallback.
 """
 
 from __future__ import annotations
@@ -49,7 +50,11 @@ FIVE_PROFILE_TO_DRIVER = {
     "full-speed": "full-speed",
 }
 HOLD_PROFILES = ("power-saver", "performance")
-SYSFS_WATCH_CONDITION = GLib.IO_PRI | GLib.IO_ERR | GLib.IO_HUP
+# Linux kernfs returns EPOLLERR together with EPOLLPRI for a changed sysfs
+# notification counter. IO_ERR is therefore part of the change signal here.
+SYSFS_CHANGE_CONDITION = GLib.IO_PRI | GLib.IO_ERR
+SYSFS_FATAL_CONDITION = GLib.IO_HUP | GLib.IO_NVAL
+SYSFS_WATCH_CONDITION = SYSFS_CHANGE_CONDITION | SYSFS_FATAL_CONDITION
 
 
 class BridgeError(dbus.DBusException):
@@ -144,14 +149,14 @@ class PowerProfilesBridge(dbus.service.Object):
         condition: GLib.IOCondition,
         fd: int,
     ) -> bool:
-        if condition & GLib.IO_PRI:
+        if condition & SYSFS_CHANGE_CONDITION:
             try:
                 self._prime_sysfs_fd(fd)
             except OSError as exc:
                 print(f"ppd-bridge: cannot acknowledge profile event: {exc}", file=sys.stderr)
                 return False
             self._sync_driver_state()
-        if condition & (GLib.IO_ERR | GLib.IO_HUP):
+        if condition & SYSFS_FATAL_CONDITION:
             print("ppd-bridge: profile sysfs watch ended", file=sys.stderr)
             return False
         return True
@@ -274,7 +279,7 @@ class PowerProfilesBridge(dbus.service.Object):
         if prop == "ActiveProfileHolds":
             return self._holds_property()
         if prop == "Version":
-            return dbus.String("0.5.6-a14-five-ui")
+            return dbus.String("0.5.7-a14-five-ui")
         if prop == "BatteryAware":
             return dbus.Boolean(self._battery_aware)
         raise dbus.exceptions.DBusException(
