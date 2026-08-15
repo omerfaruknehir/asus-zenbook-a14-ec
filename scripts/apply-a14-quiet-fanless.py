@@ -76,6 +76,15 @@ once(
     "Quiet fan stop application",
 )
 
+# A QoS-unavailable Quiet state remains in firmware Turbo, but keeps retrying
+# the cpufreq provider in the safety work. Once QoS becomes available, apply
+# the cap first, then restore native Quiet and stop the fans automatically.
+once(
+    '''\tif (ec->active_profile == ASUS_EC_PROFILE_QUIET) {\n\t\tint ret = 0;\n\n\t\tif (!ec->quiet_emergency_active &&\n''',
+    '''\tif (ec->active_profile == ASUS_EC_PROFILE_QUIET) {\n\t\tint ret = 0;\n\n\t\tif (ec->quiet_qos_unavailable) {\n\t\t\tret = asus_ec_freq_qos_retry_attach(ec);\n\t\t\tif (!ret) {\n\t\t\t\tasus_ec_freq_qos_set_percent(ec, quiet_max_percent);\n\t\t\t\tret = asus_ec_set_native_fan_profile(ec, EC_FW_FAN_PROFILE_QUIET);\n\t\t\t\tif (!ret)\n\t\t\t\t\tret = asus_ec_enter_manual_locked(ec, quiet_fan_pwm);\n\t\t\t\tif (!ret) {\n\t\t\t\t\tec->quiet_qos_unavailable = false;\n\t\t\t\t\tec->quiet_emergency_active = false;\n\t\t\t\t\tasus_ec_emit_quiet_emergency(ec, false, temp, "qos-restored");\n\t\t\t\t\tdev_info(ec->dev,\n\t\t\t\t\t\t "Quiet CPU QoS became available; fan-stop policy restored\\n");\n\t\t\t\t}\n\t\t\t}\n\n\t\t\tif (ret && ret != -ENODEV) {\n\t\t\t\t(void)asus_ec_force_auto_locked(ec);\n\t\t\t\t(void)asus_ec_set_native_fan_profile(ec, EC_FW_FAN_PROFILE_TURBO);\n\t\t\t\tdev_warn_ratelimited(ec->dev,\n\t\t\t\t\t"Quiet QoS/fan-stop recovery retry failed: %d\\n", ret);\n\t\t\t}\n\n\t\t\tmod_delayed_work(system_freezable_wq, &ec->safety_work,\n\t\t\t\t\t msecs_to_jiffies(PROFILE_SAFETY_PERIOD_MS));\n\t\t\tgoto out;\n\t\t}\n\n\t\tif (!ec->quiet_emergency_active &&\n''',
+    "late QoS automatic recovery",
+)
+
 # Emergency escalation must relinquish manual fan ownership before asking the
 # firmware Turbo curve to cool the machine. Otherwise Turbo is selected while
 # the EC is still held in manual PWM mode and cannot control the fans.
@@ -94,6 +103,15 @@ once(
     "Quiet emergency fan-stop recovery",
 )
 
+# Even a QoS-unavailable Quiet state must keep the safety worker alive so it can
+# discover a late cpufreq provider and automatically transition from safe Turbo
+# fallback into the intended throttle-first fanless policy.
+once(
+    '''\tif (profile == ASUS_EC_PROFILE_QUIET &&\n\t    !ec->quiet_qos_unavailable && !ec->shutting_down)\n\t\tmod_delayed_work(system_freezable_wq, &ec->safety_work,\n\t\t\t\t msecs_to_jiffies(PROFILE_SAFETY_PERIOD_MS));\n\telse\n\t\tcancel_delayed_work(&ec->safety_work);\n''',
+    '''\tif (profile == ASUS_EC_PROFILE_QUIET && !ec->shutting_down)\n\t\tmod_delayed_work(system_freezable_wq, &ec->safety_work,\n\t\t\t\t msecs_to_jiffies(PROFILE_SAFETY_PERIOD_MS));\n\telse\n\t\tcancel_delayed_work(&ec->safety_work);\n''',
+    "keep Quiet QoS recovery worker alive",
+)
+
 required = (
     "A14_QUIET_FANLESS",
     "quiet_fan_pwm",
@@ -101,6 +119,8 @@ required = (
     "asus_ec_enter_manual_locked(ec, quiet_fan_pwm)",
     "Quiet fan-stop setup failed",
     "late freq QoS attach succeeded",
+    'asus_ec_emit_quiet_emergency(ec, false, temp, "qos-restored")',
+    "Quiet CPU QoS became available; fan-stop policy restored",
     "asus_ec_force_auto_locked(ec);\n\t\t\tif (!ret)\n\t\t\t\tret = asus_ec_set_native_fan_profile(ec, EC_FW_FAN_PROFILE_TURBO)",
 )
 missing = [token for token in required if token not in s]
