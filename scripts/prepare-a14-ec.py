@@ -32,7 +32,7 @@ def native_profile_complete() -> bool:
         and "EC_FW_FAN_PROFILE_TURBO" in s
         and "EC_FW_FAN_PROFILE_FULL_SPEED" in s
         and "static int asus_ec_set_native_fan_profile" in s
-        and 'quiet balanced performance full-speed' in s
+        and "ASUS_EC_PROFILE_FULL_SPEED" in s
     )
 
 
@@ -49,8 +49,10 @@ def final_missing() -> list[str]:
         "ASUS_EC_PROFILE_FULL_SPEED",
         "static int asus_ec_set_native_fan_profile",
         "static int asus_ec_native_profile_marker",
-        'return sysfs_emit(buf, "quiet balanced performance full-speed\\n");',
+        'return sysfs_emit(buf, "quiet normal turbo full-speed\\n");',
         "PLATFORM_PROFILE_MAX_POWER",
+        "A14_NATIVE_MODE_NAMES_HOTKEY",
+        "EXPORT_SYMBOL_GPL(asus_a14_cycle_native_profile)",
     )
     missing = [token for token in required if token not in s]
 
@@ -90,6 +92,8 @@ def compose_ec() -> None:
     else:
         run("apply-a14-native-fan-telemetry.py")
 
+    run("apply-a14-native-mode-names-hotkey.py")
+
 
 def main() -> None:
     if not SOURCE.is_file():
@@ -102,7 +106,7 @@ def main() -> None:
     if missing:
         raise SystemExit("a14_ec_stack=incomplete: " + ", ".join(missing))
 
-    print("a14_ec_native_profiles=normal,quiet,turbo,full-speed")
+    print("a14_ec_native_profiles=quiet,normal,turbo,full-speed")
     print("a14_ec_stack=current")
 
 
