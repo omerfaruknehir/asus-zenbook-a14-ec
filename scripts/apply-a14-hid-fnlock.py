@@ -64,12 +64,10 @@ once(
     '\tINIT_WORK(&data->backlight_work, asus_backlight_work);\n\tINIT_WORK(&data->fnlock_work, asus_fnlock_work);\n\tatomic_set(&data->desired_fn_lock, 0);\n\tdata->fn_lock = false;\n\tatomic_set(&data->desired_brightness,\n',
     'probe init')
 
-# Establish the same input-feature initialization Windows performs before its
-# Fn-switch transaction, then put the keyboard in the normal action-key-first
-# state.  The input init is deliberately full-length; the earlier Linux test
-# used a short report and was not equivalent to Windows.
+# Clean hid_asus_ec.c has only the backlight setup here. Add the Windows input
+# initialization and deterministic Fn-row state directly to that clean anchor.
 once(
-    '\tret = asus_hid_set_backlight_hw(data,\n\t\t\t\t\tatomic_read(&data->desired_brightness));\n\tif (ret)\n\t\tgoto err_led;\n\tret = asus_hid_set_fnlock_hw(data, false);\n\tif (ret)\n\t\tdev_warn(&hdev->dev, "initial Fn-lock state setup failed: %d\\n", ret);\n\n\tif (enable_debug_commands) {\n',
+    '\tret = asus_hid_set_backlight_hw(data,\n\t\t\t\t\tatomic_read(&data->desired_brightness));\n\tif (ret)\n\t\tgoto err_led;\n\n\tif (enable_debug_commands) {\n',
     '\tret = asus_hid_set_backlight_hw(data,\n\t\t\t\t\tatomic_read(&data->desired_brightness));\n\tif (ret)\n\t\tgoto err_led;\n\tret = asus_hid_windows_init_input(data);\n\tif (ret)\n\t\tdev_warn(&hdev->dev, "initial ASUS input feature setup failed: %d\\n", ret);\n\tret = asus_hid_set_fnlock_hw(data, false);\n\tif (ret)\n\t\tdev_warn(&hdev->dev, "initial Fn-lock state setup failed: %d\\n", ret);\n\n\tif (enable_debug_commands) {\n',
     'probe hardware init')
 
