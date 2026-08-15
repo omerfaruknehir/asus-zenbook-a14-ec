@@ -39,30 +39,29 @@ def native_profile_complete() -> bool:
 def final_missing() -> list[str]:
     s = read_source()
     required = (
-        "#define EC_FW_WAIT_MIN_US                100000",
-        "#define EC_FW_WAIT_MAX_US                110000",
         "EC_FW_FAN_PROFILE_NORMAL",
         "EC_FW_FAN_PROFILE_QUIET",
         "EC_FW_FAN_PROFILE_TURBO",
         "EC_FW_FAN_PROFILE_FULL_SPEED",
         "EC_NATIVE_FAN1_RPM_LO",
-        "ASUS_EC_PROFILE_FULL_SPEED",
-        "static int asus_ec_set_native_fan_profile",
-        "static int asus_ec_native_profile_marker",
-        'return sysfs_emit(buf, "quiet normal turbo full-speed\\n");',
         "PLATFORM_PROFILE_MAX_POWER",
         "A14_NATIVE_MODE_NAMES_HOTKEY",
+        "A14_WHISPER_MODE",
+        "ASUS_EC_PROFILE_WHISPER",
+        'return sysfs_emit(buf, "whisper quiet normal turbo full-speed\\n");',
         "EXPORT_SYMBOL_GPL(asus_a14_cycle_native_profile)",
+        "DEVICE_ATTR_RO(whisper_level)",
     )
     missing = [token for token in required if token not in s]
 
+    # The four ASUS modes remain pure firmware modes. Old synthetic named
+    # policies must not leak back in; Whisper is the sole synthetic policy.
     forbidden = (
         "A14_PROFILE_POLICY_V2",
         "A14_QUIET_FANLESS",
         "A14_THERMAL_SAFETY",
         "A14_QOS_COMPLETE",
         "ASUS_EC_PROFILE_POWER_SAVER",
-        "quiet_max_percent",
         "power_saver_max_percent",
         "quiet_fan_pwm",
         "asus_ec_enter_manual_locked(ec, 255)",
@@ -91,6 +90,7 @@ def compose_ec() -> None:
         run("apply-a14-native-fan-telemetry.py")
 
     run("apply-a14-native-mode-names-hotkey.py")
+    run("apply-a14-whisper.py")
 
 
 def main() -> None:
@@ -115,8 +115,9 @@ def main() -> None:
     if hid_missing:
         raise SystemExit("a14_hid_stack=incomplete: " + ", ".join(hid_missing))
 
-    print("a14_ec_native_profiles=quiet,normal,turbo,full-speed")
-    print("a14_fn_f_cycle=quiet,normal,turbo,full-speed")
+    print("a14_profiles=whisper,quiet,normal,turbo,full-speed")
+    print("a14_native_profiles=quiet,normal,turbo,full-speed")
+    print("a14_fn_f_cycle=whisper,quiet,normal,turbo,full-speed")
     print("a14_ec_stack=current")
 
 
