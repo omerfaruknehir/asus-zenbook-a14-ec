@@ -27,8 +27,12 @@ def native_profile_complete() -> bool:
     return (
         "#define EC_FW_WAIT_MIN_US                100000" in s
         and "#define EC_FW_WAIT_MAX_US                110000" in s
+        and "EC_FW_FAN_PROFILE_NORMAL" in s
+        and "EC_FW_FAN_PROFILE_QUIET" in s
+        and "EC_FW_FAN_PROFILE_TURBO" in s
         and "EC_FW_FAN_PROFILE_FULL_SPEED" in s
         and "static int asus_ec_set_native_fan_profile" in s
+        and 'quiet balanced performance full-speed' in s
     )
 
 
@@ -37,66 +41,37 @@ def final_missing() -> list[str]:
     required = (
         "#define EC_FW_WAIT_MIN_US                100000",
         "#define EC_FW_WAIT_MAX_US                110000",
+        "EC_FW_FAN_PROFILE_NORMAL",
+        "EC_FW_FAN_PROFILE_QUIET",
+        "EC_FW_FAN_PROFILE_TURBO",
+        "EC_FW_FAN_PROFILE_FULL_SPEED",
         "EC_NATIVE_FAN1_RPM_LO",
+        "ASUS_EC_PROFILE_FULL_SPEED",
+        "static int asus_ec_set_native_fan_profile",
+        "static int asus_ec_native_profile_marker",
+        'return sysfs_emit(buf, "quiet balanced performance full-speed\\n");',
+        "PLATFORM_PROFILE_MAX_POWER",
+    )
+    missing = [token for token in required if token not in s]
+
+    # Named power profiles must be pure ASUS firmware modes. Manual PWM remains
+    # available only through the explicit CUSTOM hwmon/control path.
+    forbidden = (
         "A14_PROFILE_POLICY_V2",
-        "A14_PROFILE_EMERGENCY_NOTIFY",
-        "A14_PROFILE_TRANSACTIONAL",
         "A14_QUIET_FANLESS",
         "A14_THERMAL_SAFETY",
         "A14_QOS_COMPLETE",
         "ASUS_EC_PROFILE_POWER_SAVER",
-        "PLATFORM_PROFILE_MAX_POWER",
+        "quiet_max_percent",
+        "power_saver_max_percent",
+        "quiet_fan_pwm",
         "asus_ec_enter_manual_locked(ec, 255)",
-        "asus_ec_enter_manual_locked(ec, quiet_fan_pwm)",
-        "asus_ec_freq_qos_retry_attach",
-        "asus_ec_freq_qos_available_policies",
-        '"cpuss2-btm-thermal"',
     )
-    return [token for token in required if token not in s]
+    missing.extend(f"forbidden:{token}" for token in forbidden if token in s)
+    return missing
 
 
 def compose_ec() -> None:
-    # Resume from the highest completed semantic layer. Newer layers imply that
-    # their historical prerequisites were already materialized in this source.
-    if has("A14_QOS_COMPLETE"):
-        print("a14_qos_complete=current")
-        return
-
-    if has("A14_THERMAL_SAFETY"):
-        print("a14_thermal_safety=current")
-        run("apply-a14-qos-completeness.py")
-        return
-
-    if has("A14_QUIET_FANLESS"):
-        print("a14_quiet_fanless=current")
-        run("apply-a14-thermal-safety.py")
-        run("apply-a14-qos-completeness.py")
-        return
-
-    if has("A14_PROFILE_TRANSACTIONAL"):
-        print("a14_profile_transactional=current")
-        run("apply-a14-quiet-fanless.py")
-        run("apply-a14-thermal-safety.py")
-        run("apply-a14-qos-completeness.py")
-        return
-
-    if has("A14_PROFILE_EMERGENCY_NOTIFY"):
-        print("a14_profile_emergency_notify=current")
-        run("apply-a14-profile-transactional.py")
-        run("apply-a14-quiet-fanless.py")
-        run("apply-a14-thermal-safety.py")
-        run("apply-a14-qos-completeness.py")
-        return
-
-    if has("A14_PROFILE_POLICY_V2"):
-        print("a14_profile_policy_v2=current")
-        run("apply-a14-profile-emergency-notify.py")
-        run("apply-a14-profile-transactional.py")
-        run("apply-a14-quiet-fanless.py")
-        run("apply-a14-thermal-safety.py")
-        run("apply-a14-qos-completeness.py")
-        return
-
     if has("static int asus_ec_force_auto_locked"):
         print("a14_ec_hardening=current")
     else:
@@ -115,13 +90,6 @@ def compose_ec() -> None:
     else:
         run("apply-a14-native-fan-telemetry.py")
 
-    run("apply-a14-profile-policy-v2.py")
-    run("apply-a14-profile-emergency-notify.py")
-    run("apply-a14-profile-transactional.py")
-    run("apply-a14-quiet-fanless.py")
-    run("apply-a14-thermal-safety.py")
-    run("apply-a14-qos-completeness.py")
-
 
 def main() -> None:
     if not SOURCE.is_file():
@@ -134,6 +102,7 @@ def main() -> None:
     if missing:
         raise SystemExit("a14_ec_stack=incomplete: " + ", ".join(missing))
 
+    print("a14_ec_native_profiles=normal,quiet,turbo,full-speed")
     print("a14_ec_stack=current")
 
 
