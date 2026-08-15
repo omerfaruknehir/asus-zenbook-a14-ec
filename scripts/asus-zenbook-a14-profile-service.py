@@ -5,9 +5,9 @@ Profiles are ordered Whisper < Quiet < Normal < Turbo < Full Speed. The four
 ASUS modes are direct firmware modes. Whisper is acoustic-first: the kernel
 controls CPU/fans, while this root service applies a matching GPU devfreq cap.
 
-Kernel profile changes use sysfs_notify(); this service watches the profile and
-Whisper-level sysfs attributes for POLLPRI so Fn+F changes reach GNOME without
-a one-second polling delay. A slow timer remains only as a recovery fallback.
+Kernel profile changes use sysfs_notify(); kernfs reports those changes as
+POLLPRI|POLLERR, so both bits are treated as a change notification here. Only
+HUP/NVAL terminate a watch. A slow timer remains solely as recovery fallback.
 """
 
 from __future__ import annotations
@@ -34,7 +34,12 @@ WHISPER_LEVEL_PATH = Path("/sys/devices/platform/asus_zenbook_a14_ec/whisper_lev
 GPU_STATE_PATH = Path("/run/asus-zenbook-a14-ec/whisper-gpu.json")
 PROFILES = ("whisper", "quiet", "normal", "turbo", "full-speed")
 GPU_PERCENT = {0: 60, 1: 45, 2: 30, 3: 30}
-SYSFS_WATCH_CONDITION = GLib.IO_PRI | GLib.IO_ERR | GLib.IO_HUP
+# kernfs_fop_poll() intentionally reports EPOLLERR together with EPOLLPRI
+# when a sysfs notification counter changes. IO_ERR is therefore data here,
+# not a fatal descriptor condition.
+SYSFS_CHANGE_CONDITION = GLib.IO_PRI | GLib.IO_ERR
+SYSFS_FATAL_CONDITION = GLib.IO_HUP | GLib.IO_NVAL
+SYSFS_WATCH_CONDITION = SYSFS_CHANGE_CONDITION | SYSFS_FATAL_CONDITION
 
 
 class A14Error(dbus.DBusException):
@@ -138,14 +143,14 @@ class ProfileService(dbus.service.Object):
         fd: int,
         path: str,
     ) -> bool:
-        if condition & GLib.IO_PRI:
+        if condition & SYSFS_CHANGE_CONDITION:
             try:
                 self._prime_sysfs_fd(fd)
             except OSError as exc:
                 print(f"profile-service: cannot acknowledge {path}: {exc}", file=sys.stderr)
                 return False
             self._sync_state()
-        if condition & (GLib.IO_ERR | GLib.IO_HUP):
+        if condition & SYSFS_FATAL_CONDITION:
             print(f"profile-service: sysfs watch ended: {path}", file=sys.stderr)
             return False
         return True
