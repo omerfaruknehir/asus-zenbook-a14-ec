@@ -40,16 +40,48 @@ target=$(( max * percent / 100 ))
 target=$(( min + ((target - min + step / 2) / step) * step ))
 (( target > max )) && target=$max
 
+gate=
+for path in /sys/bus/platform/drivers/i2c-qcom-cci/*/hm1092_ir/force_off; do
+  [[ -e "$path" ]] || continue
+  gate=$path
+  break
+done
+
 echo "flash=$flash torch_range=${min}..${max} step=$step target=${target}uA"
-cleanup() { sudo v4l2-ctl -d "$flash" --set-ctrl=led_mode=0 >/dev/null 2>&1 || true; }
+echo "force_off_gate=${gate:-not-found}"
+
+cleanup() {
+  sudo v4l2-ctl -d "$flash" --set-ctrl=led_mode=0 >/dev/null 2>&1 || true
+  if [[ -n "$gate" ]]; then
+    printf '1\n' | sudo tee "$gate" >/dev/null 2>&1 || true
+  fi
+}
 trap cleanup EXIT INT TERM
+
+# Establish a known-safe OFF state first. force_off=1 is the HM1092 immediate
+# LOW gate. It must be released for continuous Torch because no synchronized
+# frame-window operation exists to override it.
+if [[ -n "$gate" ]]; then
+  printf '1\n' | sudo tee "$gate" >/dev/null
+fi
 sudo v4l2-ctl -d "$flash" --set-ctrl=led_mode=0
 sudo v4l2-ctl -d "$flash" --set-ctrl=intensity_torch_mode="$target"
+if [[ -n "$gate" ]]; then
+  printf '0\n' | sudo tee "$gate" >/dev/null
+fi
 sudo v4l2-ctl -d "$flash" --set-ctrl=led_mode=2
+
+sleep 0.20
+echo "Torch readback after 200 ms:"
 v4l2-ctl -d "$flash" --get-ctrl=led_mode,intensity_torch_mode
+if [[ -n "$gate" ]]; then
+  printf 'force_off=' && cat "$gate"
+fi
 
 echo "Torch is enabled for ${duration}s"
 sleep "$duration"
+echo "Torch readback before shutdown:"
+v4l2-ctl -d "$flash" --get-ctrl=led_mode,intensity_torch_mode
 cleanup
 trap - EXIT INT TERM
 echo "A14_IR_TORCH_SMOKE=PASS"
