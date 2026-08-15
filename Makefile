@@ -40,6 +40,9 @@ gnome-native-install:
 gnome-validate:
 	sh ./scripts/a14-gnome-profile-validation.sh
 
+quiet-fanless-validate:
+	sudo sh ./scripts/a14-quiet-fanless-validation.sh
+
 quiet-emergency-validate:
 	sudo sh ./scripts/a14-quiet-emergency-validation.sh
 
@@ -62,4 +65,4 @@ aos-firmware-verify:
 dmesg:
 	dmesg --ctime | grep -E 'asus_zenbook_a14_ec|hid_asus_zenbook_a14_ec|asus::kbd_backlight|Fn-lock' | tail -n 80
 
-.PHONY: all modules prepare mainline-check clean load-hid load-ec unload-ec reload-ec install-deb deb gnome-native-install gnome-validate quiet-emergency-validate unify-normal-dtb aos-probe aos-module aos-module-clean aos-firmware-verify dmesg
+.PHONY: all modules prepare mainline-check clean load-hid load-ec unload-ec reload-ec install-deb deb gnome-native-install gnome-validate quiet-fanless-validate quiet-emergency-validate unify-normal-dtb aos-probe aos-module aos-module-clean aos-firmware-verify dmesg
