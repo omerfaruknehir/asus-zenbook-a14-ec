@@ -20,7 +20,9 @@ jobs:
           bash -n scripts/a14-ir-torch-smoke.sh \
             scripts/a14-apply-aegis-ir-torch-fix.sh \
             scripts/a14-hotfix-installed-aegis-ir-torch.sh
-          sh -n scripts/a14-kbuild-compat.sh install.sh scripts/build-deb.sh
+          sh -n scripts/a14-kbuild-compat.sh install.sh scripts/build-deb.sh \
+            scripts/a14-verify-meter-icons.sh
+          bash -n scripts/a14-mesa-26.2-system.sh
           grep -q 'same_gendwarf_sources' scripts/a14-kbuild-compat.sh
           grep -q 'gendwarfksyms=\$gd_override' scripts/a14-kbuild-compat.sh
           grep -q 'a14-kbuild-compat.sh' dkms.conf
@@ -31,6 +33,7 @@ jobs:
           grep -q 'intensity_torch_mode' userspace/aegis-hello/patches/aegis-hello-0.8.3-v4l2-torch-runtime.patch
           grep -q 'modprobe asus_zenbook_a14_ec' scripts/asus-zenbook-a14-ec-load
           grep -q 'modprobe hid_asus_ec' scripts/asus-zenbook-a14-ec-load
+          sh scripts/a14-verify-meter-icons.sh
 
       - name: Validate DKMS relative build directory handling
         shell: bash
@@ -74,7 +77,8 @@ jobs:
           for mode in Whisper Quiet Normal Turbo 'Full Speed'; do
             grep -Fq "$mode" scripts/a14-gnome-native-five-profile.py
           done
-          grep -Fq '+a14.3' scripts/a14-gnome-native-five-profile.py
+          grep -Fq 'LOCAL_REVISION = "+a14.4"' scripts/a14-gnome-native-five-profile.py
+          grep -Fq '"--reinstall"' scripts/a14-gnome-native-five-profile.py
           grep -Fq 'NATIVE_GNOME_MARKER = Path("/usr/share/asus-zenbook-a14-ec/native-gnome-five-profile")' \
             scripts/asus-zenbook-a14-ppd-bridge.py
           grep -Fq 'FIVE_PROFILE_ORDER = ("power-saver", "quiet", "balanced", "performance", "full-speed")' \
