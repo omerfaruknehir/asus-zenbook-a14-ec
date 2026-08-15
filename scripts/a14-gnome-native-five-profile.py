@@ -36,6 +36,7 @@ WORK = Path.home() / "Downloads" / "a14-gnome-five-profile-build"
 ICON_DIR = REPO / "userspace/gnome/icons"
 NATIVE_UI_MARKER = Path("/usr/share/asus-zenbook-a14-ec/native-gnome-five-profile")
 EXTENSION_UUID = "asus-a14-modes@omerfaruknehir"
+LOCAL_REVISION = "+a14.4"
 TARGET_PACKAGES = {
     "gnome-shell",
     "gnome-shell-common",
@@ -134,7 +135,6 @@ def patch_shell_semantic(src: Path) -> None:
         "shell-quiet-profile",
     )
 
-    # Keep PPD wire names standard while presenting the actual A14 modes.
     replacements = (
         ("name: C_('Power profile', 'Performance')", "name: C_('Power profile', 'Turbo')", "shell-turbo-label"),
         ("name: C_('Power profile', 'Balanced')", "name: C_('Power profile', 'Normal')", "shell-normal-label"),
@@ -352,14 +352,12 @@ cc_power_profile_to_str (CcPowerProfile profile)
 
 def localize_version(src: Path) -> None:
     version = output(["dpkg-parsechangelog", "-S", "Version"], cwd=src)
-    if "+a14.3" in version:
+    if LOCAL_REVISION in version:
         print(f"local_version=current:{version}")
         return
-    # apt source normally yields an unmodified distro source. If a prior +a14
-    # source tree is supplied, strip only the local suffix before adding ours.
     base_version = re.sub(r"\+a14(?:\.\d+)?$", "", version)
     distribution = output(["dpkg-parsechangelog", "-S", "Distribution"], cwd=src) or "UNRELEASED"
-    new_version = base_version + "+a14.3"
+    new_version = base_version + LOCAL_REVISION
     env = os.environ.copy()
     env.setdefault("DEBFULLNAME", "ASUS Zenbook A14 Linux support")
     env.setdefault("DEBEMAIL", "omerfaruknehir@gmail.com")
@@ -407,7 +405,8 @@ def install_native_marker() -> None:
     marker.write_text(
         "ASUS Zenbook A14 native GNOME five-mode UI\n"
         "modes=whisper,quiet,normal,turbo,full-speed\n"
-        "ppd=power-saver,quiet,balanced,performance,full-speed\n",
+        "ppd=power-saver,quiet,balanced,performance,full-speed\n"
+        f"revision={LOCAL_REVISION}\n",
         encoding="utf-8",
     )
     run(["sudo", "install", "-D", "-m", "0644", str(marker), str(NATIVE_UI_MARKER)])
@@ -473,13 +472,17 @@ def main() -> int:
     if missing:
         raise RuntimeError("missing built packages: " + ", ".join(sorted(missing)))
 
-    run(["sudo", "apt-get", "install", "-y", *[str(d) for d in debs]])
+    # Local development rebuilds can carry the same distro base version. Force
+    # installation of the freshly built .debs so GNOME's bundled JS/resource
+    # payload cannot stay stale merely because APT already has that version.
+    run(["sudo", "apt-get", "install", "-y", "--reinstall", *[str(d) for d in debs]])
     install_native_marker()
     enable_osd_extension()
     run(["sudo", "systemctl", "restart", "asus-zenbook-a14-ppd-bridge.service"], check=False)
     run(["sudo", "systemctl", "restart", "asus-zenbook-a14-profile.service"], check=False)
 
     print("A14_GNOME_NATIVE_FIVE_PROFILE_INSTALL=PASS")
+    print(f"native_gnome_revision={LOCAL_REVISION}")
     print("single_power_mode_control=true")
     print("gnome_quick_settings_modes=Whisper,Quiet,Normal,Turbo,Full Speed")
     print("gnome_settings_modes=Whisper,Quiet,Normal,Turbo,Full Speed")
