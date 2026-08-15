@@ -19,6 +19,10 @@ jobs:
           bash -n scripts/a14-ir-torch-smoke.sh \
             scripts/a14-apply-aegis-ir-torch-fix.sh \
             scripts/a14-hotfix-installed-aegis-ir-torch.sh
+          sh -n scripts/a14-kbuild-compat.sh install.sh scripts/build-deb.sh
+          grep -q 'same_gendwarf_sources' scripts/a14-kbuild-compat.sh
+          grep -q 'gendwarfksyms=\$gd_override' scripts/a14-kbuild-compat.sh
+          grep -q 'a14-kbuild-compat.sh' dkms.conf
           (cd desktop/resources/patches && sha256sum -c SHA256SUMS)
           (cd userspace/aegis-hello/patches && sha256sum -c SHA256SUMS)
           grep -q 'led_mode=2' userspace/aegis-hello/patches/aegis-hello-0.8.3-v4l2-torch.patch
@@ -43,6 +47,8 @@ jobs:
           ec="$src/asus_zenbook_a14_ec.c"
           hid="$src/hid_asus_ec.c"
 
+          test -x "$src/scripts/a14-kbuild-compat.sh"
+          grep -q 'a14-kbuild-compat.sh' "$src/dkms.conf"
           grep -q '#define EC_FW_FAN_PROFILE_NORMAL         0x01' "$ec"
           grep -q '#define EC_FW_FAN_PROFILE_QUIET          0x02' "$ec"
           grep -q '#define EC_FW_FAN_PROFILE_TURBO          0x04' "$ec"
