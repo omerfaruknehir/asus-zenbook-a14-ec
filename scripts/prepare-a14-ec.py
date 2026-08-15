@@ -50,7 +50,6 @@ def final_missing() -> list[str]:
         "EC_FW_FAN_PROFILE_QUIET",
         "EC_FW_FAN_PROFILE_TURBO",
         "EC_FW_FAN_PROFILE_FULL_SPEED",
-        "EC_NATIVE_FAN1_RPM_LO",
         "PLATFORM_PROFILE_MAX_POWER",
         "A14_NATIVE_MODE_NAMES_HOTKEY",
         "A14_WHISPER_MODE",
@@ -60,11 +59,10 @@ def final_missing() -> list[str]:
         "int asus_a14_cycle_native_profile(void);\n\nint asus_a14_cycle_native_profile(void)",
         "EXPORT_SYMBOL_GPL(asus_a14_cycle_native_profile)",
         "DEVICE_ATTR_RO(whisper_level)",
+        "*value = (long)raw * EC_TACH_RPM_MULT;",
     )
     missing = [token for token in required if token not in s]
 
-    # The four ASUS modes remain pure firmware modes. Old synthetic named
-    # policies must not leak back in; Whisper is the sole synthetic policy.
     forbidden = (
         "A14_PROFILE_POLICY_V2",
         "A14_QUIET_FANLESS",
@@ -74,6 +72,9 @@ def final_missing() -> list[str]:
         "power_saver_max_percent",
         "quiet_fan_pwm",
         "asus_ec_enter_manual_locked(ec, 255)",
+        "EC_NATIVE_FAN1_RPM_LO",
+        "EC_NATIVE_FAN1_RPM_HI",
+        "asus_ec_read_native_fan1_rpm",
     )
     missing.extend(f"forbidden:{token}" for token in forbidden if token in s)
     return missing
@@ -91,8 +92,6 @@ def ensure_export_prototype() -> None:
     if definition not in s:
         raise SystemExit("Fn+F cycle definition missing")
 
-    # Keep the final DKMS source self-contained: installed /usr/src does not
-    # need a repository-only transform just to repair an exported prototype.
     s = s.replace(prototype + "\n\n", "")
     if s.count(definition) != 1:
         raise SystemExit(f"Fn+F cycle definition count={s.count(definition)}")
@@ -112,9 +111,6 @@ def ensure_math64_header() -> None:
         print("a14_whisper_math64=current")
         return
 
-    # Whisper uses div_u64() for percentage-based CPU caps. Linux 7.1 keeps
-    # div_u64() in linux/math64.h; relying on incidental architecture includes
-    # can compile on one CI host and fail on ARM64.
     anchor = "#include <linux/kernel.h>\n"
     if s.count(anchor) != 1:
         raise SystemExit("kernel include anchor missing for math64")
@@ -124,8 +120,6 @@ def ensure_math64_header() -> None:
 
 
 def compose_ec() -> None:
-    # Installed DKMS sources are packaged after composition. Do not require the
-    # repository-only transformer scripts again when all final markers exist.
     if has("A14_WHISPER_MODE") and has("A14_NATIVE_MODE_NAMES_HOTKEY"):
         print("a14_ec_composed=current")
         ensure_export_prototype()
@@ -145,10 +139,9 @@ def compose_ec() -> None:
     run("apply-a14-native-hardening-compat.py")
     run("apply-a14-native-max-power.py")
 
-    if has("EC_NATIVE_FAN1_RPM_LO"):
-        print("a14_native_fan_telemetry=current")
-    else:
-        run("apply-a14-native-fan-telemetry.py")
+    # Validate/restore the calibrated selector/tach path and remove the
+    # discarded direct c6:18/c6:19 FAN1 telemetry experiment if present.
+    run("apply-a14-native-fan-telemetry.py")
 
     run("apply-a14-native-mode-names-hotkey.py")
     run("apply-a14-whisper.py")
@@ -190,6 +183,7 @@ def main() -> None:
     print("a14_profiles=whisper,quiet,normal,turbo,full-speed")
     print("a14_native_profiles=quiet,normal,turbo,full-speed")
     print("a14_fn_f_cycle=whisper,quiet,normal,turbo,full-speed")
+    print("a14_fan_telemetry=selector-calibrated")
     print("a14_ec_stack=current")
 
 
