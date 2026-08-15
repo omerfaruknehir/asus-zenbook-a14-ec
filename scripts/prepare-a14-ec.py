@@ -149,12 +149,47 @@ def compose_ec() -> None:
     ensure_math64_header()
 
 
+def fnlock_complete() -> bool:
+    required = (
+        "struct work_struct fnlock_work;",
+        "atomic_t desired_fn_lock;",
+        "static int asus_hid_set_fnlock_hw",
+        "schedule_work(&data->fnlock_work);",
+        "INIT_WORK(&data->fnlock_work, asus_fnlock_work);",
+    )
+    return all(hid_has(token) for token in required)
+
+
+def profile_hotkey_complete() -> bool:
+    required = (
+        "A14_HID_NATIVE_PROFILE_HOTKEY",
+        "struct work_struct profile_work;",
+        "asus_a14_cycle_native_profile();",
+        "schedule_work(&data->profile_work);",
+    )
+    return all(hid_has(token) for token in required)
+
+
 def compose_hid() -> None:
-    if hid_has("A14_HID_NATIVE_PROFILE_HOTKEY"):
+    fnlock = fnlock_complete()
+    profile = profile_hotkey_complete()
+
+    if fnlock and profile:
         print("a14_hid_composed=current")
         return
-    run("apply-a14-hid-fnlock.py")
-    run("apply-a14-hid-profile-hotkey.py")
+
+    # A profile-hotkey transform is supposed to be layered on top of Fn-lock.
+    # Never silently ship an old/partial composed source where Fn+F exists but
+    # Fn+Esc was skipped.
+    if profile and not fnlock:
+        raise SystemExit(
+            "a14_hid_stack=partial: Fn+F profile hotkey exists but Fn-lock composition is missing"
+        )
+
+    if not fnlock:
+        run("apply-a14-hid-fnlock.py")
+    if not profile:
+        run("apply-a14-hid-profile-hotkey.py")
 
 
 def main() -> None:
@@ -175,6 +210,9 @@ def main() -> None:
         "A14_HID_NATIVE_PROFILE_HOTKEY",
         "asus_a14_cycle_native_profile();",
         "schedule_work(&data->profile_work);",
+        "static int asus_hid_set_fnlock_hw",
+        "schedule_work(&data->fnlock_work);",
+        "INIT_WORK(&data->fnlock_work, asus_fnlock_work);",
     )
     hid_missing = [token for token in hid_required if token not in hid]
     if hid_missing:
@@ -183,6 +221,7 @@ def main() -> None:
     print("a14_profiles=whisper,quiet,normal,turbo,full-speed")
     print("a14_native_profiles=quiet,normal,turbo,full-speed")
     print("a14_fn_f_cycle=whisper,quiet,normal,turbo,full-speed")
+    print("a14_fn_lock=kernel-hid")
     print("a14_fan_telemetry=selector-calibrated")
     print("a14_ec_stack=current")
 
