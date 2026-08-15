@@ -1,5 +1,6 @@
 #!/bin/sh
 
+repo=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 ok=1
 
 for cmd in sudo apt-get python3; do
@@ -14,13 +15,13 @@ if [ "$ok" -eq 1 ]; then
 fi
 
 if [ "$ok" -eq 1 ]; then
-    python3 ./scripts/a14-gnome-native-five-profile-clean-ui.py || ok=0
+    python3 "$repo/scripts/a14-gnome-native-five-profile-clean-ui.py" || ok=0
 fi
 
 if [ "$ok" -eq 1 ]; then
     echo "A14_GNOME_NATIVE_INSTALL_WRAPPER=PASS"
-else
-    echo "A14_GNOME_NATIVE_INSTALL_WRAPPER=FAIL" >&2
+    exit 0
 fi
 
-true
+echo "A14_GNOME_NATIVE_INSTALL_WRAPPER=FAIL" >&2
+exit 1
