@@ -116,13 +116,12 @@ class ProfileService(dbus.service.Object):
             self._prime_sysfs_fd(fd)
             channel = GLib.IOChannel.unix_new(fd)
             channel.set_encoding(None)
-            source_id = GLib.io_add_watch(
-                channel,
-                GLib.PRIORITY_DEFAULT,
+            source_id = channel.add_watch(
                 SYSFS_WATCH_CONDITION,
                 self._on_sysfs_event,
                 fd,
                 str(path),
+                priority=GLib.PRIORITY_DEFAULT,
             )
             self._sysfs_watches.append((fd, channel, source_id))
             print(f"profile-service: event watch ready: {path}", flush=True)
@@ -194,8 +193,6 @@ class ProfileService(dbus.service.Object):
             max_path = node / "max_freq"
             if path not in self._gpu_originals:
                 try:
-                    # Use the hardware table maximum rather than inheriting a
-                    # stale cap left behind by an earlier service instance.
                     freqs = self._frequencies(node)
                     current_max = int(max_path.read_text().strip())
                     self._gpu_originals[path] = max(freqs) if freqs else current_max
@@ -306,10 +303,7 @@ class ProfileService(dbus.service.Object):
         self._restore_gpu()
         for fd, _channel, source_id in self._sysfs_watches:
             if source_id:
-                try:
-                    GLib.source_remove(source_id)
-                except GLib.Error:
-                    pass
+                GLib.source_remove(source_id)
             try:
                 os.close(fd)
             except OSError:
