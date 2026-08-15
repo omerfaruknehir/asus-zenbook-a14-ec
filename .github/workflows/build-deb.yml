@@ -23,12 +23,34 @@ jobs:
           grep -q 'same_gendwarf_sources' scripts/a14-kbuild-compat.sh
           grep -q 'gendwarfksyms=\$gd_override' scripts/a14-kbuild-compat.sh
           grep -q 'a14-kbuild-compat.sh' dkms.conf
+          ! grep -q 'A14_MODULE_DIR=\.' dkms.conf
           (cd desktop/resources/patches && sha256sum -c SHA256SUMS)
           (cd userspace/aegis-hello/patches && sha256sum -c SHA256SUMS)
           grep -q 'led_mode=2' userspace/aegis-hello/patches/aegis-hello-0.8.3-v4l2-torch.patch
           grep -q 'intensity_torch_mode' userspace/aegis-hello/patches/aegis-hello-0.8.3-v4l2-torch-runtime.patch
           grep -q 'modprobe asus_zenbook_a14_ec' scripts/asus-zenbook-a14-ec-load
           grep -q 'modprobe hid_asus_ec' scripts/asus-zenbook-a14-ec-load
+      - name: Validate DKMS relative build directory handling
+        shell: bash
+        run: |
+          tmp=$(mktemp -d)
+          mkdir -p "$tmp/kernel" "$tmp/module" "$tmp/bin"
+          touch "$tmp/kernel/Makefile"
+          cat >"$tmp/bin/make" <<'EOF'
+          #!/bin/sh
+          printf '%s\n' "$@" >"$A14_TEST_MAKE_ARGS"
+          EOF
+          chmod +x "$tmp/bin/make"
+          (
+            cd "$tmp/module"
+            A14_MODULE_DIR=. \
+            A14_TEST_MAKE_ARGS="$tmp/args" \
+            KDIR="$tmp/kernel" \
+            PATH="$tmp/bin:$PATH" \
+            sh "$GITHUB_WORKSPACE/scripts/a14-kbuild-compat.sh" test-kernel
+          )
+          grep -Fxq "M=$tmp/module" "$tmp/args"
+          ! grep -Fxq 'M=.' "$tmp/args"
       - name: Validate Resources CPU frequency repair
         run: |
           python3 -m py_compile desktop/resources/repair-a14-cpu-frequency.py
@@ -49,6 +71,7 @@ jobs:
 
           test -x "$src/scripts/a14-kbuild-compat.sh"
           grep -q 'a14-kbuild-compat.sh' "$src/dkms.conf"
+          ! grep -q 'A14_MODULE_DIR=\.' "$src/dkms.conf"
           grep -q '#define EC_FW_FAN_PROFILE_NORMAL         0x01' "$ec"
           grep -q '#define EC_FW_FAN_PROFILE_QUIET          0x02' "$ec"
           grep -q '#define EC_FW_FAN_PROFILE_TURBO          0x04' "$ec"
