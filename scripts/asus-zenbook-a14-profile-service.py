@@ -4,6 +4,10 @@
 Profiles are ordered Whisper < Quiet < Normal < Turbo < Full Speed. The four
 ASUS modes are direct firmware modes. Whisper is acoustic-first: the kernel
 controls CPU/fans, while this root service applies a matching GPU devfreq cap.
+
+Kernel profile changes use sysfs_notify(); this service watches the profile and
+Whisper-level sysfs attributes for POLLPRI so Fn+F changes reach GNOME without
+a one-second polling delay. A slow timer remains only as a recovery fallback.
 """
 
 from __future__ import annotations
@@ -30,6 +34,7 @@ WHISPER_LEVEL_PATH = Path("/sys/devices/platform/asus_zenbook_a14_ec/whisper_lev
 GPU_STATE_PATH = Path("/run/asus-zenbook-a14-ec/whisper-gpu.json")
 PROFILES = ("whisper", "quiet", "normal", "turbo", "full-speed")
 GPU_PERCENT = {0: 60, 1: 45, 2: 30, 3: 30}
+SYSFS_WATCH_CONDITION = GLib.IO_PRI | GLib.IO_ERR | GLib.IO_HUP
 
 
 class A14Error(dbus.DBusException):
@@ -53,11 +58,15 @@ class ProfileService(dbus.service.Object):
         self._gpu_originals = self._load_gpu_state()
         self._last_profile = self._read_profile()
         self._last_whisper_level = self._read_whisper_level()
+        self._sysfs_watches: list[tuple[int, GLib.IOChannel, int]] = []
         if self._last_profile == "whisper":
             self._apply_gpu_whisper(self._last_whisper_level)
         else:
             self._restore_gpu()
-        GLib.timeout_add_seconds(1, self._poll_state)
+        self._add_sysfs_watch(PROFILE_PATH)
+        self._add_sysfs_watch(WHISPER_LEVEL_PATH)
+        # Recovery only. Normal profile propagation is event-driven above.
+        GLib.timeout_add_seconds(5, self._poll_state)
 
     def _sender_uid(self, sender: str) -> int:
         try:
@@ -92,6 +101,55 @@ class ProfileService(dbus.service.Object):
             return max(0, min(3, int(WHISPER_LEVEL_PATH.read_text().strip())))
         except (OSError, ValueError):
             return 3
+
+    @staticmethod
+    def _prime_sysfs_fd(fd: int) -> None:
+        os.lseek(fd, 0, os.SEEK_SET)
+        try:
+            os.read(fd, 4096)
+        except BlockingIOError:
+            pass
+
+    def _add_sysfs_watch(self, path: Path) -> None:
+        try:
+            fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+            self._prime_sysfs_fd(fd)
+            channel = GLib.IOChannel.unix_new(fd)
+            channel.set_encoding(None)
+            source_id = GLib.io_add_watch(
+                channel,
+                GLib.PRIORITY_DEFAULT,
+                SYSFS_WATCH_CONDITION,
+                self._on_sysfs_event,
+                fd,
+                str(path),
+            )
+            self._sysfs_watches.append((fd, channel, source_id))
+            print(f"profile-service: event watch ready: {path}", flush=True)
+        except (OSError, GLib.Error) as exc:
+            print(
+                f"profile-service: cannot watch {path}; 5s fallback polling remains: {exc}",
+                file=sys.stderr,
+            )
+
+    def _on_sysfs_event(
+        self,
+        _channel: GLib.IOChannel,
+        condition: GLib.IOCondition,
+        fd: int,
+        path: str,
+    ) -> bool:
+        if condition & GLib.IO_PRI:
+            try:
+                self._prime_sysfs_fd(fd)
+            except OSError as exc:
+                print(f"profile-service: cannot acknowledge {path}: {exc}", file=sys.stderr)
+                return False
+            self._sync_state()
+        if condition & (GLib.IO_ERR | GLib.IO_HUP):
+            print(f"profile-service: sysfs watch ended: {path}", file=sys.stderr)
+            return False
+        return True
 
     @staticmethod
     def _gpu_nodes() -> list[Path]:
@@ -136,7 +194,11 @@ class ProfileService(dbus.service.Object):
             max_path = node / "max_freq"
             if path not in self._gpu_originals:
                 try:
-                    self._gpu_originals[path] = int(max_path.read_text().strip())
+                    # Use the hardware table maximum rather than inheriting a
+                    # stale cap left behind by an earlier service instance.
+                    freqs = self._frequencies(node)
+                    current_max = int(max_path.read_text().strip())
+                    self._gpu_originals[path] = max(freqs) if freqs else current_max
                     changed = True
                 except (OSError, ValueError):
                     continue
@@ -172,7 +234,7 @@ class ProfileService(dbus.service.Object):
         except OSError:
             pass
 
-    def _poll_state(self) -> bool:
+    def _sync_state(self) -> None:
         try:
             profile = self._read_profile()
         except A14Error:
@@ -188,6 +250,9 @@ class ProfileService(dbus.service.Object):
         elif self._gpu_originals:
             self._restore_gpu()
         self._last_whisper_level = level
+
+    def _poll_state(self) -> bool:
+        self._sync_state()
         return GLib.SOURCE_CONTINUE
 
     @dbus.service.method(INTERFACE, in_signature="", out_signature="s")
@@ -239,6 +304,17 @@ class ProfileService(dbus.service.Object):
 
     def shutdown(self) -> None:
         self._restore_gpu()
+        for fd, _channel, source_id in self._sysfs_watches:
+            if source_id:
+                try:
+                    GLib.source_remove(source_id)
+                except GLib.Error:
+                    pass
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        self._sysfs_watches.clear()
 
 
 def main() -> int:
