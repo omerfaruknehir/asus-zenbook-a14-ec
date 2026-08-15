@@ -29,7 +29,7 @@ show_status()
     else
         echo "battery_sysfs=missing"
     fi
-    echo "loaded_qcom_battmgr=$(lsmod | awk '$1 == \"qcom_battmgr\" {print $1}' | head -n1)"
+    echo "loaded_qcom_battmgr=$(lsmod | awk '$1 == "qcom_battmgr" {print $1}' | head -n1)"
     echo "stock_module=$(modinfo -n qcom_battmgr 2>/dev/null || true)"
     if [ -f "$work/module/qcom_battmgr.ko" ]; then
         echo "test_module=$work/module/qcom_battmgr.ko"
@@ -81,8 +81,23 @@ build_test_module()
         return 1
     fi
 
+    echo "Checking experimental upstream disable patch against v$base"
+    if ! patch --dry-run --batch -d "$work/source" -p1 --forward <"$patch_file"; then
+        echo "ERROR: experimental patch does not apply cleanly to v$base" >&2
+        return 1
+    fi
+
     echo "Applying experimental upstream disable patch"
-    patch -d "$work/source" -p1 --forward <"$patch_file" || return 1
+    patch --batch -d "$work/source" -p1 --forward <"$patch_file" || return 1
+
+    if ! grep -Fq '.enable = cpu_to_le32(enable)' "$work/source/drivers/power/supply/qcom_battmgr.c"; then
+        echo "ERROR: patched source does not contain firmware enable/disable control" >&2
+        return 1
+    fi
+    if ! grep -Fq 'bool enable = start_soc != 0;' "$work/source/drivers/power/supply/qcom_battmgr.c"; then
+        echo "ERROR: patched source does not recognize UPower start=0 as disable" >&2
+        return 1
+    fi
 
     cp "$work/source/drivers/power/supply/qcom_battmgr.c" "$work/module/qcom_battmgr.c" || return 1
     printf '%s\n' 'obj-m += qcom_battmgr.o' >"$work/module/Makefile"
