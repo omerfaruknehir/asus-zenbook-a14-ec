@@ -46,9 +46,9 @@ printf '%s\n' "$CAM_LIST"
 IR_INDEX=$(
   printf '%s\n' "$CAM_LIST" |
     awk '/^[[:space:]]*[0-9]+:.*camera@24/ {
-      index = $1
-      sub(/:$/, "", index)
-      print index
+      idx = $1
+      sub(/:$/, "", idx)
+      print idx
       exit
     }'
 )
@@ -100,9 +100,6 @@ echo "===== RUN THE SAME OPTICAL A/B/C CONTROLS WITH HM1092 ACTIVE ====="
 echo "This is the missing condition from the previous standalone test."
 echo "Use a camera to observe the emitter; do not look directly into it."
 
-# The existing test restores all LED/V4L2 controls after each run. Running it
-# here while the HM1092 stream is alive tells us whether camera pipeline power /
-# media ownership is the prerequisite that the Manual Camera app satisfies.
 bash "$DIR/a14-ir-output-ab-test.sh" all || {
   rc=$?
   echo "A14_IR_STREAMED_INNER_TEST_RC=$rc"
