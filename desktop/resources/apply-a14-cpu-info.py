@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Apply the ASUS Zenbook A14 / Snapdragon X CPU information fix to Resources.
+"""Apply ASUS Zenbook A14 / Snapdragon X CPU fixes to Resources.
 
-This is a source-level patcher for nokyan/resources and compatible forks. It
-uses strict structural markers, creates a backup, and emits a unified diff.
-It does not install services, change sysfs, or add a runtime bridge.
+This source patcher keeps Resources on the Linux CPUFreq policy interface. It
+repairs AArch64 topology/model metadata and makes both live per-core frequency
+and maximum frequency robust on qcom-cpufreq-hw systems where cpuN/cpufreq
+links or hardware-feedback attributes may be incomplete.
 """
 
 from __future__ import annotations
@@ -20,6 +21,7 @@ CPU_RS = Path("src/utils/cpu.rs")
 CPU_PAGE_RS = Path("src/ui/pages/cpu.rs")
 CPU_UI = Path("data/resources/ui/pages/cpu.ui")
 MARKER = "A14_RESOURCES_CPU_INFO_V1"
+FREQ_MARKER = "A14_RESOURCES_CPU_FREQ_V2"
 
 HELPER_BLOCK = r'''
 // A14_RESOURCES_CPU_INFO_V1
@@ -86,29 +88,92 @@ fn linux_cpu_topology(online_cpus: &[usize]) -> (Option<usize>, Option<usize>) {
         (!packages.is_empty()).then_some(packages.len()),
     )
 }
+'''.strip("\n")
+
+FREQ_HELPER_BLOCK = r'''
+// A14_RESOURCES_CPU_FREQ_V2
+fn read_linux_u64<P: AsRef<Path>>(path: P) -> Option<u64> {
+    std::fs::read_to_string(path).ok()?.trim().parse().ok()
+}
+
+fn linux_cpufreq_policy_for_cpu(cpu: usize) -> Option<PathBuf> {
+    // The CPUFreq core normally creates cpuN/cpufreq as a symlink to policyX.
+    // Some ARM64/qcom setups expose the policy directory more reliably than
+    // the per-CPU link, so resolve both forms.
+    let direct = PathBuf::from(format!("/sys/devices/system/cpu/cpu{cpu}/cpufreq"));
+    if direct.is_dir() {
+        return Some(direct);
+    }
+
+    let policies = glob("/sys/devices/system/cpu/cpufreq/policy*").ok()?;
+    for policy in policies.flatten() {
+        let affected = read_linux_cpu_list(policy.join("affected_cpus"));
+        if affected.contains(&cpu) {
+            return Some(policy);
+        }
+
+        let related = read_linux_cpu_list(policy.join("related_cpus"));
+        if related.contains(&cpu) {
+            return Some(policy);
+        }
+    }
+
+    None
+}
+
+fn linux_cpu_frequency_khz(cpu: usize) -> Option<u64> {
+    let policy = linux_cpufreq_policy_for_cpu(cpu)?;
+
+    // Prefer hardware feedback when available. On ARM it can temporarily fail
+    // for an idle CPU, so continue to cpuinfo_cur_freq/scaling_cur_freq instead
+    // of turning the whole row into N/A.
+    for attribute in ["cpuinfo_avg_freq", "cpuinfo_cur_freq", "scaling_cur_freq"] {
+        if let Some(value) = read_linux_u64(policy.join(attribute)).filter(|value| *value > 0) {
+            return Some(value);
+        }
+    }
+
+    None
+}
+
+fn linux_policy_max_khz(policy: &Path) -> Option<u64> {
+    // cpuinfo_max_freq is the hardware maximum. If a driver omits it, prefer
+    // the highest frequency table entry before falling back to scaling_max_freq
+    // (which can be lowered by thermal/QoS policy such as A14 Whisper mode).
+    if let Some(value) = read_linux_u64(policy.join("cpuinfo_max_freq")).filter(|value| *value > 0) {
+        return Some(value);
+    }
+
+    if let Ok(values) = std::fs::read_to_string(policy.join("scaling_available_frequencies")) {
+        if let Some(value) = values
+            .split_whitespace()
+            .filter_map(|value| value.parse::<u64>().ok())
+            .max()
+        {
+            return Some(value);
+        }
+    }
+
+    read_linux_u64(policy.join("scaling_max_freq")).filter(|value| *value > 0)
+}
 
 fn linux_cpu_max_speed(online_cpus: &[usize]) -> Option<f64> {
     let mut max_khz = None;
 
     for cpu in online_cpus {
-        for attribute in ["cpuinfo_max_freq", "scaling_max_freq"] {
-            let path = format!("/sys/devices/system/cpu/cpu{cpu}/cpufreq/{attribute}");
-            if let Ok(value) = std::fs::read_to_string(path) {
-                if let Ok(value) = value.trim().parse::<u64>() {
-                    max_khz = Some(max_khz.map_or(value, |current: u64| current.max(value)));
-                }
+        if let Some(policy) = linux_cpufreq_policy_for_cpu(*cpu) {
+            if let Some(value) = linux_policy_max_khz(&policy) {
+                max_khz = Some(max_khz.map_or(value, |current: u64| current.max(value)));
             }
         }
     }
 
-    if max_khz.is_none() {
-        if let Ok(paths) = glob("/sys/devices/system/cpu/cpufreq/policy*/cpuinfo_max_freq") {
-            for path in paths.flatten() {
-                if let Ok(value) = std::fs::read_to_string(path) {
-                    if let Ok(value) = value.trim().parse::<u64>() {
-                        max_khz = Some(max_khz.map_or(value, |current: u64| current.max(value)));
-                    }
-                }
+    // Also inspect every policy directly. This catches policy directories whose
+    // per-CPU symlinks are absent and policies containing temporarily-offline CPUs.
+    if let Ok(policies) = glob("/sys/devices/system/cpu/cpufreq/policy*") {
+        for policy in policies.flatten() {
+            if let Some(value) = linux_policy_max_khz(&policy) {
+                max_khz = Some(max_khz.map_or(value, |current: u64| current.max(value)));
             }
         }
     }
@@ -158,6 +223,17 @@ APPLY_METHOD = r'''
     }
 '''.strip("\n")
 
+GET_CPU_FREQ = r'''
+pub fn get_cpu_freq(core: usize) -> Result<u64> {
+    trace!("Finding CPU frequency for core {core}…");
+
+    linux_cpu_frequency_khz(core)
+        .with_context(|| format!("unable to read CPUFreq policy frequency for core {core}"))
+        .map(|freq| freq * 1000)
+        .inspect(|freq| trace!("Frequency of core {core}: {freq} Hz"))
+}
+'''.strip("\n")
+
 MICROARCH_XML = '''                    <child>
                       <object class="AdwActionRow" id="microarchitecture">
                         <style>
@@ -205,12 +281,43 @@ def add_cpu_helpers(text: str) -> str:
     derive_marker = "#[derive(Debug, Clone, Default, PartialEq)]\npub struct CpuInfo"
     if derive_marker not in text:
         raise RuntimeError("CpuInfo declaration not found")
-    text = text.replace(derive_marker, HELPER_BLOCK + "\n\n" + derive_marker, 1)
+    return text.replace(derive_marker, HELPER_BLOCK + "\n\n" + derive_marker, 1)
+
+
+def add_frequency_helpers(text: str) -> str:
+    if FREQ_MARKER not in text:
+        # Migrate an already-applied V1 patch, which had a narrower
+        # linux_cpu_max_speed() implementation immediately before CpuInfo.
+        old_max = re.compile(
+            r"\nfn linux_cpu_max_speed\(online_cpus: &\[usize\]\) -> Option<f64> \{.*?\n\}\n(?=\n#\[derive\(Debug, Clone, Default, PartialEq\)\])",
+            re.S,
+        )
+        text, count = old_max.subn("\n", text, count=1)
+        if "fn linux_cpu_max_speed(" in text and count == 0:
+            raise RuntimeError("unable to migrate existing linux_cpu_max_speed helper")
+
+        derive_marker = "#[derive(Debug, Clone, Default, PartialEq)]\npub struct CpuInfo"
+        if derive_marker not in text:
+            raise RuntimeError("CpuInfo declaration not found for frequency helpers")
+        text = text.replace(derive_marker, FREQ_HELPER_BLOCK + "\n\n" + derive_marker, 1)
+
+    # Replace Resources' live-frequency reader with the policy-aware version.
+    start_marker = "pub fn get_cpu_freq(core: usize) -> Result<u64> {"
+    end_marker = "\nfn parse_proc_stat_line"
+    start = text.find(start_marker)
+    end = text.find(end_marker, start)
+    if start < 0 or end < 0:
+        raise RuntimeError("Resources get_cpu_freq function not found")
+    current = text[start:end].rstrip()
+    if current != GET_CPU_FREQ:
+        text = text[:start] + GET_CPU_FREQ + "\n" + text[end:]
+
     return text
 
 
 def patch_cpu_info(text: str) -> str:
     text = add_cpu_helpers(text)
+    text = add_frequency_helpers(text)
 
     struct_start = text.index("pub struct CpuInfo {")
     struct_end = text.index("}\n\nimpl CpuInfo", struct_start)
@@ -256,7 +363,9 @@ def patch_cpu_info(text: str) -> str:
         last_field = "            max_speed,\n"
         if last_field not in parse_block:
             raise RuntimeError("CpuInfo parse result max_speed field not found")
-        parse_block = parse_block.replace(last_field, last_field + "            microarchitecture: None,\n", 1)
+        parse_block = parse_block.replace(
+            last_field, last_field + "            microarchitecture: None,\n", 1
+        )
         text = text[:parse_start] + parse_block + text[parse_end:]
 
     if "fn apply_linux_sysfs(&mut self)" not in text:
@@ -393,7 +502,7 @@ def apply(repo: Path, dry_run: bool) -> int:
         )
 
     if not diffs:
-        print("A14 Resources CPU information fix is already applied.")
+        print("A14 Resources CPU information/frequency fix is already applied.")
         return 0
 
     patch_text = "".join(diffs)
@@ -411,7 +520,7 @@ def apply(repo: Path, dry_run: bool) -> int:
 
     patch_path = repo / f"resources-a14-cpu-info-{timestamp}.patch"
     patch_path.write_text(patch_text)
-    print("Applied A14 CPU information fix.")
+    print("Applied A14 CPU information/frequency fix.")
     print(f"Backup: {backup}")
     print(f"Patch:  {patch_path}")
     return 0
