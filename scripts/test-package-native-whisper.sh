@@ -9,6 +9,12 @@ sh -n install.sh scripts/build-deb.sh scripts/asus-a14-control \
   scripts/asus-zenbook-a14-profile-integration \
   scripts/asus-zenbook-a14-enable-gnome-extension
 
+bash -n \
+  scripts/a14-mainline-check.sh \
+  scripts/a14-mainline-compose.sh \
+  scripts/a14-mainline-scmi-cpufreq-config.sh \
+  scripts/a14-cpufreq-diag.sh
+
 python3 -m py_compile \
   scripts/prepare-a14-ec.py \
   scripts/apply-a14-ec-hardening.py \
@@ -25,13 +31,35 @@ python3 -m py_compile \
   desktop/resources/apply-a14-cpu-info.py \
   desktop/resources/repair-a14-cpu-info.py \
   desktop/resources/repair-a14-cpu-topology.py \
-  desktop/resources/repair-a14-gpu-metrics.py
+  desktop/resources/repair-a14-gpu-metrics.py \
+  desktop/resources/repair-a14-cpu-frequency.py \
+  desktop/resources/test-frequency-repair.py
 
 # Keep the existing desktop/resource regression coverage.
 python3 desktop/resources/test-patcher.py
 python3 desktop/resources/test-repair.py
 python3 desktop/resources/test-topology-repair.py
 python3 desktop/resources/test-gpu-metrics-repair.py
+python3 desktop/resources/test-frequency-repair.py
+
+# X1E/Hamoa CPU DVFS is SCMI Performance over the Qualcomm CPUCP mailbox.
+# The distro loader may use modules, while the mainline build helper forces the
+# same chain built-in so CPUFreq is available before Whisper/desktop policy.
+grep -q 'modprobe qcom_cpucp_mbox' scripts/asus-zenbook-a14-ec-load
+grep -q 'modprobe scmi_transport_mailbox' scripts/asus-zenbook-a14-ec-load
+grep -q 'modprobe scmi_cpufreq' scripts/asus-zenbook-a14-ec-load
+for symbol in \
+  CPU_FREQ CPU_FREQ_STAT CPU_FREQ_GOV_SCHEDUTIL PM_OPP MAILBOX \
+  QCOM_CPUCP_MBOX ARM_SCMI_PROTOCOL ARM_SCMI_TRANSPORT_MAILBOX ARM_SCMI_CPUFREQ; do
+  grep -q "--enable \"\$symbol\"\|--enable \$symbol" scripts/a14-mainline-scmi-cpufreq-config.sh || {
+    echo "missing SCMI CPUFreq config requirement: $symbol" >&2
+    exit 1
+  }
+done
+grep -q 'scmi_dvfs: protocol@13' scripts/a14-mainline-check.sh
+grep -q '<&scmi_dvfs 0>' scripts/a14-mainline-check.sh
+grep -q '<&scmi_dvfs 1>' scripts/a14-mainline-check.sh
+grep -q '<&scmi_dvfs 2>' scripts/a14-mainline-check.sh
 
 version=$(cat VERSION)
 grep -q "PACKAGE_VERSION=\"$version\"" dkms.conf
@@ -135,4 +163,4 @@ grep -q 'A14_HID_NATIVE_PROFILE_HOTKEY' "$src/hid_asus_ec.c"
 grep -Fq 'PROFILES = ("whisper", "quiet", "normal", "turbo", "full-speed")' \
   "$root/usr/libexec/asus-zenbook-a14-profile-service"
 
-echo 'Validation passed: Whisper < Quiet < Normal < Turbo < Full Speed'
+echo 'Validation passed: Whisper < Quiet < Normal < Turbo < Full Speed; X1E SCMI CPUFreq required'
