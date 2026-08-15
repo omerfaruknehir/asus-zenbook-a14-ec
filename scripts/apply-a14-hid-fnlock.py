@@ -2,14 +2,15 @@
 import runpy
 from pathlib import Path
 
-# build-deb.sh already invokes the EC hardener before this packaged preparer.
+# build-deb.sh already invokes the EC composition before this HID transform.
 # When invoked directly from a clean checkout, finish repository-only native EC
-# composition here. Generated DKMS source contains the composed markers and has
-# no runtime dependency on these repository-only transformers.
+# composition here. Do not key this on a particular telemetry experiment: the
+# calibrated selector telemetry intentionally removed the old EC_NATIVE_FAN1_*
+# marker, and using that marker caused an already-composed EC source to be
+# transformed twice.
 ec_path = Path('asus_zenbook_a14_ec.c')
 ec_source = ec_path.read_text()
 if ('EC_FW_FAN_PROFILE_COMMAND' not in ec_source or
-        'EC_NATIVE_FAN1_RPM_LO' not in ec_source or
         'KERNEL_VERSION(6, 19, 0)' not in ec_source):
     transforms = [
         Path('scripts/apply-a14-native-fan-profile.py'),
