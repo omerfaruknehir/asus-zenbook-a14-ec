@@ -142,23 +142,52 @@ driver reported both state transitions. The physical F-row did **not** change.
 
 Therefore the post-reset POWER_ON difference is real but is not sufficient to
 explain Windows-versus-Linux Fn-switch behavior. It must not remain the leading
-fix hypothesis.
+fix hypothesis. Normal builds keep this reinitialization disabled; it remains
+available only as an explicit diagnostic module parameter.
 
-## Platform-description difference now under investigation
+## Windows ACPI ECKB versus Linux Device Tree
 
-Windows enumerates this physical unit as ACPI `QTEC0001` (`\\_SB.ECKB`) through
-Microsoft `hidi2c.inf`. Linux 7.1.5 enumerates the same `0b05:0220` endpoint as
-a Device Tree `hid-over-i2c` node at address `0x15`.
+A Windows capture retrieved the raw 271855-byte DSDT and the evaluated PnP
+resources for `ACPI\QTEC0001\2`. The firmware object is `\\_SB.ECKB`:
 
-The Linux A14 DT keyboard node provides the I2C address, HID descriptor address,
-GPIO67 interrupt/pinctrl and wakeup-source, but no `vdd-supply`, `vddl-supply`,
-`reset-gpios`, post-power delay or post-reset delay. Consequently `i2c_hid_of`
-reports dummy `vdd`/`vddl` regulators.
+- `_HID = QTEC0001`
+- `_CID = PNP0C50`
+- `_UID = 2`
+- `_DEP = { \\_SB.PEP0, \\_SB.GIO0, \\_SB.I2C9 }`
+- `_CRS` describes an I2C connection at slave address `0x15`, 400000 Hz, on
+  `\\_SB.I2C9`, plus a level-low, pull-up, wake-capable GPIO interrupt sourced
+  from `\\_SB.GIO0`.
+- `_DSM` is the standard Microsoft HID-over-I2C DSM and function 1 supplies HID
+  descriptor address `0x1`.
 
-The next safe comparison is the Windows ACPI resource/power description of
-`QTEC0001/ECKB` versus this sparse DT node, plus lower-controller transaction
-semantics if the ACPI resources do not expose a missing lifecycle dependency.
-Do not guess or toggle unidentified regulator/reset GPIOs.
+`ECKB` itself contains no `_PS0`, `_PS3`, `_PR0`, `_PR3`, reset GPIO, explicit
+supply resource, or vendor-specific child power method. Therefore Linux's
+missing `vdd`/`vddl` supply properties and dummy-regulator messages remain a DT
+completeness observation, but the Windows ACPI child does not expose an
+ECKB-specific rail/reset sequence that can simply be copied as an Fn-lock fix.
+
+The three Windows dependency providers evaluate as:
+
+- `PEP0`: `QCOM0C17`, the Qualcomm platform/PEP dependency
+- `GIO0`: `QCOM0C0C`, the Qualcomm GPIO/system-manager dependency
+- `I2C9`: `QCOM0C10`, the Qualcomm I2C controller dependency
+
+Windows `I2C9` is the same physical serial engine Linux describes at MMIO
+`0x00a80000`. Linux names the DT child `i2c8`; the index/name difference is not
+a hardware difference. The Linux A14 DT also configures that controller for
+400000 Hz and the keyboard at address `0x15`, so bus speed, slave address and
+controller selection are ruled out.
+
+The Linux keyboard node describes GPIO67 as level-low with a pull-up and as a
+wakeup source, which is semantically consistent with the Windows ECKB GPIO
+resource. The ACPI GPIO pin namespace still needs a proven mapping before its
+raw pin value is equated numerically to Linux GPIO67.
+
+The remaining high-value comparison is below i2c-hid: Windows Qualcomm
+PEP/GPIO/I2C platform-driver behavior and the actual controller transaction
+semantics versus Linux `i2c-qcom-geni` (including FIFO/SE-DMA/GPI mode, runtime
+power sequencing and final bus framing). Do not guess or toggle unidentified
+regulator/reset GPIOs.
 
 ## Disproven on Linux
 
