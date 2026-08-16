@@ -86,9 +86,13 @@ foreach ($name in @($WppName,$Hidi2cEtwName,$HidclassEtwName)) {
 Run-Logman @('create','trace','-n',$WppName,'-o',$WppFile,'-nb','128','640','-bs','128') | Out-Null
 Run-Logman @('update','trace','-n',$WppName,'-p','{E742C27D-29B1-4E4B-94EE-074D3AD72836}','0x7FFFFFFF','255') | Out-Null
 Run-Logman @('create','trace','-n',$Hidi2cEtwName,'-o',$Hidi2cEtwFile,'-nb','128','640','-bs','128') | Out-Null
-Run-Logman @('update','trace','-n',$Hidi2cEtwName,'-p','Microsoft-Windows-SPB-HIDI2C','0xFFFFFFFF','255') | Out-Null
+# The manifest captured from this exact Windows image marks the HIDI2C analytic
+# events with keyword 0x8000000000000000. A 32-bit 0xFFFFFFFF mask silently
+# misses that bit, so use the complete 64-bit keyword mask.
+Run-Logman @('update','trace','-n',$Hidi2cEtwName,'-p','Microsoft-Windows-SPB-HIDI2C','0xFFFFFFFFFFFFFFFF','255') | Out-Null
 Run-Logman @('create','trace','-n',$HidclassEtwName,'-o',$HidclassEtwFile,'-nb','128','640','-bs','128') | Out-Null
-Run-Logman @('update','trace','-n',$HidclassEtwName,'-p','Microsoft-Windows-Input-HIDCLASS','0xFFFFFFFF','255') | Out-Null
+# HIDCLASS analytic events likewise carry the high analytic bit plus Default.
+Run-Logman @('update','trace','-n',$HidclassEtwName,'-p','Microsoft-Windows-Input-HIDCLASS','0xFFFFFFFFFFFFFFFF','255') | Out-Null
 
 $started = $false
 try {
