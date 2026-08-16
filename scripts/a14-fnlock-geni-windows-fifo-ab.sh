@@ -85,6 +85,7 @@ if param_block.strip() not in s:
     s = s.replace(include_anchor, include_anchor + param_block, 1)
 
 func_anchor = '''static int geni_i2c_tx_one_msg(struct geni_i2c_dev *gi2c, struct i2c_msg *msg,\n\t\t\t\tu32 m_param)\n{\n'''
+func_end_anchor = '\nstatic void i2c_gpi_cb_result('
 helper = '''static bool a14_fnlock_i2c_target(struct geni_i2c_dev *gi2c)\n{\n\tstruct platform_device *pdev = to_platform_device(gi2c->se.dev);\n\tstruct resource *res;\n\n\tres = platform_get_resource(pdev, IORESOURCE_MEM, 0);\n\treturn res && res->start == 0x00a80000;\n}\n\n'''
 if helper not in s:
     if s.count(func_anchor) != 1:
@@ -93,10 +94,23 @@ if helper not in s:
 
 old_dma = '''\tdma_buf = gi2c->no_dma ? NULL : i2c_get_dma_safe_msg_buf(msg, 32);\n\tif (dma_buf)\n\t\tgeni_se_select_mode(se, GENI_SE_DMA);\n\telse\n\t\tgeni_se_select_mode(se, GENI_SE_FIFO);\n'''
 new_dma = '''\tbool a14_force_fifo = a14_windows_fifo &&\n\t\ta14_fnlock_i2c_target(gi2c) &&\n\t\tmsg->addr == 0x15 && len == 73;\n\n\tdma_buf = (gi2c->no_dma || a14_force_fifo) ? NULL :\n\t\ti2c_get_dma_safe_msg_buf(msg, 32);\n\tif (dma_buf)\n\t\tgeni_se_select_mode(se, GENI_SE_DMA);\n\telse\n\t\tgeni_se_select_mode(se, GENI_SE_FIFO);\n\n\tif (a14_force_fifo)\n\t\tdev_info_ratelimited(gi2c->se.dev,\n\t\t\t"A14 Fn-lock Windows FIFO A/B: addr=0x%02x len=%zu forced=FIFO (SE-DMA bypassed)\\n",\n\t\t\tmsg->addr, len);\n'''
-if new_dma not in s:
-    if s.count(old_dma) != 1:
-        raise SystemExit(f'SE-DMA selection anchor count={s.count(old_dma)}')
-    s = s.replace(old_dma, new_dma, 1)
+
+# The stock source has the same DMA-selection sequence in both RX and TX.
+# Restrict replacement to geni_i2c_tx_one_msg() so reads remain byte-for-byte
+# stock and this A/B changes only the Fn-lock write data path.
+if s.count(func_anchor) != 1:
+    raise SystemExit(f'tx function anchor after helper count={s.count(func_anchor)}')
+tx_start = s.index(func_anchor)
+try:
+    tx_end = s.index(func_end_anchor, tx_start)
+except ValueError:
+    raise SystemExit('tx function end anchor missing')
+tx = s[tx_start:tx_end]
+if new_dma not in tx:
+    if tx.count(old_dma) != 1:
+        raise SystemExit(f'TX SE-DMA selection anchor count={tx.count(old_dma)}')
+    tx = tx.replace(old_dma, new_dma, 1)
+    s = s[:tx_start] + tx + s[tx_end:]
 
 probe_old = '''\tif (desc && desc->no_dma_support) {\n\t\tfifo_disable = false;\n\t\tgi2c->no_dma = true;\n\t} else {\n\t\tfifo_disable = readl_relaxed(gi2c->se.base + GENI_IF_DISABLE_RO) & FIFO_IF_DISABLE;\n\t}\n\n\tif (fifo_disable) {\n'''
 probe_new = '''\tif (desc && desc->no_dma_support) {\n\t\tfifo_disable = false;\n\t\tgi2c->no_dma = true;\n\t} else {\n\t\tfifo_disable = readl_relaxed(gi2c->se.base + GENI_IF_DISABLE_RO) & FIFO_IF_DISABLE;\n\t}\n\n\tif (a14_fnlock_i2c_target(gi2c))\n\t\tdev_info(gi2c->se.dev,\n\t\t\t "A14 Fn-lock GENI data path: GENI_IF_DISABLE_RO=0x%08x FIFO_IF_DISABLE=%u windows_fifo=%u\\n",\n\t\t\t readl_relaxed(gi2c->se.base + GENI_IF_DISABLE_RO),\n\t\t\t fifo_disable ? 1 : 0, a14_windows_fifo ? 1 : 0);\n\n\tif (fifo_disable) {\n'''
@@ -104,6 +118,18 @@ if probe_new not in s:
     if s.count(probe_old) != 1:
         raise SystemExit(f'probe FIFO-mode anchor count={s.count(probe_old)}')
     s = s.replace(probe_old, probe_new, 1)
+
+# Strong post-transform guards: exactly one force site, it is in the TX
+# function, and the RX function still retains its original DMA-selection path.
+if s.count('A14 Fn-lock Windows FIFO A/B:') != 1:
+    raise SystemExit('unexpected number of FIFO A/B log sites')
+if s.count('bool a14_force_fifo =') != 1:
+    raise SystemExit('unexpected number of FIFO force predicates')
+rx_start = s.index('static int geni_i2c_rx_one_msg(')
+rx_end = s.index(func_anchor, rx_start)
+rx = s[rx_start:rx_end]
+if rx.count(old_dma) != 1:
+    raise SystemExit('RX DMA-selection path was unexpectedly changed')
 
 # The timing A/B is already disproven. Refuse any source that also contains its
 # Windows timing tuple globally; this experiment must change only the data path.
