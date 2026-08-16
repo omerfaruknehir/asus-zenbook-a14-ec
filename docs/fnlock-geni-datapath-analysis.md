@@ -104,7 +104,7 @@ upper/lower filter on this collection. `AsusConsumerDevice.sys` belongs to a
 different ASUS HID device. This makes a hidden ASUS kernel-filter side effect
 on the successful QTEC0001 feature request unlikely.
 
-## Linux initial raw address-probe A/B: Fn-lock negative, backlight regression
+## Linux initial raw address-probe A/B: Fn-lock negative
 
 Linux v7.1.5 normally calls `i2c_hid_probe_address()` before fetching the HID
 descriptor. That helper performs a raw `i2c_smbus_read_byte()` against the
@@ -124,18 +124,21 @@ The instrumented module proved the A/B was active on the cold boot:
 Fn-lock still did not physically reverse the F-row. Therefore Linux's extra raw
 pre-descriptor address probe is not sufficient to explain the Fn-lock failure.
 
-However, on this same cold boot the keyboard backlight stopped working. Treat
-that as an adverse regression associated with the altered first-contact
-sequence until a stock-HIDI2C cold boot restores the baseline. Do not stack
-additional HIDI2C enumeration experiments on top of this state.
+An initial report that keyboard backlight had stopped on this boot was corrected
+by the tester immediately afterward: the keyboard backlight was working. Do not
+record or reuse a keyboard-backlight regression from this A/B.
 
-## Next safe direction
+## Next direction: measure Windows controller state before more Linux A/Bs
 
-First restore the stock `i2c-hid` module and perform a full power-off/power-on
-to verify keyboard-backlight recovery. Only after the baseline is restored
-should the next HIDI2C experiment proceed.
+Do not stack another speculative Linux transport change. The remaining useful
+gap is the live state of the Qualcomm GENI controller on Windows during the
+known-working direct `HidD_SetFeature()` operation.
 
-The next high-value cold-boot comparison is the actual POWER_ON/RESET ordering
-and delay from the very first enumeration, rather than applying an equivalent
-sequence later after Linux has already initialized the device. Keep that A/B
-single-variable and retain the stock GENI controller path.
+Static reversing shows that Windows `qci2c8380.sys` and Linux initialize several
+common GENI control/interrupt registers differently even though the per-transfer
+I2C command, packing, length, address, timing A/B, and FIFO data path have now
+been compared. The next step is to capture Windows qci2c Inflight Recorder/WPP
+state around the successful state=0/state=1 direct-HID test and, if that does
+not expose the needed register values, obtain a read-only live MMIO snapshot of
+controller `0x00a80000` under Windows. Only then should another Linux controller
+A/B be designed.
