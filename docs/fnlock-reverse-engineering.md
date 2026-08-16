@@ -25,6 +25,12 @@ using a complete 64-byte buffer switches the physical F-row mode:
 
 This is a firmware/hardware row-mode switch. It is not software key inversion.
 
+A cold-boot A/B also proved that ASUSOptimization is not a prerequisite. The
+service was disabled before reboot and had never run during that Windows boot,
+yet the same direct `HidD_SetFeature()` state=0/state=1 writes still reversed
+the physical F-row. Any remaining Linux difference therefore exists below or
+outside ASUSOptimization's per-device startup path.
+
 ## ASUSOptimization startup path
 
 Static ARM64 disassembly of the exact 2.1.75.0 binary shows that the per-device
@@ -78,14 +84,43 @@ The Windows `SpbWriteWrite` helper supplies one SPB transfer whose buffer is a
 four-fragment scatter/gather list: command register, encoded command, data
 register, report data. Thus the wire payload is one write transfer; splitting
 those four fragments in memory does not create a hidden second ASUS command.
-Linux 7.1.5 i2c-hid constructs the same command/data bytes for a numbered
-FEATURE SET_REPORT.
 
-Therefore the accepted-but-ineffective Linux `5a d0 4e` tests are not explained
-by a different report length, report-ID encoding, HID collection, custom upper
-HID driver, or hidden ASUS payload in `HidD_SetFeature`.
+## Exact Linux 7.1.5 submitted I2C-HID packet
 
-## Important HIDI2C initialization difference
+Dynamic debug on the real UX3407RA captured the complete `send_buf` passed by
+Linux 7.1.5 `i2c_hid_xfer()` to `i2c_transfer()` for an Fn+Esc transition to
+state=1:
+
+```
+05 00
+3f 03 5a
+06 00
+42 00
+5a d0 4e 01 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00
+```
+
+This is a 73-byte write buffer:
+
+- `05 00`: command register `0x0005`
+- `3f 03 5a`: FEATURE SET_REPORT with extended report ID `0x5a`
+- `06 00`: data register `0x0006`
+- `42 00`: 66-byte data block
+- `5a d0 4e 01` plus 60 zeros: complete 64-byte feature report
+
+The Linux upper transport packet therefore matches the working Windows command
+shape exactly. The accepted-but-ineffective Linux tests are not explained by a
+different report length, report-ID encoding, HID collection, custom upper HID
+driver, hidden ASUS payload in `HidD_SetFeature`, command register, data
+register, or i2c-hid FEATURE formatting.
+
+This capture proves the bytes submitted to the Linux I2C adapter. It does not,
+by itself, prove that the Qualcomm controller emits identical electrical bus
+framing/timing to the Windows SPB controller path.
+
+## Windows-style HIDI2C reset A/B: disproven as sufficient
 
 The exact Windows HIDI2C public-symbol path is:
 
@@ -99,11 +134,31 @@ Linux 7.1.5 i2c-hid's normal hardware-reset path performs POWER_ON -> RESET and
 then `i2c_hid_finish_hwreset()` issues another POWER_ON after reset unless the
 `NO_WAKEUP_AFTER_RESET` quirk is set.
 
-That post-reset power transition is a concrete transport-state difference that
-exists before ASUSOptimization starts and is the next transport behavior to
-A/B. A runtime Windows-style POWER_ON -> RESET -> ready wait (with no post-reset
-POWER_ON) can test the hypothesis without pretending the earlier QTEC re-power
-experiment succeeded.
+This was tested directly on Linux with a runtime Windows-style sequence:
+POWER_ON -> RESET -> wait for FEATURE GET readiness, with no post-reset
+POWER_ON. The device became ready after 110 ms total, returned the expected
+ASUS capability bytes `01 20 01`, accepted Fn-switch state 0/1 writes, and the
+driver reported both state transitions. The physical F-row did **not** change.
+
+Therefore the post-reset POWER_ON difference is real but is not sufficient to
+explain Windows-versus-Linux Fn-switch behavior. It must not remain the leading
+fix hypothesis.
+
+## Platform-description difference now under investigation
+
+Windows enumerates this physical unit as ACPI `QTEC0001` (`\\_SB.ECKB`) through
+Microsoft `hidi2c.inf`. Linux 7.1.5 enumerates the same `0b05:0220` endpoint as
+a Device Tree `hid-over-i2c` node at address `0x15`.
+
+The Linux A14 DT keyboard node provides the I2C address, HID descriptor address,
+GPIO67 interrupt/pinctrl and wakeup-source, but no `vdd-supply`, `vddl-supply`,
+`reset-gpios`, post-power delay or post-reset delay. Consequently `i2c_hid_of`
+reports dummy `vdd`/`vddl` regulators.
+
+The next safe comparison is the Windows ACPI resource/power description of
+`QTEC0001/ECKB` versus this sparse DT node, plus lower-controller transaction
+semantics if the ACPI resources do not expose a missing lifecycle dependency.
+Do not guess or toggle unidentified regulator/reset GPIOs.
 
 ## Disproven on Linux
 
@@ -116,6 +171,8 @@ F-row and must not be presented as fixes:
 - DSDT `DEVS(0x00100023)` EC stage plus HID switch
 - the same feature sequence while bound to `hid-generic`
 - an added QTEC-style post-HID POWER_ON followed by ASUS startup/Fn-switch
+- Windows-style POWER_ON -> RESET -> ready wait with no post-reset POWER_ON,
+  followed by ASUS startup/Fn-switch
 
 The exact Linux descriptor also confirms one `ff31:0076` top-level collection
 with 64-byte feature report `5a`.
