@@ -31,13 +31,30 @@ function Get-ServiceRegistryState {
     }
 }
 
-function Set-ServiceRegistryState([int]$Start, [int]$DelayedAutoStart) {
-    Set-ItemProperty -LiteralPath $ServiceKey -Name Start -Type DWord -Value $Start
-    if ($DelayedAutoStart -ne 0) {
-        New-ItemProperty -LiteralPath $ServiceKey -Name DelayedAutoStart -PropertyType DWord -Value $DelayedAutoStart -Force | Out-Null
+function Set-ServiceConfiguration([int]$Start, [int]$DelayedAutoStart) {
+    # Do not write HKLM\...\Services\<name>\Start directly here. The Service
+    # Control Manager keeps a live service database; after a boot in which the
+    # service was disabled, a registry-only change back to Start=2/3 can leave
+    # SCM still treating it as SERVICE_DISABLED until reboot. sc.exe config is
+    # backed by ChangeServiceConfig and updates both SCM and the registry.
+    $mode = switch ($Start) {
+        2 { if ($DelayedAutoStart -ne 0) { 'delayed-auto' } else { 'auto' } }
+        3 { 'demand' }
+        4 { 'disabled' }
+        default { throw "Unsupported ASUSOptimization Start value for this user-mode service: $Start" }
     }
-    else {
-        Remove-ItemProperty -LiteralPath $ServiceKey -Name DelayedAutoStart -ErrorAction SilentlyContinue
+
+    $text = & sc.exe config $ServiceName 'start=' $mode 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        throw "sc.exe config $ServiceName start= $mode failed with exit code $LASTEXITCODE`r`n$($text -join "`r`n")"
+    }
+
+    $actual = Get-ServiceRegistryState
+    if ($actual.Start -ne $Start) {
+        throw "SCM configuration did not persist expected Start=$Start (actual=$($actual.Start))"
+    }
+    if ($Start -eq 2 -and (($actual.DelayedAutoStart -ne 0) -ne ($DelayedAutoStart -ne 0))) {
+        throw "SCM configuration did not persist expected DelayedAutoStart=$DelayedAutoStart (actual=$($actual.DelayedAutoStart))"
     }
 }
 
@@ -52,14 +69,22 @@ function Stop-AsusOptimization {
 function Restore-Original([object]$State) {
     Write-Host 'Restoring original ASUSOptimization service configuration...'
     Stop-AsusOptimization
-    Set-ServiceRegistryState -Start ([int]$State.Start) -DelayedAutoStart ([int]$State.DelayedAutoStart)
+    Set-ServiceConfiguration -Start ([int]$State.Start) -DelayedAutoStart ([int]$State.DelayedAutoStart)
     if ([bool]$State.WasRunning) {
-        Start-Service -Name $ServiceName
-        (Get-Service -Name $ServiceName).WaitForStatus('Running', [TimeSpan]::FromSeconds(20))
+        try {
+            Start-Service -Name $ServiceName
+            (Get-Service -Name $ServiceName).WaitForStatus('Running', [TimeSpan]::FromSeconds(20))
+        }
+        catch {
+            $qc = (& sc.exe qc $ServiceName 2>&1) -join "`r`n"
+            throw "Original service state was restored but ASUSOptimization could not be restarted.`r`n$qc`r`n$($_.Exception.Message)"
+        }
     }
     $svc = Get-Service -Name $ServiceName
+    $reg = Get-ServiceRegistryState
     Write-Host "RESTORED_SERVICE_STATUS=$($svc.Status)"
-    Write-Host "RESTORED_SERVICE_START=$((Get-ServiceRegistryState).Start)"
+    Write-Host "RESTORED_SERVICE_START=$($reg.Start)"
+    Write-Host "RESTORED_DELAYED_AUTO_START=$($reg.DelayedAutoStart)"
 }
 
 function Save-KeyboardRegistry([string]$Path) {
@@ -68,13 +93,14 @@ function Save-KeyboardRegistry([string]$Path) {
         $values | Format-List * | Out-String -Width 500 | Set-Content -Encoding UTF8 $Path
         foreach ($name in @('FnSwitch','ArrowKeySwitch')) {
             $v = $values.$name
-            Write-Host "REGISTRY_${name.ToUpperInvariant()}=$(if ($null -eq $v) {'MISSING'} else {$v})"
+            $label = $name.ToUpperInvariant()
+            Write-Host "REGISTRY_$label=$(if ($null -eq $v) {'MISSING'} else {$v})"
         }
     }
     else {
         'KEY_NOT_FOUND' | Set-Content -Encoding ASCII $Path
-        Write-Host 'REGISTRY_FN_SWITCH=MISSING_KEY'
-        Write-Host 'REGISTRY_ARROW_KEY_SWITCH=MISSING_KEY'
+        Write-Host 'REGISTRY_FNSWITCH=MISSING_KEY'
+        Write-Host 'REGISTRY_ARROWKEYSWITCH=MISSING_KEY'
     }
 }
 
@@ -90,6 +116,7 @@ if ($Action -eq 'restore') {
     if (-not (Test-Path -LiteralPath $StatePath)) { throw "Missing saved state: $StatePath" }
     $state = Get-Content -Raw -LiteralPath $StatePath | ConvertFrom-Json
     Restore-Original $state
+    Remove-Item -LiteralPath $StatePath -Force
     Write-Host 'A14_FNLOCK_COLD_SERVICE_RESTORE=PASS'
     return
 }
@@ -112,7 +139,7 @@ if ($Action -eq 'prepare') {
     $state | ConvertTo-Json | Set-Content -Encoding UTF8 -LiteralPath $StatePath
     Save-KeyboardRegistry (Join-Path $OutputDir 'keyboard-registry-before.txt')
     Stop-AsusOptimization
-    Set-ServiceRegistryState -Start 4 -DelayedAutoStart 0
+    Set-ServiceConfiguration -Start 4 -DelayedAutoStart 0
     Write-Host "STATE_SAVED=$StatePath"
     Write-Host 'ASUS_OPTIMIZATION=STOPPED_AND_DISABLED'
     Write-Host 'COLD_TEST_READY=YES'
@@ -147,7 +174,7 @@ try {
 
     Write-Host ''
     Write-Host '===== RUN ASUSOptimization ONCE ====='
-    Set-ServiceRegistryState -Start 3 -DelayedAutoStart 0
+    Set-ServiceConfiguration -Start 3 -DelayedAutoStart 0
     Start-Service -Name $ServiceName
     (Get-Service -Name $ServiceName).WaitForStatus('Running', [TimeSpan]::FromSeconds(20))
     Start-Sleep -Seconds 5
