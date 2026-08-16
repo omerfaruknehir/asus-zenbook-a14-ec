@@ -9,13 +9,37 @@ echo "kernel=$(uname -r)"
 echo "controller_path=$DEV"
 
 if [[ ${EUID} -ne 0 ]]; then
-    echo "ERROR: run with sudo so resource0 can be mapped read-only" >&2
+    echo "ERROR: run with sudo" >&2
     exit 1
 fi
 
 if [[ ! -e "$RES" ]]; then
-    echo "ERROR: controller resource0 not found: $RES" >&2
-    exit 1
+    echo "resource0=unavailable"
+    echo "note=this platform device does not export an mmap-able resource0 sysfs file"
+
+    LOG="$(dmesg 2>/dev/null | grep 'A14 Fn-lock GENI data path:' | tail -n 1 || true)"
+    if [[ -n "$LOG" ]]; then
+        echo "mode_source=kernel-driver-log"
+        echo "$LOG"
+        if grep -q 'FIFO_IF_DISABLE=1' <<<"$LOG"; then
+            echo "FIFO_IF_DISABLE=1"
+            echo "controller_transport=GPI-only (FIFO interface disabled by hardware)"
+            echo "fnlock_datapath_hypothesis=WINDOWS_FIFO_VS_LINUX_SE_DMA_NOT_APPLICABLE"
+        elif grep -q 'FIFO_IF_DISABLE=0' <<<"$LOG"; then
+            echo "FIFO_IF_DISABLE=0"
+            echo "controller_transport=FIFO-capable"
+            echo "fnlock_datapath_hypothesis=WINDOWS_FIFO_VS_LINUX_SE_DMA_APPLICABLE"
+        else
+            echo "FIFO_IF_DISABLE=unknown"
+        fi
+        echo 'A14_FNLOCK_GENI_MODE_DIAG=COMPLETE'
+        exit 0
+    fi
+
+    echo "mode_source=unavailable-on-current-module"
+    echo "next_step=use a14-fnlock-geni-windows-fifo-ab.sh; that module reads GENI_IF_DISABLE_RO directly from mapped controller MMIO and logs the result"
+    echo 'A14_FNLOCK_GENI_MODE_DIAG=NEEDS_KERNEL_LOG_PROBE'
+    exit 0
 fi
 
 python3 - "$RES" <<'PY'
