@@ -7,6 +7,15 @@ case "$model" in
   *) echo "Unsupported device: ${model:-no device-tree model}" >&2; exit 1;;
 esac
 
+# Older development builds composed the DSDT DEVS(0x00100023) EC experiment
+# directly into the working-tree EC source. The real-machine A/B proved that
+# stage does not switch the row, so remove that known generated probe before
+# both the preflight compile and package composition. This preserves all other
+# generated EC/profile work in the user's tree.
+if grep -q 'A14_FNLOCK_EC_STAGE_DSDT' "$repo/asus_zenbook_a14_ec.c" 2>/dev/null; then
+  python3 "$repo/scripts/remove-a14-fnlock-ec-stage.py"
+fi
+
 # These are exact assets supplied for the five A14 modes. Guard the semantic
 # mapping before packaging so Turbo can never silently become meter-max again.
 sh "$repo/scripts/a14-verify-meter-icons.sh"
