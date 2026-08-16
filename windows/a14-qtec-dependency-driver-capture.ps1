@@ -42,14 +42,17 @@ function Convert-ServiceImagePath([string]$ImagePath) {
     if ([string]::IsNullOrWhiteSpace($ImagePath)) { return $null }
 
     $s = [Environment]::ExpandEnvironmentVariables($ImagePath.Trim())
-    if ($s.StartsWith('\\SystemRoot\\', [StringComparison]::OrdinalIgnoreCase)) {
-        $s = Join-Path $env:SystemRoot $s.Substring('\\SystemRoot\\'.Length)
+    if ($s.StartsWith('\SystemRoot\', [StringComparison]::OrdinalIgnoreCase)) {
+        $s = Join-Path $env:SystemRoot $s.Substring('\SystemRoot\'.Length)
     }
-    elseif ($s.StartsWith('SystemRoot\\', [StringComparison]::OrdinalIgnoreCase)) {
-        $s = Join-Path $env:SystemRoot $s.Substring('SystemRoot\\'.Length)
+    elseif ($s.StartsWith('SystemRoot\', [StringComparison]::OrdinalIgnoreCase)) {
+        $s = Join-Path $env:SystemRoot $s.Substring('SystemRoot\'.Length)
     }
-    elseif ($s.StartsWith('system32\\', [StringComparison]::OrdinalIgnoreCase)) {
+    elseif ($s.StartsWith('system32\', [StringComparison]::OrdinalIgnoreCase)) {
         $s = Join-Path $env:SystemRoot $s
+    }
+    elseif ($s.StartsWith('\??\', [StringComparison]::OrdinalIgnoreCase)) {
+        $s = $s.Substring('\??\'.Length)
     }
 
     $m = [regex]::Match($s, '(?i)^\s*"([^"]+\.sys)"')
@@ -166,7 +169,10 @@ foreach ($target in $targets) {
             Get-CimInstance Win32_SystemDriver -Filter "Name='$serviceName'" | Format-List *
         }
 
-        $driverPath = Convert-ServiceImagePath ([string]$svcProps.ImagePath)
+        $driverPath = $null
+        if ($svcProps.PSObject.Properties.Name -contains 'ImagePath') {
+            $driverPath = Convert-ServiceImagePath ([string]$svcProps.ImagePath)
+        }
         $summary.Add("ImagePath=$driverPath")
         Copy-WithMetadata $driverPath $dir 'service-driver'
     }
