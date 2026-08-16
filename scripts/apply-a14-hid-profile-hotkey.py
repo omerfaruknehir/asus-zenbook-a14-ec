@@ -42,9 +42,11 @@ once(
     'Fn+F event',
 )
 
+# The Fn-lock implementation now has a delayed post-HID transport re-power
+# worker. Keep profile work cancellation ordered with the other HID workers.
 once(
-    '''\tWRITE_ONCE(data->suspended, true);\n\tcancel_work_sync(&data->backlight_work);\n\tcancel_work_sync(&data->fnlock_work);\n\t(void)asus_hid_set_backlight_hw(data, 0);\n''',
-    '''\tWRITE_ONCE(data->suspended, true);\n\tcancel_work_sync(&data->backlight_work);\n\tcancel_work_sync(&data->fnlock_work);\n\tcancel_work_sync(&data->profile_work);\n\t(void)asus_hid_set_backlight_hw(data, 0);\n''',
+    '''\tWRITE_ONCE(data->suspended, true);\n\tWRITE_ONCE(data->fnlock_ready, false);\n\tcancel_work_sync(&data->backlight_work);\n\tcancel_work_sync(&data->fnlock_work);\n\tcancel_delayed_work_sync(&data->fnlock_init_work);\n\t(void)asus_hid_set_backlight_hw(data, 0);\n''',
+    '''\tWRITE_ONCE(data->suspended, true);\n\tWRITE_ONCE(data->fnlock_ready, false);\n\tcancel_work_sync(&data->backlight_work);\n\tcancel_work_sync(&data->fnlock_work);\n\tcancel_work_sync(&data->profile_work);\n\tcancel_delayed_work_sync(&data->fnlock_init_work);\n\t(void)asus_hid_set_backlight_hw(data, 0);\n''',
     'suspend profile work',
 )
 
@@ -55,8 +57,8 @@ once(
 )
 
 once(
-    '''\tcancel_work_sync(&data->backlight_work);\n\tcancel_work_sync(&data->fnlock_work);\n\tif (data->led_registered)\n''',
-    '''\tcancel_work_sync(&data->backlight_work);\n\tcancel_work_sync(&data->fnlock_work);\n\tcancel_work_sync(&data->profile_work);\n\tif (data->led_registered)\n''',
+    '''\tcancel_work_sync(&data->backlight_work);\n\tcancel_work_sync(&data->fnlock_work);\n\tcancel_delayed_work_sync(&data->fnlock_init_work);\n\tif (data->led_registered)\n''',
+    '''\tcancel_work_sync(&data->backlight_work);\n\tcancel_work_sync(&data->fnlock_work);\n\tcancel_work_sync(&data->profile_work);\n\tcancel_delayed_work_sync(&data->fnlock_init_work);\n\tif (data->led_registered)\n''',
     'remove profile work',
 )
 
