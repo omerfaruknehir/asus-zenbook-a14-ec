@@ -251,6 +251,24 @@ def compose_hid() -> None:
         raise SystemExit("a14_hid_stack=incomplete-after-recomposition")
 
 
+def enforce_fnlock_experiment_policy() -> None:
+    """Keep disproven transport reset experiments opt-in in normal builds."""
+    s = HID_SOURCE.read_text()
+    old = "static bool fnlock_windows_transport_reinit = true;"
+    new = "static bool fnlock_windows_transport_reinit = false;"
+
+    if new in s:
+        print("a14_fn_lock_windows_transport_reinit=diagnostic-disabled")
+        return
+    if s.count(old) != 1:
+        raise SystemExit(
+            "a14_fn_lock_windows_transport_reinit=policy-anchor-missing"
+        )
+
+    HID_SOURCE.write_text(s.replace(old, new, 1))
+    print("a14_fn_lock_windows_transport_reinit=diagnostic-disabled-applied")
+
+
 def main() -> None:
     if not SOURCE.is_file():
         raise SystemExit(f"missing source: {SOURCE}")
@@ -259,6 +277,7 @@ def main() -> None:
 
     compose_ec()
     compose_hid()
+    enforce_fnlock_experiment_policy()
 
     missing = final_missing()
     if missing:
@@ -280,6 +299,7 @@ def main() -> None:
         "INIT_DELAYED_WORK(&data->fnlock_init_work, asus_fnlock_init_work);",
         "mod_delayed_work(system_wq, &data->fnlock_init_work",
         "schedule_work(&data->fnlock_work);",
+        "static bool fnlock_windows_transport_reinit = false;",
     )
     hid_missing = [token for token in hid_required if token not in hid]
     if hid_missing:
@@ -301,7 +321,7 @@ def main() -> None:
     print("a14_profiles=whisper,quiet,normal,turbo,full-speed")
     print("a14_native_profiles=quiet,normal,turbo,full-speed")
     print("a14_fn_f_cycle=whisper,quiet,normal,turbo,full-speed")
-    print("a14_fn_lock=windows-hidi2c-power-on-reset-no-post-power-plus-asus-startup")
+    print("a14_fn_lock=windows-feature-path;windows-transport-reinit=diagnostic-disabled")
     print("a14_fn_lock_ec_stage=not-production-disproven-probe-only")
     print("a14_fan_telemetry=selector-calibrated")
     print("a14_ec_stack=current")
