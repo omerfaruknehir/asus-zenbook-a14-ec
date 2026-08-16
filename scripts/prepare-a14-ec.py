@@ -60,9 +60,6 @@ def final_missing() -> list[str]:
         "EXPORT_SYMBOL_GPL(asus_a14_cycle_native_profile)",
         "DEVICE_ATTR_RO(whisper_level)",
         "*value = (long)raw * EC_TACH_RPM_MULT;",
-        "A14_FNLOCK_EC_STAGE_DSDT",
-        "DEVICE_ATTR_WO(fnlock_firmware_stage)",
-        "EC_FNLOCK_STAGE_WMIN             0x84",
     )
     missing = [token for token in required if token not in s]
 
@@ -78,6 +75,12 @@ def final_missing() -> list[str]:
         "EC_NATIVE_FAN1_RPM_LO",
         "EC_NATIVE_FAN1_RPM_HI",
         "asus_ec_read_native_fan1_rpm",
+        # The DSDT DEVS 0x00100023 EC write was tested independently and in
+        # combination with the HID feature request and did not switch the row.
+        # Keep its probe helper in the repository, but do not ship it as part
+        # of the production EC composition.
+        "A14_FNLOCK_EC_STAGE_DSDT",
+        "DEVICE_ATTR_WO(fnlock_firmware_stage)",
     )
     missing.extend(f"forbidden:{token}" for token in forbidden if token in s)
     return missing
@@ -122,19 +125,11 @@ def ensure_math64_header() -> None:
     print("a14_whisper_math64=applied")
 
 
-def ensure_fnlock_ec_stage() -> None:
-    if has("A14_FNLOCK_EC_STAGE_DSDT"):
-        print("a14_fnlock_ec_stage=current")
-    else:
-        run("apply-a14-fnlock-ec-stage.py")
-
-
 def compose_ec() -> None:
     if has("A14_WHISPER_MODE") and has("A14_NATIVE_MODE_NAMES_HOTKEY"):
         print("a14_ec_composed=current")
         ensure_export_prototype()
         ensure_math64_header()
-        ensure_fnlock_ec_stage()
         return
 
     if has("static int asus_ec_force_auto_locked"):
@@ -154,26 +149,33 @@ def compose_ec() -> None:
     run("apply-a14-whisper.py")
     ensure_export_prototype()
     ensure_math64_header()
-    ensure_fnlock_ec_stage()
 
 
 def fnlock_complete() -> bool:
     required = (
         "A14_HID_FNLOCK_WINDOWS_FULL_FEATURE_REPORT",
-        "A14_HID_FNLOCK_WINDOWS_INIT_INPUT",
+        "A14_HID_FNLOCK_WINDOWS_COMMON_INIT",
+        "A14_HID_QTEC_POST_HID_REPOWER",
         "struct work_struct fnlock_work;",
+        "struct delayed_work fnlock_init_work;",
         "atomic_t desired_fn_lock;",
-        "static int asus_hid_windows_init_input",
+        "static int asus_hid_qtec_post_init_repower",
+        "static int asus_hid_windows_common_init",
         "static int asus_hid_set_fnlock_hw",
-        "u8 command[A14_EC_REPORT_SIZE]",
-        "return asus_hid_raw_request(data, command, HID_REQ_SET_REPORT);",
+        "INIT_DELAYED_WORK(&data->fnlock_init_work, asus_fnlock_init_work);",
+        "mod_delayed_work(system_wq, &data->fnlock_init_work",
         "schedule_work(&data->fnlock_work);",
-        "INIT_WORK(&data->fnlock_work, asus_fnlock_work);",
-        "ret = asus_hid_windows_init_input(data);",
-        "ret = asus_hid_set_fnlock_hw(data, false);",
-        "ret = asus_hid_set_fnlock_hw(data, data->fn_lock);",
+        "applied A14/QTEC post-HID SET_POWER(ON)",
     )
-    return all(hid_has(token) for token in required)
+    if not all(hid_has(token) for token in required):
+        return False
+
+    hid = HID_SOURCE.read_text()
+    return (
+        "static int asus_hid_initialise" not in hid
+        and "0xd0, 0x8f, 0x01" not in hid
+        and "A14_HID_FNLOCK_WINDOWS_INIT_INPUT" not in hid
+    )
 
 
 def profile_hotkey_complete() -> bool:
@@ -238,9 +240,6 @@ def compose_hid() -> None:
         return
 
     if profile and not fnlock:
-        # This is the exact state produced when an older generated HID source
-        # survives a fast-forward pull. Recompose from the committed clean base
-        # instead of aborting the install.
         restore_generated_hid_base()
         fnlock = fnlock_complete()
         profile = profile_hotkey_complete()
@@ -273,26 +272,35 @@ def main() -> None:
         "asus_a14_cycle_native_profile();",
         "schedule_work(&data->profile_work);",
         "A14_HID_FNLOCK_WINDOWS_FULL_FEATURE_REPORT",
-        "A14_HID_FNLOCK_WINDOWS_INIT_INPUT",
-        "static int asus_hid_windows_init_input",
+        "A14_HID_FNLOCK_WINDOWS_COMMON_INIT",
+        "A14_HID_QTEC_POST_HID_REPOWER",
+        "static int asus_hid_qtec_post_init_repower",
+        "static int asus_hid_windows_common_init",
         "static int asus_hid_set_fnlock_hw",
-        "u8 command[A14_EC_REPORT_SIZE]",
-        "return asus_hid_raw_request(data, command, HID_REQ_SET_REPORT);",
+        "struct delayed_work fnlock_init_work;",
+        "INIT_DELAYED_WORK(&data->fnlock_init_work, asus_fnlock_init_work);",
+        "mod_delayed_work(system_wq, &data->fnlock_init_work",
         "schedule_work(&data->fnlock_work);",
-        "INIT_WORK(&data->fnlock_work, asus_fnlock_work);",
-        "ret = asus_hid_windows_init_input(data);",
-        "ret = asus_hid_set_fnlock_hw(data, false);",
-        "ret = asus_hid_set_fnlock_hw(data, data->fn_lock);",
     )
     hid_missing = [token for token in hid_required if token not in hid]
     if hid_missing:
         raise SystemExit("a14_hid_stack=incomplete: " + ", ".join(hid_missing))
 
+    hid_forbidden = (
+        "static int asus_hid_initialise",
+        "0xd0, 0x8f, 0x01",
+        "A14_HID_FNLOCK_WINDOWS_INIT_INPUT",
+        "static int asus_hid_windows_init_input",
+    )
+    stale = [token for token in hid_forbidden if token in hid]
+    if stale:
+        raise SystemExit("a14_hid_stack=stale-obsolete-fnlock-path: " + ", ".join(stale))
+
     print("a14_profiles=whisper,quiet,normal,turbo,full-speed")
     print("a14_native_profiles=quiet,normal,turbo,full-speed")
     print("a14_fn_f_cycle=whisper,quiet,normal,turbo,full-speed")
-    print("a14_fn_lock=kernel-hid-windows-init-plus-full-64-byte-feature-report")
-    print("a14_fn_lock_ec_stage=dsdt-eccw-02-84-04-08-test")
+    print("a14_fn_lock=asusoptimization-common-init-plus-qtec-post-hid-repower")
+    print("a14_fn_lock_ec_stage=not-production-disproven-probe-only")
     print("a14_fan_telemetry=selector-calibrated")
     print("a14_ec_stack=current")
 
