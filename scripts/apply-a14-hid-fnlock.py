@@ -32,13 +32,36 @@ def once(old, new, label):
     s = s.replace(old, new, 1)
 
 
-# This keyboard is ACPI QTEC0001 on Windows but exposes ASUS VID 0b05 in its
-# HID-over-I2C descriptor. Linux i2c-hid's existing QTEC post-initialization
-# re-power quirk keys on HID vendor 6243, so it does not run for this A14.
 once(
     '#include <linux/input.h>\n',
     '#include <linux/input.h>\n#include <linux/i2c.h>\n#include <linux/property.h>\n#include <linux/unaligned.h>\n',
     'transport includes')
+
+once(
+    'MODULE_PARM_DESC(enable_debug_commands, "Expose root-only raw EC HID command sysfs+");\n',
+    '''MODULE_PARM_DESC(enable_debug_commands, "Expose root-only raw EC HID command sysfs+");
+
+/*
+ * Exact Windows HIDI2C initialization comparison for QTEC0001/0b05:0220.
+ * Windows powers the device on and then resets it; its HidReset path does not
+ * issue another SET_POWER(ON) after reset completion. Linux i2c-hid normally
+ * does. Keep this enabled for the A14 until the lower-level transport quirk is
+ * proven and can be moved into i2c-hid itself.
+ */
+static bool fnlock_windows_transport_reinit = true;
+module_param(fnlock_windows_transport_reinit, bool, 0644);
+MODULE_PARM_DESC(fnlock_windows_transport_reinit,
+                 "Re-run Windows-style HIDI2C POWER_ON->RESET (without post-reset POWER_ON) before Fn-switch init");
+
+/* -1 mirrors the normal ASUSOptimization behavior of leaving ArrowKeySwitch
+ * untouched unless its HKLM setting is explicitly enabled. 0/1 are diagnostic
+ * overrides that send 5a c2 4b <value> before FnSwitch. */
+static int fnlock_arrow_switch = -1;
+module_param(fnlock_arrow_switch, int, 0644);
+MODULE_PARM_DESC(fnlock_arrow_switch,
+                 "Diagnostic ASUS ArrowKeySwitch startup value: -1=skip, 0/1=send before FnSwitch");
+''',
+    'Fn-lock module parameters')
 
 once(
     '\tstruct work_struct backlight_work;\n\tatomic_t desired_brightness;\n',
@@ -46,13 +69,333 @@ once(
     'state')
 
 old_initialise = '''static int asus_hid_initialise(struct asus_hid_data *data)\n{\n\tu8 command[A14_EC_REPORT_SIZE] = {\n\t\tA14_EC_REPORT_ID, 0xd0, 0x8f, 0x01,\n\t};\n\n\treturn asus_hid_raw_request(data, command, HID_REQ_SET_REPORT);\n}\n\n'''
-new_initialise = '''#define A14_HID_FNLOCK_WINDOWS_FULL_FEATURE_REPORT 1\n#define A14_HID_FNLOCK_WINDOWS_COMMON_INIT 1\n#define A14_HID_QTEC_POST_HID_REPOWER 1\n\n#define A14_I2C_HID_DESC_SIZE 30\n#define A14_I2C_HID_COMMAND_REG_OFFSET 16\n#define A14_I2C_HID_PWR_ON 0x00\n#define A14_I2C_HID_OPCODE_SET_POWER 0x08\n\nstatic int asus_hid_i2c_transfer(struct i2c_client *client,\n\t\t\t\t struct i2c_msg *msgs, int num)\n{\n\tint ret = i2c_transfer(client->adapter, msgs, num);\n\n\tif (ret == num)\n\t\treturn 0;\n\treturn ret < 0 ? ret : -EIO;\n}\n\nstatic int asus_hid_qtec_post_init_repower(struct asus_hid_data *data)\n{\n\tstruct hid_device *hdev = data->hdev;\n\tstruct i2c_client *client;\n\tstruct i2c_msg read_msgs[2];\n\tstruct i2c_msg power_msg;\n\tu8 addr_buf[2];\n\tu8 descriptor[A14_I2C_HID_DESC_SIZE];\n\tu8 power_cmd[4];\n\tu16 command_register;\n\tu32 descriptor_address;\n\tint ret;\n\n\tif (hdev->bus != BUS_I2C)\n\t\treturn -EOPNOTSUPP;\n\n\t/* i2c-hid stores its transport i2c_client in hid_device::driver_data. */\n\tclient = hdev->driver_data;\n\tif (!client || !client->adapter)\n\t\treturn -ENODEV;\n\n\tret = device_property_read_u32(&client->dev, "hid-descr-addr",\n\t\t\t\t       &descriptor_address);\n\tif (ret)\n\t\treturn ret;\n\tif (descriptor_address > U16_MAX)\n\t\treturn -EINVAL;\n\n\tput_unaligned_le16((u16)descriptor_address, addr_buf);\n\tread_msgs[0] = (struct i2c_msg) {\n\t\t.addr = client->addr,\n\t\t.flags = client->flags & I2C_M_TEN,\n\t\t.len = sizeof(addr_buf),\n\t\t.buf = addr_buf,\n\t};\n\tread_msgs[1] = (struct i2c_msg) {\n\t\t.addr = client->addr,\n\t\t.flags = (client->flags & I2C_M_TEN) | I2C_M_RD,\n\t\t.len = sizeof(descriptor),\n\t\t.buf = descriptor,\n\t};\n\n\tmutex_lock(&data->io_lock);\n\tret = asus_hid_i2c_transfer(client, read_msgs, ARRAY_SIZE(read_msgs));\n\tif (ret)\n\t\tgoto out_unlock;\n\tif (get_unaligned_le16(descriptor) != A14_I2C_HID_DESC_SIZE ||\n\t    get_unaligned_le16(descriptor + 2) != 0x0100) {\n\t\tret = -EPROTO;\n\t\tgoto out_unlock;\n\t}\n\n\tcommand_register = get_unaligned_le16(\n\t\tdescriptor + A14_I2C_HID_COMMAND_REG_OFFSET);\n\tput_unaligned_le16(command_register, power_cmd);\n\tpower_cmd[2] = A14_I2C_HID_PWR_ON;\n\tpower_cmd[3] = A14_I2C_HID_OPCODE_SET_POWER;\n\tpower_msg = (struct i2c_msg) {\n\t\t.addr = client->addr,\n\t\t.flags = client->flags & I2C_M_TEN,\n\t\t.len = sizeof(power_cmd),\n\t\t.buf = power_cmd,\n\t};\n\tret = asus_hid_i2c_transfer(client, &power_msg, 1);\n\nout_unlock:\n\tmutex_unlock(&data->io_lock);\n\tif (ret)\n\t\treturn ret;\n\n\t/* i2c-hid itself uses 60 ms after PWR_ON for devices needing settling. */\n\tmsleep(60);\n\tdev_info(&hdev->dev,\n\t\t "applied A14/QTEC post-HID SET_POWER(ON), command-reg=0x%04x\\n",\n\t\t command_register);\n\treturn 0;\n}\n\nstatic bool asus_hid_windows_feature_is_known(const u8 *report)\n{\n\tstatic const u8 initial_string[] = {\n\t\t0x5a, 'A', 'S', 'U', 'S', ' ', 'T', 'e', 'c', 'h', '.',\n\t\t'I', 'n', 'c', '.', 0x00,\n\t};\n\n\tif (!memcmp(report, initial_string, sizeof(initial_string)))\n\t\treturn true;\n\tif (report[0] != A14_EC_REPORT_ID)\n\t\treturn false;\n\n\t/* Prefixes recognized by AsusOptimization.exe 2.1.75.0 before it\n\t * decides whether the 0x5a + "ASUS Tech.Inc." handshake is needed. */\n\tswitch (report[1]) {\n\tcase 0x05: /* configuration */\n\tcase 0xb0:\n\tcase 0xb1:\n\tcase 0xba: /* keyboard light */\n\tcase 0xbb: /* N-key rollover */\n\tcase 0xc2: /* arrow-key switch */\n\tcase 0xd0: /* Fn switch / status LEDs / battery family */\n\tcase 0xf4:\n\t\treturn true;\n\tdefault:\n\t\treturn false;\n\t}\n}\n\nstatic int asus_hid_set_fnlock_hw(struct asus_hid_data *data, bool enabled)\n{\n\tu8 command[A14_EC_REPORT_SIZE] = {\n\t\tA14_EC_REPORT_ID, 0xd0, 0x4e, enabled ? 1 : 0,\n\t};\n\n\t/* Exact A14 Windows path:\n\t * 0B05:0220 / UsagePage FF31 / Usage 0076 / FeatureReportByteLength 64.\n\t * AsusOptimization.exe passes the complete zero-padded 64-byte buffer to\n\t * HidD_SetFeature. State 0 = ASUS action keys primary; state 1 = F1..F12. */\n\treturn asus_hid_raw_request(data, command, HID_REQ_SET_REPORT);\n}\n\nstatic int asus_hid_windows_common_init(struct asus_hid_data *data,\n\t\t\t\t\tbool fn_lock)\n{\n\tstatic const u8 config_prefix[] = { 0x5a, 0x05, 0x20, 0x31, 0x00, 0x08 };\n\tu8 report[A14_EC_REPORT_SIZE] = { A14_EC_REPORT_ID };\n\tu8 command[A14_EC_REPORT_SIZE];\n\tint attempt;\n\tint ret;\n\n\t/* AsusOptimization common initialization first GETs report 0x5a. Only\n\t * when it is not one of the feature families it recognizes does it send\n\t * the Initial string feature. */\n\tret = asus_hid_raw_request(data, report, HID_REQ_GET_REPORT);\n\tif (ret || !asus_hid_windows_feature_is_known(report)) {\n\t\tmemset(command, 0, sizeof(command));\n\t\tcommand[0] = A14_EC_REPORT_ID;\n\t\tmemcpy(command + 1, "ASUS Tech.Inc.", sizeof("ASUS Tech.Inc."));\n\t\tret = asus_hid_raw_request(data, command, HID_REQ_SET_REPORT);\n\t\tif (ret)\n\t\t\treturn ret;\n\t}\n\n\t/* Configuration transaction at 0x1400264cc in the captured 2.1.75.0\n\t * binary. It retries up to four times until the echoed header is valid. */\n\tfor (attempt = 0; attempt < 4; attempt++) {\n\t\tmemset(command, 0, sizeof(command));\n\t\tmemcpy(command, config_prefix, sizeof(config_prefix));\n\t\tret = asus_hid_raw_request(data, command, HID_REQ_SET_REPORT);\n\t\tif (ret)\n\t\t\treturn ret;\n\n\t\tmemset(report, 0, sizeof(report));\n\t\treport[0] = A14_EC_REPORT_ID;\n\t\tret = asus_hid_raw_request(data, report, HID_REQ_GET_REPORT);\n\t\tif (!ret && !memcmp(report, config_prefix, sizeof(config_prefix)))\n\t\t\tbreak;\n\t\tmsleep(100);\n\t}\n\tif (attempt == 4)\n\t\treturn ret ? ret : -EPROTO;\n\n\tdev_info(&data->hdev->dev,\n\t\t "ASUS feature config: %02x %02x %02x (Fn switch next)\\n",\n\t\t report[6], report[7], report[8]);\n\n\t/* On this A14 the captured response is 01 20 01. In particular the\n\t * N-key-rollover capability bit (byte 6 bit 5) is clear, so the Windows\n\t * startup path skips its 5a bb state transaction. ArrowKeySwitch is an\n\t * independent registry option and is not part of Fn-lock initialization. */\n\treturn asus_hid_set_fnlock_hw(data, fn_lock);\n}\n\n'''
-once(old_initialise, new_initialise, 'replace misidentified OOBE initializer')
+new_initialise = '''#define A14_HID_FNLOCK_WINDOWS_FULL_FEATURE_REPORT 1
+#define A14_HID_FNLOCK_WINDOWS_COMMON_INIT 1
+#define A14_HID_WINDOWS_POWER_RESET_SEQUENCE 1
+#define A14_HID_NO_POST_RESET_POWER_ON 1
 
-# Insert both process-context workers after the backlight hardware helper so the
-# delayed initializer can restore the LED after the transport has been repowered.
+#define A14_I2C_HID_DESC_SIZE             30
+#define A14_I2C_HID_COMMAND_REG_OFFSET    16
+#define A14_I2C_HID_CMD_POWER_ON          0x0800
+#define A14_I2C_HID_CMD_RESET             0x0100
+
+static int asus_hid_i2c_xfer(struct i2c_client *client,
+                             struct i2c_msg *msgs, int num)
+{
+    int ret = i2c_transfer(client->adapter, msgs, num);
+
+    if (ret == num)
+        return 0;
+    return ret < 0 ? ret : -EIO;
+}
+
+static int asus_hid_i2c_command_register(struct asus_hid_data *data,
+                                         struct i2c_client **client_out,
+                                         u16 *command_register)
+{
+    struct hid_device *hdev = data->hdev;
+    struct i2c_client *client;
+    struct i2c_msg msgs[2];
+    u8 addr_buf[2];
+    u8 descriptor[A14_I2C_HID_DESC_SIZE];
+    u32 descriptor_address;
+    int ret;
+
+    if (hdev->bus != BUS_I2C)
+        return -EOPNOTSUPP;
+
+    /* i2c-hid stores its transport i2c_client in hid_device::driver_data. */
+    client = hdev->driver_data;
+    if (!client || !client->adapter)
+        return -ENODEV;
+
+    ret = device_property_read_u32(&client->dev, "hid-descr-addr",
+                                   &descriptor_address);
+    if (ret)
+        return ret;
+    if (descriptor_address > U16_MAX)
+        return -EINVAL;
+
+    put_unaligned_le16((u16)descriptor_address, addr_buf);
+    msgs[0] = (struct i2c_msg) {
+        .addr = client->addr,
+        .flags = client->flags & I2C_M_TEN,
+        .len = sizeof(addr_buf),
+        .buf = addr_buf,
+    };
+    msgs[1] = (struct i2c_msg) {
+        .addr = client->addr,
+        .flags = (client->flags & I2C_M_TEN) | I2C_M_RD,
+        .len = sizeof(descriptor),
+        .buf = descriptor,
+    };
+
+    ret = asus_hid_i2c_xfer(client, msgs, ARRAY_SIZE(msgs));
+    if (ret)
+        return ret;
+    if (get_unaligned_le16(descriptor) != A14_I2C_HID_DESC_SIZE ||
+        get_unaligned_le16(descriptor + 2) != 0x0100)
+        return -EPROTO;
+
+    *command_register = get_unaligned_le16(
+        descriptor + A14_I2C_HID_COMMAND_REG_OFFSET);
+    *client_out = client;
+    return 0;
+}
+
+static int asus_hid_i2c_send_command(struct i2c_client *client,
+                                     u16 command_register, u16 command)
+{
+    struct i2c_msg msg;
+    u8 buffer[4];
+
+    put_unaligned_le16(command_register, buffer);
+    put_unaligned_le16(command, buffer + 2);
+    msg = (struct i2c_msg) {
+        .addr = client->addr,
+        .flags = client->flags & I2C_M_TEN,
+        .len = sizeof(buffer),
+        .buf = buffer,
+    };
+    return asus_hid_i2c_xfer(client, &msg, 1);
+}
+
+static int asus_hid_windows_transport_reinit_hw(struct asus_hid_data *data)
+{
+    struct i2c_client *client;
+    u8 report[A14_EC_REPORT_SIZE];
+    u16 command_register;
+    int attempt;
+    int ret;
+
+    ret = asus_hid_i2c_command_register(data, &client, &command_register);
+    if (ret)
+        return ret;
+
+    /*
+     * Exact hidi2c.sys 10.0.28000.2546 public-symbol path recovered from the
+     * matching Microsoft PDB and ARM64 disassembly:
+     *
+     *   OnD0Entry -> HidInitialize -> _HidPower(0)
+     *       command register: 00 08 (SET_POWER ON)
+     *   OnPostInterruptsEnabled -> HidReset
+     *       command register: 00 01 (RESET)
+     *       waits up to 4 seconds for reset completion
+     *
+     * HidReset does NOT send a second SET_POWER(ON). Linux i2c-hid normally
+     * does that in i2c_hid_finish_hwreset(), which is the concrete boot-state
+     * difference this A/B removes.
+     */
+    mutex_lock(&data->io_lock);
+    ret = asus_hid_i2c_send_command(client, command_register,
+                                    A14_I2C_HID_CMD_POWER_ON);
+    mutex_unlock(&data->io_lock);
+    if (ret)
+        return ret;
+
+    /* Keep the device comfortably awake before reset. The Windows power
+     * callback and post-interrupt callback are separate framework stages. */
+    msleep(60);
+
+    mutex_lock(&data->io_lock);
+    ret = asus_hid_i2c_send_command(client, command_register,
+                                    A14_I2C_HID_CMD_RESET);
+    mutex_unlock(&data->io_lock);
+    if (ret)
+        return ret;
+
+    /* The lower i2c-hid IRQ handler consumes the zero-length reset-complete
+     * input report even though this upper driver does not own its reset event.
+     * Poll a harmless FEATURE GET until the transport is usable, bounded by
+     * the same four-second window used by Windows HidReset. Crucially, do not
+     * send SET_POWER(ON) after RESET. */
+    for (attempt = 0; attempt < 80; attempt++) {
+        msleep(50);
+        memset(report, 0, sizeof(report));
+        report[0] = A14_EC_REPORT_ID;
+        ret = asus_hid_raw_request(data, report, HID_REQ_GET_REPORT);
+        if (!ret) {
+            dev_info(&data->hdev->dev,
+                     "Windows HIDI2C reinit ready after %d ms, command-reg=0x%04x (no post-reset POWER_ON)\\n",
+                     (attempt + 1) * 50 + 60, command_register);
+            return 0;
+        }
+    }
+
+    return ret ? ret : -ETIMEDOUT;
+}
+
+static bool asus_hid_windows_feature_is_known(const u8 *report)
+{
+    static const u8 initial_string[] = {
+        0x5a, 'A', 'S', 'U', 'S', ' ', 'T', 'e', 'c', 'h', '.',
+        'I', 'n', 'c', '.', 0x00,
+    };
+
+    if (!memcmp(report, initial_string, sizeof(initial_string)))
+        return true;
+    if (report[0] != A14_EC_REPORT_ID)
+        return false;
+
+    switch (report[1]) {
+    case 0x05: /* configuration */
+    case 0xb0:
+    case 0xb1:
+    case 0xba: /* keyboard light */
+    case 0xbb: /* N-key rollover */
+    case 0xc2: /* arrow-key switch */
+    case 0xd0: /* Fn switch / status LEDs */
+    case 0xf4:
+        return true;
+    default:
+        return false;
+    }
+}
+
+static int asus_hid_set_arrow_switch_hw(struct asus_hid_data *data, bool enabled)
+{
+    u8 command[A14_EC_REPORT_SIZE] = {
+        A14_EC_REPORT_ID, 0xc2, 0x4b, enabled ? 1 : 0,
+    };
+
+    return asus_hid_raw_request(data, command, HID_REQ_SET_REPORT);
+}
+
+static int asus_hid_set_fnlock_hw(struct asus_hid_data *data, bool enabled)
+{
+    u8 command[A14_EC_REPORT_SIZE] = {
+        A14_EC_REPORT_ID, 0xd0, 0x4e, enabled ? 1 : 0,
+    };
+
+    /* Exact successful Windows call: 0b05:0220, FF31:0076, complete 64-byte
+     * FeatureReportByteLength buffer passed to HidD_SetFeature(). */
+    return asus_hid_raw_request(data, command, HID_REQ_SET_REPORT);
+}
+
+static int asus_hid_windows_common_init(struct asus_hid_data *data,
+                                        bool fn_lock)
+{
+    static const u8 config_prefix[] = { 0x5a, 0x05, 0x20, 0x31, 0x00, 0x08 };
+    u8 report[A14_EC_REPORT_SIZE] = { A14_EC_REPORT_ID };
+    u8 command[A14_EC_REPORT_SIZE];
+    int attempt;
+    int ret;
+
+    /* ASUSOptimization 2.1.75.0 first GETs report 0x5a. It sends the initial
+     * ASUS Tech.Inc. feature only when the returned feature family is unknown. */
+    ret = asus_hid_raw_request(data, report, HID_REQ_GET_REPORT);
+    if (ret || !asus_hid_windows_feature_is_known(report)) {
+        memset(command, 0, sizeof(command));
+        command[0] = A14_EC_REPORT_ID;
+        memcpy(command + 1, "ASUS Tech.Inc.", sizeof("ASUS Tech.Inc."));
+        ret = asus_hid_raw_request(data, command, HID_REQ_SET_REPORT);
+        if (ret)
+            return ret;
+    }
+
+    for (attempt = 0; attempt < 4; attempt++) {
+        memset(command, 0, sizeof(command));
+        memcpy(command, config_prefix, sizeof(config_prefix));
+        ret = asus_hid_raw_request(data, command, HID_REQ_SET_REPORT);
+        if (ret)
+            return ret;
+
+        memset(report, 0, sizeof(report));
+        report[0] = A14_EC_REPORT_ID;
+        ret = asus_hid_raw_request(data, report, HID_REQ_GET_REPORT);
+        if (!ret && !memcmp(report, config_prefix, sizeof(config_prefix)))
+            break;
+        msleep(100);
+    }
+    if (attempt == 4)
+        return ret ? ret : -EPROTO;
+
+    dev_info(&data->hdev->dev,
+             "ASUS feature config: %02x %02x %02x (Fn switch next)\\n",
+             report[6], report[7], report[8]);
+
+    /* On the captured UX3407RA the response is 01 20 01, so N-key rollover
+     * startup is skipped. ASUSOptimization sends ArrowKeySwitch only when its
+     * HKLM setting is explicitly present/enabled. -1 therefore means skip. */
+    if (fnlock_arrow_switch >= 0) {
+        ret = asus_hid_set_arrow_switch_hw(data, fnlock_arrow_switch != 0);
+        if (ret)
+            return ret;
+        dev_info(&data->hdev->dev, "diagnostic ArrowKeySwitch=%d applied\\n",
+                 fnlock_arrow_switch != 0);
+    }
+
+    return asus_hid_set_fnlock_hw(data, fn_lock);
+}
+
+'''
+once(old_initialise, new_initialise, 'replace obsolete OOBE initializer')
+
 anchor = '''static int asus_kbd_brightness_set(struct led_classdev *led,\n'''
-workers = '''static void asus_fnlock_init_work(struct work_struct *work)\n{\n\tstruct asus_hid_data *data = container_of(to_delayed_work(work),\n\t\t\t\t\t\t  struct asus_hid_data,\n\t\t\t\t\t\t  fnlock_init_work);\n\tunsigned int level = atomic_read(&data->desired_brightness);\n\tbool requested = atomic_read(&data->desired_fn_lock);\n\tint ret;\n\n\tif (READ_ONCE(data->suspended))\n\t\treturn;\n\n\t/* Match i2c-hid's upstream QTEC quirk ordering: the extra PWR_ON must\n\t * happen after HID initialization. This delayed worker is queued at the\n\t * end of the upper HID driver's probe, so hid_add_device() can finish\n\t * before the transaction runs. */\n\tret = asus_hid_qtec_post_init_repower(data);\n\tif (ret) {\n\t\tdev_warn(&data->hdev->dev, "A14/QTEC post-init repower failed: %d\\n", ret);\n\t\treturn;\n\t}\n\n\tret = asus_hid_windows_common_init(data, requested);\n\tif (ret) {\n\t\tdev_warn(&data->hdev->dev, "ASUS Fn-switch common init failed: %d\\n", ret);\n\t\treturn;\n\t}\n\n\tdata->fn_lock = requested;\n\tWRITE_ONCE(data->fnlock_ready, true);\n\n\tret = asus_hid_set_backlight_hw(data, level);\n\tif (ret)\n\t\tdev_warn(&data->hdev->dev, "keyboard-backlight restore after Fn init failed: %d\\n", ret);\n}\n\nstatic void asus_fnlock_work(struct work_struct *work)\n{\n\tstruct asus_hid_data *data = container_of(work, struct asus_hid_data,\n\t\t\t\t\t\t  fnlock_work);\n\tbool requested = atomic_read(&data->desired_fn_lock);\n\tint ret;\n\n\tif (READ_ONCE(data->suspended))\n\t\treturn;\n\tif (!READ_ONCE(data->fnlock_ready)) {\n\t\tmod_delayed_work(system_wq, &data->fnlock_init_work, 0);\n\t\treturn;\n\t}\n\n\tret = asus_hid_set_fnlock_hw(data, requested);\n\tif (ret) {\n\t\tatomic_set(&data->desired_fn_lock, data->fn_lock);\n\t\tdev_warn(&data->hdev->dev, "Fn-lock update failed: %d\\n", ret);\n\t\treturn;\n\t}\n\tdata->fn_lock = requested;\n}\n\n'''
+workers = '''static void asus_fnlock_init_work(struct work_struct *work)
+{
+    struct asus_hid_data *data = container_of(to_delayed_work(work),
+                                               struct asus_hid_data,
+                                               fnlock_init_work);
+    unsigned int level = atomic_read(&data->desired_brightness);
+    bool requested = atomic_read(&data->desired_fn_lock);
+    int ret;
+
+    if (READ_ONCE(data->suspended))
+        return;
+
+    if (fnlock_windows_transport_reinit) {
+        ret = asus_hid_windows_transport_reinit_hw(data);
+        if (ret) {
+            dev_warn(&data->hdev->dev,
+                     "Windows HIDI2C POWER_ON->RESET reinit failed: %d\\n", ret);
+            return;
+        }
+    }
+
+    ret = asus_hid_windows_common_init(data, requested);
+    if (ret) {
+        dev_warn(&data->hdev->dev, "ASUS Fn-switch common init failed: %d\\n", ret);
+        return;
+    }
+
+    data->fn_lock = requested;
+    WRITE_ONCE(data->fnlock_ready, true);
+    dev_info(&data->hdev->dev, "Fn-lock hardware path ready, state=%u\\n",
+             requested ? 1 : 0);
+
+    ret = asus_hid_set_backlight_hw(data, level);
+    if (ret)
+        dev_warn(&data->hdev->dev,
+                 "keyboard-backlight restore after Fn init failed: %d\\n", ret);
+}
+
+static void asus_fnlock_work(struct work_struct *work)
+{
+    struct asus_hid_data *data = container_of(work, struct asus_hid_data,
+                                               fnlock_work);
+    bool requested = atomic_read(&data->desired_fn_lock);
+    int ret;
+
+    if (READ_ONCE(data->suspended))
+        return;
+    if (!READ_ONCE(data->fnlock_ready)) {
+        mod_delayed_work(system_wq, &data->fnlock_init_work, 0);
+        return;
+    }
+
+    ret = asus_hid_set_fnlock_hw(data, requested);
+    if (ret) {
+        atomic_set(&data->desired_fn_lock, data->fn_lock);
+        dev_warn(&data->hdev->dev, "Fn-lock update failed: %d\\n", ret);
+        return;
+    }
+    data->fn_lock = requested;
+    dev_info(&data->hdev->dev, "Fn-lock hardware state=%u\\n",
+             requested ? 1 : 0);
+}
+
+'''
 if workers not in s:
     if s.count(anchor) != 1:
         raise SystemExit(f'worker insertion: expected one source anchor, found {s.count(anchor)}')
@@ -65,11 +408,21 @@ once(
 
 once(
     '\tWRITE_ONCE(data->suspended, true);\n\tcancel_work_sync(&data->backlight_work);\n',
-    '\tWRITE_ONCE(data->suspended, true);\n\tWRITE_ONCE(data->fnlock_ready, false);\n\tcancel_work_sync(&data->backlight_work);\n\tcancel_work_sync(&data->fnlock_work);\n\tcancel_delayed_work_sync(&data->fnlock_init_work);\n',
+    '\tWRITE_ONCE(data->suspended, true);\n\tcancel_work_sync(&data->backlight_work);\n\tcancel_work_sync(&data->fnlock_work);\n\tcancel_delayed_work_sync(&data->fnlock_init_work);\n\tWRITE_ONCE(data->fnlock_ready, false);\n',
     'suspend')
 
 old_resume = '''static int asus_hid_resume(struct hid_device *hdev)\n{\n\tstruct asus_hid_data *data = hid_get_drvdata(hdev);\n\tunsigned int level = atomic_read(&data->desired_brightness);\n\tint ret;\n\tint attempt;\n\n\tmsleep(100);\n\tfor (attempt = 0; attempt < 5; attempt++) {\n\t\tret = asus_hid_initialise(data);\n\t\tif (!ret)\n\t\t\tbreak;\n\t\tmsleep(100 * (attempt + 1));\n\t}\n\tWRITE_ONCE(data->suspended, false);\n\tif (ret)\n\t\treturn ret;\n\treturn asus_hid_set_backlight_hw(data, level);\n}\n'''
-new_resume = '''static int asus_hid_resume(struct hid_device *hdev)\n{\n\tstruct asus_hid_data *data = hid_get_drvdata(hdev);\n\n\tWRITE_ONCE(data->suspended, false);\n\tWRITE_ONCE(data->fnlock_ready, false);\n\tmod_delayed_work(system_wq, &data->fnlock_init_work,\n\t\t\t msecs_to_jiffies(100));\n\treturn 0;\n}\n'''
+new_resume = '''static int asus_hid_resume(struct hid_device *hdev)
+{
+    struct asus_hid_data *data = hid_get_drvdata(hdev);
+
+    WRITE_ONCE(data->suspended, false);
+    WRITE_ONCE(data->fnlock_ready, false);
+    mod_delayed_work(system_wq, &data->fnlock_init_work,
+                     msecs_to_jiffies(250));
+    return 0;
+}
+'''
 once(old_resume, new_resume, 'resume')
 
 once(
@@ -77,12 +430,10 @@ once(
     '\tINIT_WORK(&data->backlight_work, asus_backlight_work);\n\tINIT_WORK(&data->fnlock_work, asus_fnlock_work);\n\tINIT_DELAYED_WORK(&data->fnlock_init_work, asus_fnlock_init_work);\n\tatomic_set(&data->desired_fn_lock, 0);\n\tdata->fn_lock = false;\n\tdata->fnlock_ready = false;\n\tatomic_set(&data->desired_brightness,\n',
     'probe init')
 
-# The old 5a d0 8f 01 packet was previously mislabeled as generic HID
-# initialization. Reverse engineering of the exact ASUSOptimization binary
-# shows D0/8F is the OOBE Complete feature, not the Fn-switch prerequisite.
-old_probe_hw = '''\tret = asus_hid_initialise(data);\n\tif (ret)\n\t\tgoto err_led;\n\tret = asus_hid_set_backlight_hw(data,\n\t\t\t\t\tatomic_read(&data->desired_brightness));\n\tif (ret)\n\t\tgoto err_led;\n\n\tif (enable_debug_commands) {\n'''
-new_probe_hw = '''\t/* Queue the real post-HID transport re-power + ASUSOptimization common\n\t * initialization after this upper-driver probe is able to return. */\n\tmod_delayed_work(system_wq, &data->fnlock_init_work,\n\t\t\t msecs_to_jiffies(100));\n\n\tif (enable_debug_commands) {\n'''
-once(old_probe_hw, new_probe_hw, 'probe hardware init')
+once(
+    '''\tret = asus_hid_initialise(data);\n\tif (ret)\n\t\tgoto err_led;\n\tret = asus_hid_set_backlight_hw(data,\n\t\t\t\t\tatomic_read(&data->desired_brightness));\n\tif (ret)\n\t\tgoto err_led;\n\n\tif (enable_debug_commands) {\n''',
+    '''\tret = asus_hid_set_backlight_hw(data,\n\t\t\t\t\tatomic_read(&data->desired_brightness));\n\tif (ret)\n\t\tgoto err_led;\n\n\t/* Let hid_add_device()/the transport's initial power callbacks finish,\n\t * then recreate the exact Windows POWER_ON->RESET ordering and ASUS\n\t * startup feature sequence in process context. */\n\tmod_delayed_work(system_wq, &data->fnlock_init_work,\n\t\t\t msecs_to_jiffies(250));\n\n\tif (enable_debug_commands) {\n''',
+    'probe hardware init')
 
 once(
     '\tcancel_work_sync(&data->backlight_work);\n\tif (data->led_registered)\n',
@@ -90,20 +441,32 @@ once(
     'remove')
 
 required = (
+    'A14_HID_FNLOCK_WINDOWS_FULL_FEATURE_REPORT',
     'A14_HID_FNLOCK_WINDOWS_COMMON_INIT',
-    'A14_HID_QTEC_POST_HID_REPOWER',
-    'static int asus_hid_qtec_post_init_repower',
+    'A14_HID_WINDOWS_POWER_RESET_SEQUENCE',
+    'A14_HID_NO_POST_RESET_POWER_ON',
+    'static int asus_hid_windows_transport_reinit_hw',
+    'A14_I2C_HID_CMD_POWER_ON',
+    'A14_I2C_HID_CMD_RESET',
     'static int asus_hid_windows_common_init',
     'static int asus_hid_set_fnlock_hw',
+    'struct delayed_work fnlock_init_work;',
     'INIT_DELAYED_WORK(&data->fnlock_init_work, asus_fnlock_init_work);',
-    'mod_delayed_work(system_wq, &data->fnlock_init_work',
     'schedule_work(&data->fnlock_work);',
+    'no post-reset POWER_ON',
 )
 missing = [token for token in required if token not in s]
 if missing:
-    raise SystemExit('A14 Fn-lock reverse-engineered transform incomplete: ' + ', '.join(missing))
-if 'static int asus_hid_initialise' in s or '0xd0, 0x8f, 0x01' in s:
-    raise SystemExit('obsolete OOBE-as-initializer path still present')
+    raise SystemExit('Fn-lock Windows transport transform incomplete: ' + ', '.join(missing))
+
+forbidden = (
+    'A14_HID_QTEC_POST_HID_REPOWER',
+    'asus_hid_qtec_post_init_repower',
+    '0xd0, 0x8f, 0x01',
+)
+stale = [token for token in forbidden if token in s]
+if stale:
+    raise SystemExit('Fn-lock stale/disproven transport path remains: ' + ', '.join(stale))
 
 p.write_text(s)
-print('a14_hid_fnlock=asusoptimization-common-init-plus-qtec-post-hid-repower')
+print('a14_hid_fnlock=windows-power-on-reset-no-post-power-plus-asus-startup')
