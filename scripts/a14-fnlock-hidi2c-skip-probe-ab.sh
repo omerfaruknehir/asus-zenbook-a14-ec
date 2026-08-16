@@ -3,6 +3,7 @@ set -euo pipefail
 
 ACTION="${1:-status}"
 KVER="$(uname -r)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORK="/var/tmp/a14-fnlock-hidi2c-skip-probe-${KVER}"
 SRC="${WORK}/drivers/hid/i2c-hid"
 INSTALL_DIR="/lib/modules/${KVER}/updates/a14"
@@ -178,11 +179,19 @@ build_module() {
     need make
     need python3
     need modinfo
+    need readelf
     fetch_sources
     patch_source
 
-    make -C "/lib/modules/${KVER}/build" M="$SRC" clean >/dev/null
-    make -C "/lib/modules/${KVER}/build" M="$SRC" modules
+    # Ubuntu's 7.1.5 ARM64 mainline headers package a foreign-architecture
+    # gendwarfksyms host helper. Use the same checked compatibility wrapper as
+    # install.sh/DKMS: it accepts a donor only when the helper is native and
+    # its gendwarfksyms sources are byte-identical to this kernel's sources.
+    make -C "/lib/modules/${KVER}/build" M="$SRC" clean >/dev/null 2>&1 || true
+    A14_MODULE_DIR="$SRC" \
+    A14_BUILD_JOBS="${A14_BUILD_JOBS:-$(nproc)}" \
+    KDIR="/lib/modules/${KVER}/build" \
+        sh "$ROOT/scripts/a14-kbuild-compat.sh" "$KVER"
     [[ -s "$SRC/i2c-hid.ko" ]] || die "module build did not produce i2c-hid.ko"
 
     local vermagic
