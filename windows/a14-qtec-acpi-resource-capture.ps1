@@ -48,8 +48,7 @@ Write-TextFile 'qtec0001-pnp-properties.txt' {
     Get-PnpDeviceProperty -InstanceId $InstanceId | Format-List *
 }
 
-$enumSubkey = $InstanceId -replace '^ACPI\\', 'ACPI\'
-$enumNative = "HKLM\SYSTEM\CurrentControlSet\Enum\$enumSubkey"
+$enumNative = "HKLM\SYSTEM\CurrentControlSet\Enum\$InstanceId"
 $regOut = Join-Path $OutputDir 'qtec0001-enum.reg'
 $regText = & reg.exe export $enumNative $regOut /y 2>&1
 $regText | Set-Content -Encoding UTF8 -LiteralPath (Join-Path $OutputDir 'qtec0001-reg-export.txt')
@@ -58,9 +57,8 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 # GetSystemFirmwareTable/EnumSystemFirmwareTables are the documented user-mode
-# interfaces for ACPI firmware tables. Multi-character IDs are passed in the
-# DWORD form expected by Win32. For DSDT the table identifier is reversed
-# ('TDSD') as required by GetSystemFirmwareTable's ACPI provider.
+# interfaces for ACPI firmware tables. For the ACPI provider, table IDs use the
+# DWORD representation expected by Win32; DSDT is requested as 'TDSD'.
 $native = @'
 using System;
 using System.ComponentModel;
@@ -123,34 +121,45 @@ public static class A14FirmwareTables
 }
 '@
 
-if (-not ('A14FirmwareTables' -as [type])) {
-    Add-Type -TypeDefinition $native -Language CSharp
-}
+$dsdtStatus = 'NOT_ATTEMPTED'
+try {
+    if (-not ('A14FirmwareTables' -as [type])) {
+        Add-Type -TypeDefinition $native -Language CSharp
+    }
 
-$AcpiProvider = [uint32]0x41435049  # 'ACPI'
-$DsdtId = [uint32]0x54445344        # 'TDSD' -> DSDT for ACPI provider
+    $AcpiProvider = [uint32]0x41435049  # 'ACPI'
+    $DsdtId = [uint32]0x54445344        # 'TDSD' -> DSDT for ACPI provider
 
-Write-Host 'Enumerating ACPI table signatures...'
-$idsRaw = [A14FirmwareTables]::Enumerate($AcpiProvider)
-$ids = New-Object System.Collections.Generic.List[string]
-for ($i = 0; $i + 3 -lt $idsRaw.Length; $i += 4) {
-    $ids.Add([Text.Encoding]::ASCII.GetString($idsRaw, $i, 4))
-}
-$ids | Set-Content -Encoding ASCII -LiteralPath (Join-Path $OutputDir 'acpi-table-signatures.txt')
+    Write-Host 'Enumerating ACPI table signatures...'
+    $idsRaw = [A14FirmwareTables]::Enumerate($AcpiProvider)
+    $ids = New-Object System.Collections.Generic.List[string]
+    for ($i = 0; $i + 3 -lt $idsRaw.Length; $i += 4) {
+        $ids.Add([Text.Encoding]::ASCII.GetString($idsRaw, $i, 4))
+    }
+    $ids | Set-Content -Encoding ASCII -LiteralPath (Join-Path $OutputDir 'acpi-table-signatures.txt')
 
-Write-Host 'Retrieving DSDT from Windows ACPI provider...'
-$dsdt = [A14FirmwareTables]::Get($AcpiProvider, $DsdtId)
-if ($dsdt.Length -lt 36) {
-    throw "DSDT is implausibly short: $($dsdt.Length) bytes"
+    Write-Host 'Retrieving DSDT from Windows ACPI provider...'
+    $dsdt = [A14FirmwareTables]::Get($AcpiProvider, $DsdtId)
+    if ($dsdt.Length -lt 36) {
+        throw "DSDT is implausibly short: $($dsdt.Length) bytes"
+    }
+    $signature = [Text.Encoding]::ASCII.GetString($dsdt, 0, 4)
+    if ($signature -ne 'DSDT') {
+        throw "GetSystemFirmwareTable returned unexpected signature '$signature'"
+    }
+    $dsdtPath = Join-Path $OutputDir 'DSDT.aml'
+    [IO.File]::WriteAllBytes($dsdtPath, $dsdt)
+    $dsdtStatus = 'PASS'
+    Write-Host "DSDT_BYTES=$($dsdt.Length)"
+    Write-Host "DSDT_PATH=$dsdtPath"
 }
-$signature = [Text.Encoding]::ASCII.GetString($dsdt, 0, 4)
-if ($signature -ne 'DSDT') {
-    throw "GetSystemFirmwareTable returned unexpected signature '$signature'"
+catch {
+    $dsdtStatus = 'UNAVAILABLE'
+    $detail = ($_ | Out-String -Width 1000).TrimEnd()
+    $detail | Set-Content -Encoding UTF8 -LiteralPath (Join-Path $OutputDir 'acpi-firmware-error.txt')
+    Write-Warning 'Raw DSDT retrieval was unavailable; preserving the PnP/resource capture anyway.'
+    Write-Warning $detail
 }
-$dsdtPath = Join-Path $OutputDir 'DSDT.aml'
-[IO.File]::WriteAllBytes($dsdtPath, $dsdt)
-Write-Host "DSDT_BYTES=$($dsdt.Length)"
-Write-Host "DSDT_PATH=$dsdtPath"
 
 Write-TextFile 'system-summary.txt' {
     Get-ComputerInfo | Select-Object WindowsProductName, WindowsVersion, OsBuildNumber, BiosManufacturer, BiosVersion, BiosFirmwareType
@@ -171,6 +180,7 @@ if (Test-Path -LiteralPath $zipPath) {
 }
 Compress-Archive -Path (Join-Path $OutputDir '*') -DestinationPath $zipPath -Force
 
+Write-Host "DSDT_STATUS=$dsdtStatus"
 Write-Host "RESULT_DIR=$OutputDir"
 Write-Host "RESULT_ZIP=$zipPath"
 Write-Host 'A14_QTEC_ACPI_RESOURCE_CAPTURE=PASS'
