@@ -27,6 +27,9 @@ if [[ -L "$TARGET/driver" ]]; then
   ORIG_DRIVER=$(basename "$(readlink -f "$TARGET/driver")")
 fi
 
+CUSTOM_DRIVER=hid_asus_zenbook_a14_ec
+CUSTOM_MODULE=hid_asus_ec
+
 if [[ "$ORIG_DRIVER" == hid-generic ]]; then
   echo "A14_HID_GENERIC_TEST=ALREADY_GENERIC"
 else
@@ -34,8 +37,10 @@ else
   echo "hid_device=$HID_ID"
   echo "original_driver=$ORIG_DRIVER"
   echo "temporary_driver=hid-generic"
-  echo "This does not unload the I2C-HID transport or EC driver."
-  echo "It only removes the custom A14 HID client driver from 0B05:0220 while testing."
+  echo "This leaves the I2C-HID transport and EC driver loaded."
+  echo "The custom A14 HID client module is temporarily unloaded because"
+  echo "hid-generic deliberately refuses devices while any special HID driver"
+  echo "registered on the bus matches them."
 fi
 
 RESTORE_NEEDED=0
@@ -48,45 +53,63 @@ restore_driver() {
   if [[ $RESTORE_NEEDED -eq 1 ]]; then
     echo
     echo "===== RESTORE ORIGINAL HID DRIVER ====="
+
     if [[ "$current" == hid-generic && -w /sys/bus/hid/drivers/hid-generic/unbind ]]; then
       printf '%s\n' "$HID_ID" >/sys/bus/hid/drivers/hid-generic/unbind || true
     fi
-    modprobe hid_asus_ec 2>/dev/null || true
-    if [[ "$ORIG_DRIVER" != unbound && -w "/sys/bus/hid/drivers/$ORIG_DRIVER/bind" ]]; then
-      printf '%s\n' "$HID_ID" >"/sys/bus/hid/drivers/$ORIG_DRIVER/bind" 2>/dev/null || true
+
+    modprobe "$CUSTOM_MODULE" 2>/dev/null || true
+
+    # Driver registration normally probes matching unbound devices immediately.
+    # If this kernel leaves it unbound, request one ordinary HID-bus reprobe.
+    if [[ ! -L "$TARGET/driver" && -w /sys/bus/hid/drivers_probe ]]; then
+      printf '%s\n' "$HID_ID" >/sys/bus/hid/drivers_probe 2>/dev/null || true
     fi
+
     if [[ -L "$TARGET/driver" ]]; then
       current=$(basename "$(readlink -f "$TARGET/driver")")
     else
       current=unbound
     fi
     echo "restored_driver=$current"
+
+    if [[ "$ORIG_DRIVER" != unbound && "$current" != "$ORIG_DRIVER" ]]; then
+      echo "WARNING: original HID driver was not restored automatically." >&2
+      echo "Try: sudo modprobe $CUSTOM_MODULE" >&2
+    fi
   fi
 }
 trap restore_driver EXIT INT TERM
 
 if [[ "$ORIG_DRIVER" != hid-generic ]]; then
+  if [[ "$ORIG_DRIVER" != "$CUSTOM_DRIVER" ]]; then
+    echo "A14_HID_GENERIC_TEST=UNEXPECTED_ORIGINAL_DRIVER:$ORIG_DRIVER" >&2
+    exit 4
+  fi
+
   modprobe hid-generic
-
-  if [[ "$ORIG_DRIVER" != unbound && ! -w "/sys/bus/hid/drivers/$ORIG_DRIVER/unbind" ]]; then
-    echo "A14_HID_GENERIC_TEST=ORIGINAL_UNBIND_NOT_WRITABLE" >&2
-    exit 4
-  fi
-  if [[ ! -w /sys/bus/hid/drivers/hid-generic/bind ]]; then
-    echo "A14_HID_GENERIC_TEST=GENERIC_BIND_NOT_WRITABLE" >&2
-    exit 4
-  fi
-
-  # Do not use the per-device driver_override attribute here. On this A14's
-  # HID device the kernel exposes it but rejects writes with EACCES even as
-  # root. A manual driver's bind node already performs the driver's normal
-  # match check, and hid-generic matches this HID device, so direct
-  # unbind/bind is sufficient and closer to the test we actually need.
   RESTORE_NEEDED=1
-  if [[ "$ORIG_DRIVER" != unbound ]]; then
-    printf '%s\n' "$HID_ID" >"/sys/bus/hid/drivers/$ORIG_DRIVER/unbind"
+
+  # Important: direct binding to hid-generic fails with ENODEV while our
+  # registered special HID driver still matches 0B05:0220. hid-generic's match
+  # callback intentionally yields to every matching non-generic driver. Remove
+  # only our A14 HID client module, leaving the underlying i2c-hid transport
+  # untouched, then reprobe the HID device.
+  if ! modprobe -r "$CUSTOM_MODULE"; then
+    echo "A14_HID_GENERIC_TEST=CUSTOM_MODULE_UNLOAD_FAILED" >&2
+    exit 4
   fi
-  printf '%s\n' "$HID_ID" >/sys/bus/hid/drivers/hid-generic/bind
+
+  if [[ -L "$TARGET/driver" ]]; then
+    current=$(basename "$(readlink -f "$TARGET/driver")")
+  else
+    current=unbound
+  fi
+  echo "after_custom_module_unload=$current"
+
+  if [[ "$current" == unbound && -w /sys/bus/hid/drivers_probe ]]; then
+    printf '%s\n' "$HID_ID" >/sys/bus/hid/drivers_probe
+  fi
 fi
 
 CURRENT_DRIVER=unbound
