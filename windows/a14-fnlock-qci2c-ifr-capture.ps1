@@ -16,7 +16,7 @@ function Require-Administrator {
 function Invoke-Checked([string]$Exe, [string[]]$Arguments) {
     & $Exe @Arguments | Out-Host
     if ($LASTEXITCODE -ne 0) {
-        throw "$Exe exited with code $LASTEXITCODE: $($Arguments -join ' ')"
+        throw "$Exe exited with code ${LASTEXITCODE}: $($Arguments -join ' ')"
     }
 }
 
@@ -48,8 +48,10 @@ function Snapshot-Qci2cIfr([string]$Tag, [string]$TraceGuid, [string]$Root) {
     # Best-effort generic ETL projections. WPP message text may still require
     # the exact driver PDB/TMF, so the raw ETL is always retained.
     if (Get-Command tracerpt.exe -ErrorAction SilentlyContinue) {
-        & tracerpt.exe $etl -o $xml -of XML -y *> (Join-Path $Root "tracerpt-$Tag-xml.txt")
-        & tracerpt.exe $etl -o $csv -of CSV -y *> (Join-Path $Root "tracerpt-$Tag-csv.txt")
+        $xmlLog = Join-Path $Root "tracerpt-$Tag-xml.txt"
+        $csvLog = Join-Path $Root "tracerpt-$Tag-csv.txt"
+        & tracerpt.exe $etl -o $xml -of XML -y *> $xmlLog
+        & tracerpt.exe $etl -o $csv -of CSV -y *> $csvLog
     }
 
     $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $etl).Hash.ToLowerInvariant()
@@ -101,17 +103,19 @@ Get-ItemProperty -Path $sharedState -ErrorAction SilentlyContinue |
 sc.exe qc qci2c | Out-File -Encoding utf8 (Join-Path $OutDir 'qci2c-sc-qc.txt')
 sc.exe query qci2c | Out-File -Encoding utf8 (Join-Path $OutDir 'qci2c-sc-query.txt')
 
-$driverPath = (Get-CimInstance Win32_SystemDriver -Filter "Name='qci2c'").PathName
-$driverPath = [Environment]::ExpandEnvironmentVariables($driverPath)
-if ($driverPath.StartsWith('\SystemRoot\', [StringComparison]::OrdinalIgnoreCase)) {
-    $driverPath = Join-Path $env:SystemRoot $driverPath.Substring(12)
-}
-$driverPath = $driverPath.Trim('"')
-if (Test-Path -LiteralPath $driverPath) {
-    Get-Item -LiteralPath $driverPath | Select-Object FullName,Length,@{N='FileVersion';E={$_.VersionInfo.FileVersion}},@{N='ProductVersion';E={$_.VersionInfo.ProductVersion}} |
-        Format-List | Out-File -Encoding utf8 (Join-Path $OutDir 'qci2c-driver.txt')
-    Get-FileHash -Algorithm SHA256 -LiteralPath $driverPath |
-        Format-List | Out-File -Encoding utf8 (Join-Path $OutDir 'qci2c-driver-sha256.txt')
+$driver = Get-CimInstance Win32_SystemDriver -Filter "Name='qci2c'"
+$driverPath = $driver.PathName
+if ($driverPath) {
+    $driverPath = [Environment]::ExpandEnvironmentVariables($driverPath).Trim('"')
+    if ($driverPath.StartsWith('\SystemRoot\', [StringComparison]::OrdinalIgnoreCase)) {
+        $driverPath = Join-Path $env:SystemRoot $driverPath.Substring(12)
+    }
+    if (Test-Path -LiteralPath $driverPath) {
+        Get-Item -LiteralPath $driverPath | Select-Object FullName,Length,@{N='FileVersion';E={$_.VersionInfo.FileVersion}},@{N='ProductVersion';E={$_.VersionInfo.ProductVersion}} |
+            Format-List | Out-File -Encoding utf8 (Join-Path $OutDir 'qci2c-driver.txt')
+        Get-FileHash -Algorithm SHA256 -LiteralPath $driverPath |
+            Format-List | Out-File -Encoding utf8 (Join-Path $OutDir 'qci2c-driver-sha256.txt')
+    }
 }
 
 # Reuse the exact C# HID implementation from the already-proven direct probe,
@@ -204,6 +208,6 @@ $zip = "$OutDir.zip"
 Remove-Item -LiteralPath $zip -Force -ErrorAction SilentlyContinue
 Compress-Archive -Path (Join-Path $OutDir '*') -DestinationPath $zip -CompressionLevel Optimal
 Write-Host ''
-Write-Host "A14_QCI2C_IFR_CAPTURE=COMPLETE"
+Write-Host 'A14_QCI2C_IFR_CAPTURE=COMPLETE'
 Write-Host "ZIP=$zip"
 Write-Host "ZIP_SHA256=$((Get-FileHash -Algorithm SHA256 -LiteralPath $zip).Hash.ToLowerInvariant())"
