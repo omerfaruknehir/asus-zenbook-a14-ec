@@ -58,77 +58,84 @@ Linux's single-message `i2c-qcom-geni` write constructs the same opcode/address
 and leaves `STOP_STRETCH` clear. START/address/STOP command parameters therefore
 do not currently provide a concrete Windows-only behavior to copy.
 
-## Packing configuration matches exactly
+## FIFO versus SE-DMA A/B is disproven as sufficient
 
-Linux v7.1.5 configures the non-GPI I2C serial engine for 8-bit words packed
-four bytes per FIFO word, MSB-to-LSB. The resulting register values are:
+Static disassembly of the captured Windows Qualcomm driver shows that its
+non-GPI transmit path writes through `SE_GENI_TX_FIFOn` and keeps
+`SE_GENI_DMA_MODE_EN` cleared. Linux v7.1.5 normally chooses internal SE-DMA
+for non-GPI transfers at least 32 bytes long, so the 73-byte Fn-lock
+SET_FEATURE normally takes a different Linux data path.
 
-- `SE_GENI_TX_PACKING_CFG0 = 0x0007f8fe`
-- `SE_GENI_TX_PACKING_CFG1 = 0x000ffefe`
-- the same pair for RX
-- `SE_GENI_BYTE_GRAN = 0`
-
-Static disassembly of the exact captured Windows `qci2c8380.sys` loads the
-literal constants `0x0007f8fe` and `0x000ffefe` and stores them to the same
-TX and RX packing registers. Packing/byte-lane configuration therefore does not
-explain the Windows-only Fn-lock behavior.
-
-## Windows FIFO versus Linux SE-DMA A/B is disproven as sufficient
-
-The captured Windows Qualcomm driver uses direct `SE_GENI_TX_FIFOn` writes in
-its non-GPI transmit path and keeps `SE_GENI_DMA_MODE_EN` cleared. Linux v7.1.5
-normally sends the 73-byte HID-over-I2C SET_FEATURE through internal SE-DMA when
-FIFO is available because the transfer exceeds its 32-byte DMA threshold.
-
-A controller-scoped Linux A/B was therefore performed that changed only writes
-matching all of:
-
-- physical controller `0x00a80000`
-- slave address `0x15`
-- write length exactly 73 bytes
-
-The instrumented driver reported:
+The live UX3407RA controller reported:
 
 - `GENI_IF_DISABLE_RO = 0x00000000`
 - `FIFO_IF_DISABLE = 0`
-- `windows_fifo = 1`
 
-so FIFO is genuinely available on this serial engine. Every boot-time and
-user-triggered 73-byte write logged:
+so FIFO is genuinely available. A controller-scoped A/B then forced every
+73-byte write to address `0x15` on controller `0x00a80000` through GENI FIFO,
+bypassing Linux SE-DMA. The driver logged the forced FIFO path for the boot-time
+ASUS feature writes and for repeated user-triggered Fn-lock state 0/1 writes.
 
-`A14 Fn-lock Windows FIFO A/B: addr=0x15 len=73 forced=FIFO (SE-DMA bypassed)`
+Physical F-row behavior still did not reverse. Therefore FIFO versus internal
+SE-DMA is not sufficient to explain the Windows-versus-Linux Fn-lock behavior.
 
-Repeated Fn-lock state=0/state=1 feature writes still returned success and the
-physical F-row still did not reverse. FIFO versus internal SE-DMA is therefore
-not sufficient to explain the behavior.
+## GENI FIFO packing matches Windows
 
-## Windows HID stack has no ASUS filter on the target collection
+Linux configures I2C FIFO packing with 8-bit words, four bytes per FIFO entry,
+MSB-to-LSB ordering. The resulting values are:
 
-The existing Windows transport capture shows the target `ACPI\\QTEC0001\\2`
-stack uses the Microsoft `hidi2c` service with Microsoft `mshidkmdf` as its
-upper filter. `HID\\QTEC0001&COL03...` has no upper or lower vendor filter.
-`AsusConsumerDevFilter.sys` is attached to a separate `ACPI\\ASUH2024` HID
-device, not the QTEC0001 vendor-defined collection used by Fn-switch.
+- `TX_PACKING_CFG0 = 0x0007f8fe`
+- `TX_PACKING_CFG1 = 0x000ffefe`
+- `RX_PACKING_CFG0 = 0x0007f8fe`
+- `RX_PACKING_CFG1 = 0x000ffefe`
+- `BYTE_GRAN = 0`
 
-Therefore the successful direct Windows `HidD_SetFeature()` result is not
-currently explained by an ASUS filter intercepting the target request.
+The captured Windows `qci2c8380.sys` loads the same literal values
+`0x0007f8fe` and `0x000ffefe` and writes them to the corresponding TX/RX
+packing registers. Packing therefore does not provide a concrete remaining
+Windows-only behavior.
 
-## Next software discriminator: first-contact enumeration state
+## No ASUS kernel filter on the successful Windows target stack
 
-Linux v7.1.5 performs an extra pre-enumeration address probe before reading the
-HID descriptor:
+The successful direct Windows `HidD_SetFeature()` test targets the
+`QTEC0001` Col03 HID collection. The captured target stack consists of the
+standard Microsoft HID-over-I2C/HIDClass path and does not contain an ASUS
+upper/lower filter on this collection. `AsusConsumerDevice.sys` belongs to a
+different ASUS HID device. This makes a hidden ASUS kernel-filter side effect
+on the successful QTEC0001 feature request unlikely.
 
-`i2c_smbus_read_byte(0x15)`
+## Linux initial raw address-probe A/B: Fn-lock negative, backlight regression
 
-Windows HIDI2C's documented enumeration begins directly with the HID descriptor
-address write/read, followed by SET_POWER, RESET, reset-completion input read,
-and report-descriptor retrieval. The previous Linux Windows-style reset A/B was
-performed only after normal Linux enumeration had already happened, so it could
-not disprove a persistent state difference caused by Linux's very first raw
-address probe.
+Linux v7.1.5 normally calls `i2c_hid_probe_address()` before fetching the HID
+descriptor. That helper performs a raw `i2c_smbus_read_byte()` against the
+I2C-HID target before normal descriptor/power/reset enumeration.
 
-The next clean cold-boot A/B should therefore restore the stock GENI driver and
-change only this one Linux behavior for the UX3407RA keyboard: skip the initial
-raw `i2c_smbus_read_byte()` probe on controller `a80000.i2c`, address `0x15`.
-Keep normal Linux timing, FIFO/SE-DMA policy, reset ordering and HID feature
-formatting unchanged for this first test.
+A cold-boot A/B removed only that initial raw address probe for physical
+controller `a80000.i2c`, address `0x15`, while restoring the stock GENI driver,
+stock Linux SCL timing, stock Linux FIFO/SE-DMA policy, and stock Linux
+POWER_ON/RESET sequencing.
+
+The instrumented module proved the A/B was active on the cold boot:
+
+- `loaded_a14_skip_initial_probe=Y`
+- log: `skipping Linux raw initial i2c_smbus_read_byte() probe on a80000.i2c addr=0x15`
+- no old GENI timing/FIFO experiment remained installed for the boot
+
+Fn-lock still did not physically reverse the F-row. Therefore Linux's extra raw
+pre-descriptor address probe is not sufficient to explain the Fn-lock failure.
+
+However, on this same cold boot the keyboard backlight stopped working. Treat
+that as an adverse regression associated with the altered first-contact
+sequence until a stock-HIDI2C cold boot restores the baseline. Do not stack
+additional HIDI2C enumeration experiments on top of this state.
+
+## Next safe direction
+
+First restore the stock `i2c-hid` module and perform a full power-off/power-on
+to verify keyboard-backlight recovery. Only after the baseline is restored
+should the next HIDI2C experiment proceed.
+
+The next high-value cold-boot comparison is the actual POWER_ON/RESET ordering
+and delay from the very first enumeration, rather than applying an equivalent
+sequence later after Linux has already initialized the device. Keep that A/B
+single-variable and retain the stock GENI controller path.
