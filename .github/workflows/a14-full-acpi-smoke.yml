@@ -108,6 +108,10 @@ jobs:
           grep -F 'acpi_dev_clear_dependencies' linux-7.1.5/drivers/platform/arm64/qcom-woa-qppx-compat.c
           grep -F 'a14_acpi_halt' linux-7.1.5/drivers/acpi/bus.c
           grep -F 'A14 ACPI TRACE: %s' linux-7.1.5/drivers/acpi/bus.c
+          grep -F 'a14_acpi_reboot_delay_ms' linux-7.1.5/drivers/acpi/bus.c
+          grep -F 'A14 ACPI CHECKPOINT REBOOT NOW: %s' linux-7.1.5/drivers/acpi/bus.c
+          grep -F 'emergency_restart();' linux-7.1.5/drivers/acpi/bus.c
+          ! grep -F 'Intentional hold. If this machine reboots anyway' linux-7.1.5/drivers/acpi/bus.c
           grep -F 'acpi-early-enter' linux-7.1.5/drivers/acpi/bus.c
           grep -F 'acpi-scan-after' linux-7.1.5/drivers/acpi/bus.c
           grep -F 'acpi-init-done' linux-7.1.5/drivers/acpi/bus.c
