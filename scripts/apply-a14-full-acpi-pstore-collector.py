@@ -2,11 +2,12 @@
 # SPDX-License-Identifier: GPL-2.0-only
 """Add an A14 diagnostic-only early ramoops collector to Linux 7.1.5.
 
-When booted with ramoops.a14_collector=1, ramoops prints the *previous boot's*
-persistent console immediately after the console PRZ is recovered, waits a
-bounded interval for a photo, then emergency-restarts. This happens from the
-postcore ramoops probe, before the later device-initcall/provider failures that
-make the full experimental DT collector unsuitable as a normal userspace boot.
+When booted with ramoops.a14_collector=1, ramoops prints the tail of the
+*previous boot's* persistent console immediately after the console PRZ is
+recovered, waits a bounded interval for a photo, then emergency-restarts. This
+happens from the postcore ramoops probe, before the later device-initcall/provider
+failures that make the full experimental DT collector unsuitable as a normal
+userspace boot.
 """
 from pathlib import Path
 import sys
@@ -61,7 +62,7 @@ def main() -> None:
     text = replace_once(text, old_params, new_params, "collector_params")
 
     helper_anchor = '''static int ramoops_probe(struct platform_device *pdev)\n{\n'''
-    helper = '''static void ramoops_a14_echo_previous_console(struct ramoops_context *cxt)\n{\n\tconst char *old = NULL;\n\tsize_t old_size = 0;\n\tsize_t off = 0;\n\tunsigned int remaining;\n\n\tif (!a14_collector)\n\t\treturn;\n\n\tif (cxt->cprz) {\n\t\told_size = persistent_ram_old_size(cxt->cprz);\n\t\told = persistent_ram_old(cxt->cprz);\n\t}\n\n\tpr_emerg("============================================================\\n");\n\tpr_emerg("A14 PSTORE EARLY COLLECTOR\\n");\n\tpr_emerg("previous_console_bytes=%zu\\n", old_size);\n\tpr_emerg("ramoops_region=0x%lx@0x%llx\\n", cxt->size,\n\t\t (unsigned long long)cxt->phys_addr);\n\tpr_emerg("================ PREVIOUS BOOT CONSOLE BEGIN ================\\n");\n\n\tif (!old || !old_size) {\n\t\tpr_emerg("A14 PSTORE: no previous console recovered\\n");\n\t} else {\n\t\twhile (off < old_size) {\n\t\t\tsize_t chunk = min_t(size_t, old_size - off, 512);\n\n\t\t\tprintk(KERN_EMERG "%.*s", (int)chunk, old + off);\n\t\t\toff += chunk;\n\t\t}\n\t\tif (old[old_size - 1] != '\\n')\n\t\t\tprintk(KERN_EMERG "\\n");\n\t}\n\n\tpr_emerg("================= PREVIOUS BOOT CONSOLE END =================\\n");\n\tif (a14_collector_delay_ms > 60000)\n\t\ta14_collector_delay_ms = 60000;\n\tpr_emerg("A14 PSTORE: rebooting automatically in %u ms\\n",\n\t\t a14_collector_delay_ms);\n\tpr_emerg("============================================================\\n");\n\n\tremaining = a14_collector_delay_ms;\n\twhile (remaining) {\n\t\tunsigned int step = remaining > 100 ? 100 : remaining;\n\n\t\tmdelay(step);\n\t\tremaining -= step;\n\t}\n\n\tpr_emerg("A14 PSTORE: collector reboot now\\n");\n\temergency_restart();\n\tpr_emerg("A14 PSTORE ERROR: emergency_restart returned\\n");\n\tfor (;;)\n\t\tmdelay(1000);\n}\n\n''' + helper_anchor
+    helper = '''static void ramoops_a14_echo_previous_console(struct ramoops_context *cxt)\n{\n\tconst char *old = NULL;\n\tsize_t old_size = 0;\n\tsize_t shown_size = 0;\n\tsize_t off = 0;\n\tunsigned int remaining;\n\n\tif (!a14_collector)\n\t\treturn;\n\n\tif (cxt->cprz) {\n\t\told_size = persistent_ram_old_size(cxt->cprz);\n\t\told = persistent_ram_old(cxt->cprz);\n\t}\n\n\tpr_emerg("============================================================\\n");\n\tpr_emerg("A14 PSTORE EARLY COLLECTOR\\n");\n\tpr_emerg("previous_console_bytes=%zu\\n", old_size);\n\tpr_emerg("ramoops_region=0x%lx@0x%llx\\n", cxt->size,\n\t\t (unsigned long long)cxt->phys_addr);\n\tpr_emerg("================ PREVIOUS BOOT CONSOLE TAIL =================\\n");\n\n\tif (!old || !old_size) {\n\t\tpr_emerg("A14 PSTORE: no previous console recovered\\n");\n\t} else {\n\t\tshown_size = min_t(size_t, old_size, 64 * 1024);\n\t\toff = old_size - shown_size;\n\t\tpr_emerg("showing_last_bytes=%zu\\n", shown_size);\n\t\twhile (off < old_size) {\n\t\t\tsize_t chunk = min_t(size_t, old_size - off, 512);\n\n\t\t\tprintk(KERN_EMERG "%.*s", (int)chunk, old + off);\n\t\t\toff += chunk;\n\t\t}\n\t\tif (old[old_size - 1] != '\\n')\n\t\t\tprintk(KERN_EMERG "\\n");\n\t}\n\n\tpr_emerg("================= PREVIOUS BOOT CONSOLE END =================\\n");\n\tif (a14_collector_delay_ms > 60000)\n\t\ta14_collector_delay_ms = 60000;\n\tpr_emerg("A14 PSTORE: rebooting automatically in %u ms\\n",\n\t\t a14_collector_delay_ms);\n\tpr_emerg("============================================================\\n");\n\n\tremaining = a14_collector_delay_ms;\n\twhile (remaining) {\n\t\tunsigned int step = remaining > 100 ? 100 : remaining;\n\n\t\tmdelay(step);\n\t\tremaining -= step;\n\t}\n\n\tpr_emerg("A14 PSTORE: collector reboot now\\n");\n\temergency_restart();\n\tpr_emerg("A14 PSTORE ERROR: emergency_restart returned\\n");\n\tfor (;;)\n\t\tmdelay(1000);\n}\n\n''' + helper_anchor
     text = replace_once(text, helper_anchor, helper, "collector_helper")
 
     old_call = '''\terr = ramoops_init_prz("console", dev, cxt, &cxt->cprz, &paddr,\n\t\t\t       cxt->console_size, 0);\n\tif (err)\n\t\tgoto fail_init;\n\n\terr = ramoops_init_prz("pmsg", dev, cxt, &cxt->mprz, &paddr,\n'''
@@ -74,6 +75,7 @@ def main() -> None:
         'ramoops.a14_collector=',
         'A14 PSTORE EARLY COLLECTOR',
         'persistent_ram_old_size(cxt->cprz)',
+        'showing_last_bytes=%zu',
         'ramoops_a14_echo_previous_console(cxt);',
         'emergency_restart();',
     )
@@ -83,6 +85,7 @@ def main() -> None:
 
     print("A14_FULL_ACPI_PSTORE_COLLECTOR=APPLIED")
     print("collector_phase=ramoops-postcore-probe-before-device-initcalls")
+    print("collector_screen_tail_bytes=65536")
     print("default_collector_delay_ms=12000")
 
 
