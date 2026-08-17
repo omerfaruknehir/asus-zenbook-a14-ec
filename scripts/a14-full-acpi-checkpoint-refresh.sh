@@ -1,6 +1,6 @@
 #!/bin/bash
 # SPDX-License-Identifier: GPL-2.0-only
-# Incrementally add the QPPX provider + early ACPI checkpoints to the existing
+# Incrementally add QPPX + selectable ACPI/initcall checkpoints to the existing
 # 7.1.5-a14-acpi-full0 build. Only the experimental kernel image is replaced.
 set -euo pipefail
 
@@ -27,10 +27,11 @@ build_checkpoint(){
     for c in python3 make gcc sha256sum; do need "$c"; done
     check_tree
 
-    # Both transforms are idempotent. Keeping QPPX here ensures this diagnostic
-    # image contains the previously CI-validated dependency fix too.
+    # All transforms are idempotent; keep the previously validated QPPX fix in
+    # the same diagnostic image while extending checkpoints later into boot.
     python3 "$ROOT/scripts/apply-a14-full-acpi-qppx.py" "$SRC"
     python3 "$ROOT/scripts/apply-a14-full-acpi-checkpoints.py" "$SRC"
+    python3 "$ROOT/scripts/apply-a14-full-acpi-late-checkpoints.py" "$SRC"
 
     "$SRC/scripts/config" --file "$OUT/.config" --enable QCOM_WOA_QPPX_COMPAT
     export LOCALVERSION=
@@ -38,13 +39,12 @@ build_checkpoint(){
     grep -q '^CONFIG_QCOM_WOA_QPPX_COMPAT=y$' "$OUT/.config" || die "QPPX provider is not built-in"
     [[ "$(make -s -C "$SRC" O="$OUT" kernelrelease)" == "$KREL" ]] || die "kernelrelease changed unexpectedly"
 
-    # Only objects touched by the new source changes plus the final Image link
-    # should rebuild in the existing output tree.
     make -C "$SRC" O="$OUT" -j"${A14_BUILD_JOBS:-$(nproc)}" Image
     [[ -s "$OUT/arch/arm64/boot/Image" ]] || die "rebuilt Image missing"
 
     say "A14_FULL_ACPI_CHECKPOINT_BUILD=COMPLETE"
     say "kernelrelease=$KREL"
+    say "late_checkpoints=yes"
     say "image=$OUT/arch/arm64/boot/Image"
     say "image_sha256=$(sha256sum "$OUT/arch/arm64/boot/Image" | awk '{print $1}')"
 }
@@ -56,6 +56,7 @@ install_checkpoint(){
     check_tree
     [[ -s "$OUT/arch/arm64/boot/Image" ]] || die "rebuilt Image missing"
     grep -q 'A14 ACPI CHECKPOINT REACHED' "$SRC/drivers/acpi/bus.c" || die "checkpoint source patch missing"
+    grep -q 'initcall-device-after' "$SRC/init/main.c" || die "late checkpoint source patch missing"
     [[ -f "/boot/vmlinuz-$KREL" ]] || die "installed experimental kernel missing"
 
     mkdir -p "$BACKUP"
