@@ -25,14 +25,15 @@ lines = p.read_text().splitlines()
 new = []
 changed = 0
 
-# These either hide the early failure or defeat the diagnostics we want.
+# Remove only arguments that hide or conflict with visible diagnostics. Keep
+# efi=noruntime because the known-good DT boot uses it; changing EFI runtime
+# policy at the same time as DT-vs-ACPI authority would spoil the A/B test.
 remove_exact = {
     "quiet",
     "splash",
     "ignore_loglevel",
     "initcall_debug",
     "keep_bootcon",
-    "efi=noruntime",
 }
 remove_prefixes = (
     "acpi=",
@@ -42,7 +43,6 @@ remove_prefixes = (
     "panic_print=",
     "printk.time=",
     "printk.always_kmsg_dump=",
-    "efi_pstore.pstore_disable=",
     "earlycon=",
     "console=",
 )
@@ -57,7 +57,6 @@ debug_args = [
     "panic_print=103",
     "printk.time=1",
     "printk.always_kmsg_dump=Y",
-    "efi_pstore.pstore_disable=N",
     "earlycon=efifb,ram",
     "console=tty0",
     "keep_bootcon",
@@ -75,6 +74,9 @@ for line in lines:
             if arg in remove_exact or arg.startswith(remove_prefixes):
                 continue
             kept.append(arg)
+        # Preserve known-good EFI policy even if an earlier edit removed it.
+        if "efi=noruntime" not in kept:
+            kept.append("efi=noruntime")
         kept.extend(debug_args)
         line = indent + " ".join(shlex.quote(x) for x in kept)
         changed += 1
@@ -85,10 +87,10 @@ if changed != 1:
 text = "\n".join(new) + "\n"
 if any(x.lstrip().startswith("devicetree ") for x in new):
     raise SystemExit("refusing: full-ACPI entry unexpectedly contains devicetree command")
-for forbidden in (" quiet ", " splash ", "efi=noruntime"):
+for forbidden in (" quiet ", " splash "):
     if forbidden in f" {text} ":
         raise SystemExit(f"diagnostic-hiding argument survived: {forbidden.strip()}")
-for required in debug_args:
+for required in ["efi=noruntime", *debug_args]:
     if required not in text:
         raise SystemExit(f"missing required debug argument: {required}")
 p.write_text(text)
@@ -99,6 +101,7 @@ update-grub
 
 echo "A14_FULL_ACPI_DEBUG_ENTRY=READY"
 echo "The experimental entry now has visible early boot logging and panic=0."
+echo "EFI runtime policy remains efi=noruntime to match the known-good DT control."
 echo "If it stops or panics, photograph the FINAL visible screen before recovery."
 echo "If it hard-resets anyway, note approximately how many seconds elapsed and the last visible line if possible."
 grep -E '^[[:space:]]*linux[[:space:]]' "$snippet"
