@@ -1,0 +1,40 @@
+name: Fetch ACPI RFC09
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [agent/a14-full-acpi]
+    paths:
+      - '.github/workflows/fetch-acpi-rfc09.yml'
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Fetch original RFC patch 09/12
+        shell: bash
+        run: |
+          set -euxo pipefail
+          id='20260623145225.143218-10-johannes.goede@oss.qualcomm.com'
+          ok=0
+          for base in \
+            'https://lore.kernel.org/linux-acpi' \
+            'https://lore.kernel.org/linux-arm-msm' \
+            'https://lore.kernel.org/all'; do
+            if curl --fail --location --retry 3 --max-time 30 "$base/$id/raw" -o rfc09.eml; then
+              ok=1
+              break
+            fi
+          done
+          test "$ok" = 1
+          grep -F 'Subject: [RFC 09/12] pinctrl: qcom: Add support for WoA ACPI tables' rfc09.eml
+          grep -F 'pinctrl-msm-acpi.c' rfc09.eml
+          sha256sum rfc09.eml | tee rfc09.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: acpi-rfc09-original
+          path: |
+            rfc09.eml
+            rfc09.sha256
+          if-no-files-found: error
