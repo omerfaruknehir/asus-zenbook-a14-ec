@@ -112,15 +112,15 @@ EOF
   update-grub
 }
 
-install(){
-  need_root; check_arch; load_meta
+install_kernel(){
+  need_root; check_arch; load_meta; need install
   [[ "$(uname -r)" != "$KREL" ]] || die "refusing to reinstall running experimental kernel"
   export LOCALVERSION=
   make -C "$SRC" O="$OUT" modules_install
   ln -sfn "$OUT" "/lib/modules/$KREL/build"; ln -sfn "$SRC" "/lib/modules/$KREL/source"
-  install -m0644 "$OUT/arch/arm64/boot/Image" "/boot/vmlinuz-$KREL"
-  [[ ! -s "$OUT/System.map" ]] || install -m0644 "$OUT/System.map" "/boot/System.map-$KREL"
-  install -m0644 "$OUT/.config" "/boot/config-$KREL"
+  command install -m0644 "$OUT/arch/arm64/boot/Image" "/boot/vmlinuz-$KREL"
+  [[ ! -s "$OUT/System.map" ]] || command install -m0644 "$OUT/System.map" "/boot/System.map-$KREL"
+  command install -m0644 "$OUT/.config" "/boot/config-$KREL"
   depmod -a "$KREL"
   rm -f "/boot/initrd.img-$KREL"; update-initramfs -c -k "$KREL"
   write_grub
@@ -168,4 +168,4 @@ remove(){
   say "A14_FULL_ACPI_REMOVE=COMPLETE"
 }
 
-case "$ACTION" in prepare) prepare;; build) build;; install) install;; status) status;; remove) remove;; *) die "usage: $0 {prepare|build|install|status|remove}";; esac
+case "$ACTION" in prepare) prepare;; build) build;; install) install_kernel;; status) status;; remove) remove;; *) die "usage: $0 {prepare|build|install|status|remove}";; esac
