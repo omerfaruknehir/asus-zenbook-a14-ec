@@ -8,6 +8,7 @@ on:
       - 'scripts/apply-a14-full-acpi.py'
       - 'scripts/apply-a14-full-acpi-qppx.py'
       - 'scripts/apply-a14-full-acpi-checkpoints.py'
+      - 'scripts/apply-a14-full-acpi-late-checkpoints.py'
       - 'scripts/a14-full-acpi-kernel.sh'
       - '.github/workflows/a14-full-acpi-smoke.yml'
 
@@ -32,6 +33,7 @@ jobs:
           python3 scripts/apply-a14-full-acpi.py linux-7.1.5
           python3 scripts/apply-a14-full-acpi-qppx.py linux-7.1.5
           python3 scripts/apply-a14-full-acpi-checkpoints.py linux-7.1.5
+          python3 scripts/apply-a14-full-acpi-late-checkpoints.py linux-7.1.5
       - name: Configure ARM64
         run: |
           make -C linux-7.1.5 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- defconfig
@@ -54,6 +56,7 @@ jobs:
         run: |
           set -uo pipefail
           targets=(
+            init/main.o
             drivers/acpi/bus.o
             drivers/pci/pci-acpi.o
             drivers/platform/wmi/core.o
@@ -89,6 +92,10 @@ jobs:
           grep -F 'a14_acpi_halt' linux-7.1.5/drivers/acpi/bus.c
           grep -F 'acpi-early-enter' linux-7.1.5/drivers/acpi/bus.c
           grep -F 'acpi-scan-after' linux-7.1.5/drivers/acpi/bus.c
+          grep -F 'acpi-init-done' linux-7.1.5/drivers/acpi/bus.c
+          grep -F 'initcall-subsys-after' linux-7.1.5/init/main.c
+          grep -F 'initcall-device-after' linux-7.1.5/init/main.c
+          grep -F 'initcall-late-after' linux-7.1.5/init/main.c
           grep -F 'pci-acpi-enter' linux-7.1.5/drivers/pci/pci-acpi.c
           grep -F 'X86 || ARM64' linux-7.1.5/drivers/platform/wmi/Kconfig
           grep -F 'CONFIG_ASUS_WMI' linux-7.1.5/drivers/platform/asus/Makefile
