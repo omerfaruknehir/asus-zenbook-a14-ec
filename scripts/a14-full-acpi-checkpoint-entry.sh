@@ -26,6 +26,23 @@ stages=(
     initcall-fs-after
     initcall-device-after
     initcall-late-after
+    smmu-init-enter
+    smmu-driver-registered
+    smmu-impl-registered
+)
+
+smmu_probe_points=(
+    enter
+    after-fwdata
+    after-ioremap
+    after-impl
+    before-cfg
+    after-cfg
+    before-rmr
+    after-rmr
+    before-reset
+    after-reset
+    after-smr-test
 )
 
 die(){ echo "ERROR: $*" >&2; exit 1; }
@@ -33,9 +50,19 @@ need_root(){ [[ ${EUID:-$(id -u)} -eq 0 ]] || die "run with sudo/root"; }
 need(){ command -v "$1" >/dev/null 2>&1 || die "missing command: $1"; }
 
 valid_stage(){
-    local x
+    local x point
     for x in "${stages[@]}"; do [[ "$STAGE" == "$x" ]] && return 0; done
+    if [[ "$STAGE" =~ ^smmu-probe([1-9][0-9]*)-(.+)$ ]]; then
+        for point in "${smmu_probe_points[@]}"; do
+            [[ "${BASH_REMATCH[2]}" == "$point" ]] && return 0
+        done
+    fi
     return 1
+}
+
+print_stages(){
+    printf '  %s\n' "${stages[@]}"
+    echo '  smmu-probeN-{enter,after-fwdata,after-ioremap,after-impl,before-cfg,after-cfg,before-rmr,after-rmr,before-reset,after-reset,after-smr-test}'
 }
 
 remove_entry(){
@@ -49,7 +76,7 @@ install_entry(){
     need_root
     valid_stage || {
         echo "Valid stages:" >&2
-        printf '  %s\n' "${stages[@]}" >&2
+        print_stages >&2
         die "unknown checkpoint stage: $STAGE"
     }
     for c in grub-probe grub-mkrelpath update-grub; do need "$c"; done
@@ -63,7 +90,7 @@ install_entry(){
     args=()
     for arg in $(cat /proc/cmdline); do
         case "$arg" in
-            BOOT_IMAGE=*|initrd=*|acpi=*|panic=*|oops=*|quiet|splash|break=*|debug|debug=*|loglevel=*|earlycon=*|console=*|ignore_loglevel|initcall_debug|keep_bootcon|a14_acpi_halt=*)
+            BOOT_IMAGE=*|initrd=*|acpi=*|panic=*|oops=*|quiet|splash|break=*|debug|debug=*|loglevel=*|earlycon=*|console=*|ignore_loglevel|initcall_debug|keep_bootcon|a14_acpi_halt=*|a14_device_halt_after=*|initcall_blacklist=*)
                 ;;
             *) args+=("$arg") ;;
         esac
@@ -92,6 +119,9 @@ EOF
     if grep -qE '(^|[[:space:]])panic=' <<<"$linux_line"; then
         die "panic argument unexpectedly present"
     fi
+    if grep -qE '(^|[[:space:]])initcall_blacklist=' <<<"$linux_line"; then
+        die "stale initcall blacklist unexpectedly present"
+    fi
 
     update-grub
     echo "A14_FULL_ACPI_CHECKPOINT_ENTRY=READY"
@@ -106,7 +136,7 @@ case "$STAGE" in
     remove) remove_entry ;;
     "")
         echo "usage: $0 {stage|remove}" >&2
-        printf '  %s\n' "${stages[@]}" >&2
+        print_stages >&2
         exit 2
         ;;
     *) install_entry ;;
