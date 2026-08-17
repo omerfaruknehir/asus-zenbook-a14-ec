@@ -1,8 +1,8 @@
 #!/bin/bash
 # SPDX-License-Identifier: GPL-2.0-only
 # Install/remove one temporary full-ACPI initramfs shell entry.
-# The test intentionally contains NO panic= argument because initramfs-tools
-# treats any panic= value as a request to suppress its emergency shell and
+# The test intentionally contains no panic boot argument because initramfs-tools
+# treats any such value as a request to suppress its emergency shell and
 # reboot/halt instead.
 set -euo pipefail
 
@@ -46,14 +46,14 @@ install_entry(){
     done
 
     # Keep the existing efi=noruntime policy if the known-good boot uses it.
-    # Crucially: NO panic= parameter here. Ubuntu initramfs-tools otherwise
-    # suppresses the shell and forces a reboot/halt when mountroot fails.
+    # Crucially, do not add a panic boot argument: Ubuntu initramfs-tools would
+    # suppress its shell and force a reboot/halt when mountroot fails.
     cmdline="${args[*]} acpi=force loglevel=8 ignore_loglevel printk.time=1 console=tty0 debug=vc break=mountroot"
 
     cat > "$SNIPPET" <<EOF
 #!/bin/sh
 exec tail -n +3 \$0
-# Temporary ACPI-only root-storage diagnostic. NO devicetree and NO panic=.
+# Temporary ACPI-only root-storage diagnostic. No devicetree is loaded.
 menuentry '$ENTRY' --class ubuntu --class gnu-linux --class gnu --class os {
     search --no-floppy --fs-uuid --set=root $uuid
     linux $kp $cmdline
@@ -65,8 +65,9 @@ EOF
     ! grep -qE '^[[:space:]]*devicetree[[:space:]]' "$SNIPPET" || die "unexpected devicetree command"
     grep -q 'acpi=force' "$SNIPPET" || die "acpi=force missing"
     grep -q 'break=mountroot' "$SNIPPET" || die "break=mountroot missing"
-    if grep -qE '(^|[[:space:]])panic=' "$SNIPPET"; then
-        die "panic= unexpectedly present; this would suppress the initramfs shell"
+    linux_line="$(grep -E '^[[:space:]]*linux[[:space:]]' "$SNIPPET")"
+    if grep -qE '(^|[[:space:]])panic=' <<<"$linux_line"; then
+        die "panic boot argument unexpectedly present; this would suppress the initramfs shell"
     fi
 
     update-grub
