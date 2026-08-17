@@ -33,6 +33,7 @@ build_checkpoint(){
     python3 "$ROOT/scripts/apply-a14-full-acpi-checkpoints.py" "$SRC"
     python3 "$ROOT/scripts/apply-a14-full-acpi-late-checkpoints.py" "$SRC"
     python3 "$ROOT/scripts/apply-a14-full-acpi-device-bisect.py" "$SRC"
+    python3 "$ROOT/scripts/apply-a14-full-acpi-smmu-checkpoints.py" "$SRC"
 
     "$SRC/scripts/config" --file "$OUT/.config" --enable QCOM_WOA_QPPX_COMPAT
     export LOCALVERSION=
@@ -48,6 +49,7 @@ build_checkpoint(){
     say "kernelrelease=$KREL"
     say "late_checkpoints=yes"
     say "device_initcall_bisect=yes"
+    say "smmu_checkpoints=yes"
     say "image=$OUT/arch/arm64/boot/Image"
     say "image_sha256=$(sha256sum "$OUT/arch/arm64/boot/Image" | awk '{print $1}')"
 }
@@ -61,6 +63,7 @@ install_checkpoint(){
     grep -q 'A14 ACPI CHECKPOINT REACHED' "$SRC/drivers/acpi/bus.c" || die "checkpoint source patch missing"
     grep -q 'initcall-device-after' "$SRC/init/main.c" || die "late checkpoint source patch missing"
     grep -q 'a14_device_halt_after' "$SRC/init/main.c" || die "device bisect source patch missing"
+    grep -q 'smmu-driver-registered' "$SRC/drivers/iommu/arm/arm-smmu/arm-smmu.c" || die "SMMU checkpoint source patch missing"
     [[ -f "/boot/vmlinuz-$KREL" ]] || die "installed experimental kernel missing"
 
     mkdir -p "$BACKUP"
