@@ -66,6 +66,10 @@ build_checkpoint(){
     [[ -s "$OUT/arch/arm64/boot/Image" ]] || die "rebuilt Image missing"
     [[ -s "$OUT/vmlinux" ]] || die "rebuilt vmlinux missing"
     grep -q 'A14 ACPI TRACE: %s' "$SRC/drivers/acpi/bus.c" || die "trace breadcrumbs missing after build"
+    grep -q 'a14_acpi_reboot_delay_ms' "$SRC/drivers/acpi/bus.c" || die "timed checkpoint reboot parameter missing after build"
+    grep -q 'A14 ACPI CHECKPOINT REBOOT NOW: %s' "$SRC/drivers/acpi/bus.c" || die "timed checkpoint reboot marker missing after build"
+    grep -q 'emergency_restart();' "$SRC/drivers/acpi/bus.c" || die "checkpoint emergency restart path missing after build"
+    ! grep -q 'Intentional hold. If this machine reboots anyway' "$SRC/drivers/acpi/bus.c" || die "old infinite checkpoint hold is still present"
     grep -q 'smmu-driver-registered' "$SRC/drivers/iommu/arm/arm-smmu/arm-smmu.c" || die "SMMU checkpoint source patch missing after build"
     grep -q 'smmu-probe%d-%s' "$SRC/drivers/iommu/arm/arm-smmu/arm-smmu.c" || die "per-probe SMMU checkpoints missing after build"
 
@@ -77,6 +81,7 @@ build_checkpoint(){
         printf 'trace_breadcrumbs=yes\n'
         printf 'persistent_logging=yes\n'
         printf 'efi_earlycon=yes\n'
+        printf 'timed_checkpoint_reboot=yes\n'
     } > "$STAMP"
 
     say "A14_FULL_ACPI_CHECKPOINT_BUILD=COMPLETE"
@@ -87,6 +92,8 @@ build_checkpoint(){
     say "trace_breadcrumbs=yes"
     say "persistent_logging=yes"
     say "efi_earlycon=yes"
+    say "timed_checkpoint_reboot=yes"
+    say "default_checkpoint_reboot_delay_ms=5000"
     say "image=$OUT/arch/arm64/boot/Image"
     say "image_sha256=$image_sha"
     say "build_stamp=$STAMP"
@@ -108,13 +115,18 @@ install_checkpoint(){
     grep -q '^trace_breadcrumbs=yes$' "$STAMP" || die "build stamp lacks trace breadcrumb validation"
     grep -q '^persistent_logging=yes$' "$STAMP" || die "build stamp lacks persistent logging validation"
     grep -q '^efi_earlycon=yes$' "$STAMP" || die "build stamp lacks EFI earlycon validation"
+    grep -q '^timed_checkpoint_reboot=yes$' "$STAMP" || die "build stamp lacks timed checkpoint reboot validation"
 
     grep -q 'A14 ACPI CHECKPOINT REACHED' "$SRC/drivers/acpi/bus.c" || die "checkpoint source patch missing"
     grep -q 'A14 ACPI TRACE: %s' "$SRC/drivers/acpi/bus.c" || die "trace breadcrumb source patch missing"
+    grep -q 'a14_acpi_reboot_delay_ms' "$SRC/drivers/acpi/bus.c" || die "timed reboot parameter source patch missing"
+    grep -q 'A14 ACPI CHECKPOINT REBOOT NOW: %s' "$SRC/drivers/acpi/bus.c" || die "timed reboot source patch missing"
+    grep -q 'emergency_restart();' "$SRC/drivers/acpi/bus.c" || die "emergency restart source patch missing"
+    ! grep -q 'Intentional hold. If this machine reboots anyway' "$SRC/drivers/acpi/bus.c" || die "old infinite checkpoint hold is still present"
     grep -q 'initcall-device-after' "$SRC/init/main.c" || die "late checkpoint source patch missing"
     grep -q 'a14_device_halt_after' "$SRC/init/main.c" || die "device bisect source patch missing"
     grep -q 'smmu-driver-registered' "$SRC/drivers/iommu/arm/arm-smmu/arm-smmu.c" || die "SMMU checkpoint source patch missing"
-    grep -q 'smmu-probe%d-%s' "$SRC/drivers/iommu/arm/arm-smmu/arm-smmu.c" || die "per-probe SMMU checkpoint source patch missing"
+    grep -q 'smmu-probe%d-%s' "$SRC/drivers/iommu/arm/arm-smmu/arm-smmu.c" || die "per-probe SMMU checkpoints missing"
     grep -q '^CONFIG_PSTORE_RAM=y$' "$OUT/.config" || die "installed build would lack built-in ramoops"
     grep -q '^CONFIG_PSTORE_CONSOLE=y$' "$OUT/.config" || die "installed build would lack pstore console"
     grep -q '^CONFIG_EFI_EARLYCON=y$' "$OUT/.config" || die "installed build would lack EFI earlycon"
@@ -139,6 +151,7 @@ install_checkpoint(){
     say "trace_breadcrumbs=yes"
     say "persistent_logging=yes"
     say "efi_earlycon=yes"
+    say "timed_checkpoint_reboot=yes"
     say "backup=$BACKUP/vmlinuz-$KREL.pre-checkpoints"
     say "normal_kernel_untouched=7.1.5-070105-generic"
     say "initramfs_rebuilt=no"
