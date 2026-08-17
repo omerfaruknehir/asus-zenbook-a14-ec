@@ -27,11 +27,16 @@ verify_source(){
     grep -q 'smmu-reset-after-scr0-write' "$smmu" || die "SMMU final-write completion checkpoint missing"
     grep -q '{ "QCOM  ", "QCOMEDK2", 0x8380, ACPI_SIG_IORT, equal, "QCOM SMMU A14" }' "$qcom" || die "QCOMEDK2 0x8380 ACPI SMMU matcher missing"
     grep -q 'a14_iort_pcie_smmuv3_firmware_owned' "$iort" || die "PCIe SMMUv3 firmware-ownership quirk missing"
-    grep -q 'header = &iort_table->header' "$iort" || die "PCIe SMMUv3 quirk does not use embedded IORT table header"
-    grep -q 'header->oem_revision != 0x8380' "$iort" || die "PCIe SMMUv3 quirk lacks exact OEM revision guard"
+    grep -q 'iort_table->oem_id' "$iort" || die "PCIe SMMUv3 quirk lacks direct IORT header OEM ID guard"
+    grep -q 'iort_table->oem_table_id' "$iort" || die "PCIe SMMUv3 quirk lacks direct IORT header table ID guard"
+    grep -q 'iort_table->oem_revision != 0x8380' "$iort" || die "PCIe SMMUv3 quirk lacks exact OEM revision guard"
+    ! grep -q 'header = &iort_table->header' "$iort" || die "obsolete embedded-header form remains in PCIe SMMUv3 quirk"
     grep -q 'smmu->base_address == 0x15400000' "$iort" || die "PCIe SMMUv3 quirk lacks exact base-address guard"
     grep -q 'is_kernel_in_hyp_mode()' "$iort" || die "PCIe SMMUv3 quirk lacks EL1/EL2 ownership guard"
     grep -q 'A14: leaving PCIe SMMUv3\[%llx\] firmware-owned at EL1' "$iort" || die "PCIe SMMUv3 ownership boot marker missing"
+    grep -q 'continue;' "$iort" || die "PCIe SMMUv3 ownership skip lacks loop continue"
+    ! grep -q 'goto next_iort_node;' "$iort" || die "obsolete goto-based PCIe SMMUv3 skip remains"
+    ! grep -q '^next_iort_node:' "$iort" || die "obsolete PCIe SMMUv3 next-node label remains"
 }
 
 case "$ACTION" in
