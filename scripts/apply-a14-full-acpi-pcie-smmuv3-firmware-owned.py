@@ -72,14 +72,16 @@ static bool __init a14_iort_pcie_smmuv3_firmware_owned(
 						struct acpi_iort_node *node)
 {
 	struct acpi_iort_smmu_v3 *smmu;
+	const struct acpi_table_header *header;
 
 	if (!iort_table || node->type != ACPI_IORT_NODE_SMMU_V3 ||
 	    is_kernel_in_hyp_mode())
 		return false;
 
-	if (memcmp(iort_table->oem_id, "QCOM  ", ACPI_OEM_ID_SIZE) ||
-	    memcmp(iort_table->oem_table_id, "QCOMEDK2", ACPI_OEM_TABLE_ID_SIZE) ||
-	    iort_table->oem_revision != 0x8380)
+	header = &iort_table->header;
+	if (memcmp(header->oem_id, "QCOM  ", ACPI_OEM_ID_SIZE) ||
+	    memcmp(header->oem_table_id, "QCOMEDK2", ACPI_OEM_TABLE_ID_SIZE) ||
+	    header->oem_revision != 0x8380)
 		return false;
 
 	smmu = (struct acpi_iort_smmu_v3 *)node->node_data;
@@ -111,7 +113,8 @@ static bool __init a14_iort_pcie_smmuv3_firmware_owned(
     required = (
         '#include <asm/virt.h>',
         'a14_iort_pcie_smmuv3_firmware_owned',
-        'iort_table->oem_revision != 0x8380',
+        'header = &iort_table->header;',
+        'header->oem_revision != 0x8380',
         'smmu->base_address == 0x15400000',
         'is_kernel_in_hyp_mode()',
         'A14: leaving PCIe SMMUv3[%llx] firmware-owned at EL1',
