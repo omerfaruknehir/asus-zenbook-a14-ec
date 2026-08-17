@@ -25,10 +25,14 @@ lines = p.read_text().splitlines()
 new = []
 changed = 0
 
+# These either hide the early failure or defeat the diagnostics we want.
 remove_exact = {
+    "quiet",
+    "splash",
     "ignore_loglevel",
     "initcall_debug",
     "keep_bootcon",
+    "efi=noruntime",
 }
 remove_prefixes = (
     "acpi=",
@@ -81,6 +85,9 @@ if changed != 1:
 text = "\n".join(new) + "\n"
 if any(x.lstrip().startswith("devicetree ") for x in new):
     raise SystemExit("refusing: full-ACPI entry unexpectedly contains devicetree command")
+for forbidden in (" quiet ", " splash ", "efi=noruntime"):
+    if forbidden in f" {text} ":
+        raise SystemExit(f"diagnostic-hiding argument survived: {forbidden.strip()}")
 for required in debug_args:
     if required not in text:
         raise SystemExit(f"missing required debug argument: {required}")
@@ -91,6 +98,7 @@ chmod 0755 "$snippet"
 update-grub
 
 echo "A14_FULL_ACPI_DEBUG_ENTRY=READY"
-echo "The experimental entry now uses panic=0 and should remain stopped on a kernel panic instead of rebooting."
-echo "If it stops, photograph the final screen before holding the power button to recover."
+echo "The experimental entry now has visible early boot logging and panic=0."
+echo "If it stops or panics, photograph the FINAL visible screen before recovery."
+echo "If it hard-resets anyway, note approximately how many seconds elapsed and the last visible line if possible."
 grep -E '^[[:space:]]*linux[[:space:]]' "$snippet"
