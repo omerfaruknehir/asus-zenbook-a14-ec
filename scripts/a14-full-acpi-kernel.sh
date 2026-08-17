@@ -8,6 +8,7 @@ BASE_TAG="v7.1.5"
 BASE_COMMIT="155b42bec9cbb6b8cdc47dd9bd09503a81fbe493"
 LOCALVERSION="-a14-acpi-full0"
 KREL="7.1.5${LOCALVERSION}"
+EXPECTED_DSDT_SHA256="281bbf235f27a554b72af4e99d018b27f4f9ceeabb34be1a3c06f59f0443a134"
 OWNER_HOME="$(if [[ -n "${SUDO_USER:-}" && "${SUDO_USER}" != root ]]; then getent passwd "$SUDO_USER" | cut -d: -f6; else printf '%s' "$HOME"; fi)"
 WORK="${A14_FULL_ACPI_WORK:-$OWNER_HOME/Downloads/a14-full-acpi-kernel}"
 SRC="$WORK/linux-7.1.5"
@@ -24,9 +25,15 @@ need_user(){ [[ ${EUID:-$(id -u)} -ne 0 ]] || die "build as your normal user, no
 check_arch(){ case "$(uname -m)" in aarch64|arm64) ;; *) die "AArch64 host required; found $(uname -m)";; esac; }
 
 kernel_config_source(){
-  if [[ -r "/boot/config-$BASE_KVER" ]]; then echo "/boot/config-$BASE_KVER";
-  elif [[ "$(uname -r)" == "$BASE_KVER" && -r /proc/config.gz ]]; then echo /proc/config.gz;
-  else return 1; fi
+  if [[ -r "/boot/config-$BASE_KVER" ]]; then
+    echo "/boot/config-$BASE_KVER"
+  elif [[ -r "/boot/config-$(uname -r)" ]]; then
+    echo "/boot/config-$(uname -r)"
+  elif [[ -r /proc/config.gz ]]; then
+    echo /proc/config.gz
+  else
+    return 1
+  fi
 }
 
 prepare(){
@@ -40,8 +47,9 @@ prepare(){
   git -C "$SRC" reset --hard "$BASE_COMMIT"; git -C "$SRC" clean -fdx
   python3 "$ROOT/scripts/apply-a14-full-acpi.py" "$SRC"
   rm -rf "$OUT"; mkdir -p "$OUT"
-  cfg="$(kernel_config_source)" || die "cannot find config for $BASE_KVER"
+  cfg="$(kernel_config_source)" || die "cannot find a usable kernel config under /boot or /proc/config.gz"
   if [[ "$cfg" == *.gz ]]; then zcat "$cfg" >"$OUT/.config"; else cp "$cfg" "$OUT/.config"; fi
+  say "config_source=$cfg"
   C="$SRC/scripts/config --file $OUT/.config"
   $C --set-str LOCALVERSION "$LOCALVERSION"
   $C --disable LOCALVERSION_AUTO
@@ -91,7 +99,7 @@ write_grub(){
   cat >"$GRUB_SNIPPET" <<EOF
 #!/bin/sh
 exec tail -n +3 \$0
-# ACPI-only UX3407RA experiment. Intentionally NO devicetree command.
+# ACPI-only UX3407RA experiment. Intentionally NO hardware devicetree is loaded here.
 menuentry '$ENTRY' --class ubuntu --class gnu-linux --class gnu --class os {
     search --no-floppy --fs-uuid --set=root $uuid
     linux $kp $cmdline
@@ -99,7 +107,7 @@ menuentry '$ENTRY' --class ubuntu --class gnu-linux --class gnu --class os {
 }
 EOF
   chmod 0755 "$GRUB_SNIPPET"
-  ! grep -qE '^[[:space:]]*devicetree[[:space:]]' "$GRUB_SNIPPET" || die "GRUB safety check: unexpected DT"
+  ! grep -qE '^[[:space:]]*devicetree[[:space:]]' "$GRUB_SNIPPET" || die "GRUB safety check: unexpected hardware DT load"
   grep -q 'acpi=force' "$GRUB_SNIPPET" || die "GRUB safety check: acpi=force missing"
   update-grub
 }
@@ -118,7 +126,7 @@ install(){
   write_grub
   say "A14_FULL_ACPI_INSTALL=COMPLETE"
   say "grub_entry=$ENTRY"
-  say "dtb_loaded=false"
+  say "hardware_dtb_loaded_by_entry=false"
   say "normal_kernel_untouched=$BASE_KVER"
   say "Select the entry manually for the first boot; do not make it default yet."
 }
@@ -127,16 +135,25 @@ status(){
   say "===== A14 FULL ACPI STATUS ====="
   say "running_kernel=$(uname -r)"; say "expected_kernel=$KREL"; say "cmdline=$(cat /proc/cmdline)"
   say "acpi_force=$(grep -qw 'acpi=force' /proc/cmdline && echo yes || echo no)"
-  say "device_tree=$([[ -d /proc/device-tree ]] && echo PRESENT_UNEXPECTED || echo absent_expected)"
+  say "device_tree_fs=$([[ -d /proc/device-tree ]] && echo present || echo absent)"
+  say "hardware_dtb_loaded_by_test_entry=$([[ -f "$GRUB_SNIPPET" ]] && grep -qE '^[[:space:]]*devicetree[[:space:]]' "$GRUB_SNIPPET" && echo YES_UNEXPECTED || echo no)"
   say "acpi_tables=$([[ -d /sys/firmware/acpi/tables ]] && echo present || echo absent)"
   say "grub_snippet=$([[ -f "$GRUB_SNIPPET" ]] && echo present || echo absent)"
+  if [[ -r /sys/firmware/acpi/tables/DSDT ]]; then
+    dsdt_sha="$(sha256sum /sys/firmware/acpi/tables/DSDT | awk '{print $1}')"
+    say "dsdt_sha256=$dsdt_sha"
+    say "dsdt_matches_audited_dump=$([[ "$dsdt_sha" == "$EXPECTED_DSDT_SHA256" ]] && echo yes || echo NO)"
+  else
+    say "dsdt_sha256=unavailable"
+    say "dsdt_matches_audited_dump=unknown"
+  fi
   if [[ "$(uname -r)" == "$KREL" ]]; then
     say "----- key ACPI devices -----"
-    for x in /sys/bus/acpi/devices/{QCOM0C17,QCOM0C0D,QCOM0C10,PNP0C14}*; do [[ -e "$x" ]] && echo "$x"; done
+    for x in /sys/bus/acpi/devices/{QCOM0C17,QCOM0C0D,QCOM0C10,PNP0C14,QTEC0001}*; do [[ -e "$x" ]] && echo "$x"; done
     say "----- buses / WMI / TPM -----"
     ls -ld /sys/bus/i2c/devices/i2c-* /sys/bus/wmi/devices/* /dev/tpm* 2>/dev/null || true
     say "----- diagnostic dmesg -----"
-    dmesg 2>/dev/null | grep -Ei 'ACPI|QCOM0C|PEP|GENI|I2C|WMI|ASUS|TPM|IORT|PCI|NVMe' | tail -n 500 || true
+    dmesg 2>/dev/null | grep -Ei 'ACPI|QCOM0C|QTEC|PEP|GENI|I2C|WMI|ASUS|TPM|IORT|PCI|NVMe' | tail -n 500 || true
     say "----- pstore -----"
     ls -la /sys/fs/pstore 2>/dev/null || true
   fi
