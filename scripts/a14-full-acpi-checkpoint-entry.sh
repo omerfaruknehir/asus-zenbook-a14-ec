@@ -12,6 +12,9 @@ DTB="$DTDIR/known-good-live.dtb"
 CONFIG="/boot/config-$KREL"
 SNIPPET="/etc/grub.d/41_a14_full_acpi_checkpoint"
 OLD_MOUNTROOT="/etc/grub.d/41_a14_full_acpi_mountroot_shell"
+DIAG_ID="a14-acpi-checkpoint-log"
+COLLECT_ID="a14-pstore-collector"
+REBOOT_DELAY_MS="${A14_ACPI_REBOOT_DELAY_MS:-5000}"
 
 # Keep this logging layout identical between the failing ACPI boot and the
 # same-Image DT collector boot. nokaslr makes reserve_mem's memblock allocation
@@ -104,6 +107,9 @@ install_entry(){
         print_stages >&2
         die "unknown checkpoint stage: $STAGE"
     }
+    [[ "$REBOOT_DELAY_MS" =~ ^[0-9]+$ ]] || die "A14_ACPI_REBOOT_DELAY_MS must be an integer number of milliseconds"
+    (( REBOOT_DELAY_MS <= 60000 )) || die "A14_ACPI_REBOOT_DELAY_MS must be <= 60000"
+
     for c in grub-probe grub-mkrelpath update-grub sha256sum; do need "$c"; done
     [[ -r "$KERNEL" ]] || die "missing $KERNEL"
     [[ -r "$INITRD" ]] || die "missing $INITRD"
@@ -121,14 +127,14 @@ install_entry(){
     args=()
     for arg in $(cat /proc/cmdline); do
         case "$arg" in
-            BOOT_IMAGE=*|initrd=*|acpi=*|panic=*|oops=*|quiet|splash|break=*|debug|debug=*|loglevel=*|earlycon=*|console=*|ignore_loglevel|initcall_debug|keep_bootcon|a14_acpi_halt=*|a14_device_halt_after=*|initcall_blacklist=*|reserve_mem=*|ramoops.*|nokaslr)
+            BOOT_IMAGE=*|initrd=*|acpi=*|panic=*|oops=*|quiet|splash|break=*|debug|debug=*|loglevel=*|earlycon=*|console=*|ignore_loglevel|initcall_debug|keep_bootcon|a14_acpi_halt=*|a14_acpi_reboot_delay_ms=*|a14_device_halt_after=*|initcall_blacklist=*|reserve_mem=*|ramoops.*|nokaslr)
                 ;;
             *) args+=("$arg") ;;
         esac
     done
 
     common="${args[*]} nokaslr $RAMOOPS_RESERVE $RAMOOPS_ARGS $VISIBLE_ARGS"
-    diag_cmdline="$common acpi=force a14_acpi_halt=$STAGE"
+    diag_cmdline="$common acpi=force a14_acpi_halt=$STAGE a14_acpi_reboot_delay_ms=$REBOOT_DELAY_MS"
     collect_cmdline="$common acpi=off"
     diag_entry="ASUS Zenbook A14 — ACPI CHECKPOINT+LOG: $STAGE ($KREL)"
     collect_entry="ASUS Zenbook A14 — PSTORE COLLECTOR — SAME KERNEL + KNOWN-GOOD DT ($KREL)"
@@ -139,15 +145,20 @@ install_entry(){
 exec tail -n +3 \$0
 # Temporary A14 full-ACPI diagnostic pair.
 # 1) ACPI-only diagnostic: visible EFI framebuffer earlycon + persistent ramoops.
-menuentry '$diag_entry' --class ubuntu --class gnu-linux --class gnu --class os {
+#    Before Linux starts, arm the collector as GRUB's one-shot next_entry. Thus
+#    either our timed emergency restart or an earlier firmware reset goes to
+#    the collector rather than ordinary Ubuntu.
+menuentry '$diag_entry' --id '$DIAG_ID' --class ubuntu --class gnu-linux --class gnu --class os {
     search --no-floppy --fs-uuid --set=root $uuid
+    set next_entry='$COLLECT_ID'
+    save_env next_entry
     linux $kp $diag_cmdline
     initrd $ip
 }
 
 # 2) Same experimental Image/initrd, but known-good live DT and ACPI disabled.
-# Boot this immediately after an ACPI diagnostic reset to recover ramoops RAM.
-menuentry '$collect_entry' --class ubuntu --class gnu-linux --class gnu --class os {
+# next_entry is one-shot, so after this collector boot normal GRUB behavior resumes.
+menuentry '$collect_entry' --id '$COLLECT_ID' --class ubuntu --class gnu-linux --class gnu --class os {
     search --no-floppy --fs-uuid --set=root $uuid
     linux $kp $collect_cmdline
     devicetree $dp
@@ -161,9 +172,14 @@ EOF
     [[ -n "$diag_linux" && -n "$collect_linux" ]] || die "failed to validate generated diagnostic pair"
     grep -q 'acpi=force' <<<"$diag_linux" || die "diagnostic lacks acpi=force"
     grep -q "a14_acpi_halt=$STAGE" <<<"$diag_linux" || die "diagnostic checkpoint argument missing"
+    grep -q "a14_acpi_reboot_delay_ms=$REBOOT_DELAY_MS" <<<"$diag_linux" || die "timed reboot argument missing"
     ! grep -qE '^[[:space:]]*devicetree[[:space:]]' <<<"$(sed -n "/CHECKPOINT+LOG/,/PSTORE COLLECTOR/p" "$SNIPPET")" || die "diagnostic unexpectedly loads a devicetree"
     grep -q 'acpi=off' <<<"$collect_linux" || die "collector lacks acpi=off"
     grep -qE '^[[:space:]]*devicetree[[:space:]]' "$SNIPPET" || die "collector lacks devicetree"
+    grep -q -- "--id '$DIAG_ID'" "$SNIPPET" || die "diagnostic GRUB id missing"
+    grep -q -- "--id '$COLLECT_ID'" "$SNIPPET" || die "collector GRUB id missing"
+    grep -q "set next_entry='$COLLECT_ID'" "$SNIPPET" || die "collector one-shot next_entry is not armed"
+    grep -q 'save_env next_entry' "$SNIPPET" || die "GRUB next_entry is not persisted"
 
     for line in "$diag_linux" "$collect_linux"; do
         grep -q 'earlycon=efifb,ram' <<<"$line" || die "EFI framebuffer earlycon missing"
@@ -184,6 +200,11 @@ EOF
     echo "stage=$STAGE"
     echo "diagnostic_entry=$diag_entry"
     echo "collector_entry=$collect_entry"
+    echo "diagnostic_grub_id=$DIAG_ID"
+    echo "collector_grub_id=$COLLECT_ID"
+    echo "checkpoint_reboot_delay_ms=$REBOOT_DELAY_MS"
+    echo "checkpoint_exit=emergency_restart"
+    echo "collector_next_boot=armed-by-diagnostic-grub-entry"
     echo "diagnostic_hardware_dtb_loaded=false"
     echo "collector_hardware_dtb_loaded=true"
     echo "collector_dtb=$DTB"
@@ -195,7 +216,7 @@ EOF
     echo "normal_kernel_untouched=true"
     echo "custom_checkpoint_entries=2"
     echo
-    echo "After a diagnostic reboot, choose the PSTORE COLLECTOR entry before ordinary Ubuntu."
+    echo "Boot the ACPI CHECKPOINT+LOG entry once. If it resets, let GRUB continue: the PSTORE COLLECTOR is armed as the one-shot next boot."
 }
 
 case "$STAGE" in
