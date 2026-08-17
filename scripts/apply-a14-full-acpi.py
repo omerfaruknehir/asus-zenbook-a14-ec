@@ -165,7 +165,7 @@ config ASUS_NB_WMI_ARM64
         "pep_kconfig")
     armm = root / "drivers/platform/arm64/Makefile"
     append_once(armm, "CONFIG_QCOM_WOA_PEP_COMPAT", "obj-$(CONFIG_QCOM_WOA_PEP_COMPAT) += qcom-woa-pep-compat.o", "pep_makefile")
-    write_if_changed(root / "drivers/platform/arm64/qcom-woa-pep-compat.c", r'''// SPDX-License-Identifier: GPL-2.0-only
+    write_if_changed(root / "drivers/platform/arm64/qcom-woa-pep-compat.c", '''// SPDX-License-Identifier: GPL-2.0-only
 #include <linux/acpi.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
