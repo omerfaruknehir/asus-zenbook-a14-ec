@@ -3,9 +3,8 @@
 # Maintain one temporary visible full-ACPI diagnostic entry.
 #
 # The selected checkpoint emits breadcrumbs on EFI framebuffer earlycon,
-# waits a bounded interval, then emergency-restarts.  There is deliberately no
-# automatic collector/next_entry: cross-boot reserve_mem placement was not
-# reliable between the ACPI-only and DT boots on the A14.
+# waits a bounded interval, then emergency-restarts. Non-selected breadcrumbs
+# can pause briefly so the last stage before a hardware reset is readable.
 set -euo pipefail
 
 STAGE="${1:-}"
@@ -17,6 +16,7 @@ SNIPPET="/etc/grub.d/41_a14_full_acpi_checkpoint"
 OLD_MOUNTROOT="/etc/grub.d/41_a14_full_acpi_mountroot_shell"
 DIAG_ID="a14-acpi-checkpoint-visible"
 REBOOT_DELAY_MS="${A14_ACPI_REBOOT_DELAY_MS:-5000}"
+TRACE_DELAY_MS="${A14_ACPI_TRACE_DELAY_MS:-2000}"
 VISIBLE_ARGS="earlycon=efifb,ram keep_bootcon console=tty0 loglevel=8 ignore_loglevel printk.time=1"
 
 stages=(
@@ -38,6 +38,18 @@ stages=(
     smmu-init-enter
     smmu-driver-registered
     smmu-impl-registered
+    smmu-reset-enter
+    smmu-reset-after-gfsr
+    smmu-reset-after-streams
+    smmu-reset-after-contexts
+    smmu-reset-after-tlbi
+    smmu-reset-after-scr0-read
+    smmu-reset-before-impl
+    smmu-reset-after-impl
+    smmu-reset-before-sync
+    smmu-reset-after-sync
+    smmu-reset-before-scr0-write
+    smmu-reset-after-scr0-write
 )
 
 smmu_probe_points=(
@@ -89,7 +101,9 @@ install_entry(){
         die "unknown checkpoint stage: $STAGE"
     }
     [[ "$REBOOT_DELAY_MS" =~ ^[0-9]+$ ]] || die "A14_ACPI_REBOOT_DELAY_MS must be an integer number of milliseconds"
+    [[ "$TRACE_DELAY_MS" =~ ^[0-9]+$ ]] || die "A14_ACPI_TRACE_DELAY_MS must be an integer number of milliseconds"
     (( REBOOT_DELAY_MS <= 60000 )) || die "A14_ACPI_REBOOT_DELAY_MS must be <= 60000"
+    (( TRACE_DELAY_MS <= 10000 )) || die "A14_ACPI_TRACE_DELAY_MS must be <= 10000"
 
     for c in grub-probe grub-mkrelpath update-grub; do need "$c"; done
     [[ -r "$KERNEL" ]] || die "missing $KERNEL"
@@ -104,13 +118,13 @@ install_entry(){
     args=()
     for arg in $(cat /proc/cmdline); do
         case "$arg" in
-            BOOT_IMAGE=*|initrd=*|acpi=*|panic=*|oops=*|quiet|splash|break=*|debug|debug=*|loglevel=*|earlycon=*|console=*|ignore_loglevel|initcall_debug|keep_bootcon|a14_acpi_halt=*|a14_acpi_reboot_delay_ms=*|a14_device_halt_after=*|initcall_blacklist=*|reserve_mem=*|ramoops.*|nokaslr|systemd.unit=*)
+            BOOT_IMAGE=*|initrd=*|acpi=*|panic=*|oops=*|quiet|splash|break=*|debug|debug=*|loglevel=*|earlycon=*|console=*|ignore_loglevel|initcall_debug|keep_bootcon|a14_acpi_halt=*|a14_acpi_reboot_delay_ms=*|a14_acpi_trace_delay_ms=*|a14_device_halt_after=*|initcall_blacklist=*|reserve_mem=*|ramoops.*|nokaslr|systemd.unit=*)
                 ;;
             *) args+=("$arg") ;;
         esac
     done
 
-    diag_cmdline="${args[*]} $VISIBLE_ARGS acpi=force a14_acpi_halt=$STAGE a14_acpi_reboot_delay_ms=$REBOOT_DELAY_MS"
+    diag_cmdline="${args[*]} $VISIBLE_ARGS acpi=force a14_acpi_halt=$STAGE a14_acpi_reboot_delay_ms=$REBOOT_DELAY_MS a14_acpi_trace_delay_ms=$TRACE_DELAY_MS"
     diag_entry="ASUS Zenbook A14 — ACPI VISIBLE CHECKPOINT: $STAGE ($KREL)"
 
     rm -f "$OLD_MOUNTROOT"
@@ -131,6 +145,7 @@ EOF
     grep -q 'acpi=force' <<<"$linux_line" || die "diagnostic lacks acpi=force"
     grep -q "a14_acpi_halt=$STAGE" <<<"$linux_line" || die "diagnostic checkpoint argument missing"
     grep -q "a14_acpi_reboot_delay_ms=$REBOOT_DELAY_MS" <<<"$linux_line" || die "timed reboot argument missing"
+    grep -q "a14_acpi_trace_delay_ms=$TRACE_DELAY_MS" <<<"$linux_line" || die "trace readability delay argument missing"
     grep -q 'earlycon=efifb,ram' <<<"$linux_line" || die "EFI framebuffer earlycon missing"
     grep -q 'keep_bootcon' <<<"$linux_line" || die "keep_bootcon missing"
     ! grep -qE '^[[:space:]]*devicetree[[:space:]]' "$SNIPPET" || die "diagnostic unexpectedly loads a devicetree"
@@ -145,6 +160,8 @@ EOF
     echo "stage=$STAGE"
     echo "entry=$diag_entry"
     echo "checkpoint_reboot_delay_ms=$REBOOT_DELAY_MS"
+    echo "trace_delay_ms=$TRACE_DELAY_MS"
+    echo "trace_delay_scope=non-selected-checkpoints"
     echo "checkpoint_exit=emergency_restart"
     echo "post_reboot=normal-grub-default"
     echo "hardware_dtb_loaded=false"
