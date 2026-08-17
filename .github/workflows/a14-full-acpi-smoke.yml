@@ -8,6 +8,7 @@ on:
       - 'scripts/apply-a14-full-acpi.py'
       - 'scripts/apply-a14-full-acpi-qppx.py'
       - 'scripts/apply-a14-full-acpi-checkpoints.py'
+      - 'scripts/apply-a14-full-acpi-trace-checkpoints.py'
       - 'scripts/apply-a14-full-acpi-late-checkpoints.py'
       - 'scripts/apply-a14-full-acpi-device-bisect.py'
       - 'scripts/apply-a14-full-acpi-smmu-checkpoints.py'
@@ -38,6 +39,7 @@ jobs:
           python3 scripts/apply-a14-full-acpi.py linux-7.1.5
           python3 scripts/apply-a14-full-acpi-qppx.py linux-7.1.5
           python3 scripts/apply-a14-full-acpi-checkpoints.py linux-7.1.5
+          python3 scripts/apply-a14-full-acpi-trace-checkpoints.py linux-7.1.5
           python3 scripts/apply-a14-full-acpi-late-checkpoints.py linux-7.1.5
           python3 scripts/apply-a14-full-acpi-device-bisect.py linux-7.1.5
           python3 scripts/apply-a14-full-acpi-smmu-checkpoints.py linux-7.1.5
@@ -102,6 +104,7 @@ jobs:
           grep -F 'QCOMFFE4' linux-7.1.5/drivers/platform/arm64/qcom-woa-qppx-compat.c
           grep -F 'acpi_dev_clear_dependencies' linux-7.1.5/drivers/platform/arm64/qcom-woa-qppx-compat.c
           grep -F 'a14_acpi_halt' linux-7.1.5/drivers/acpi/bus.c
+          grep -F 'A14 ACPI TRACE: %s' linux-7.1.5/drivers/acpi/bus.c
           grep -F 'acpi-early-enter' linux-7.1.5/drivers/acpi/bus.c
           grep -F 'acpi-scan-after' linux-7.1.5/drivers/acpi/bus.c
           grep -F 'acpi-init-done' linux-7.1.5/drivers/acpi/bus.c
