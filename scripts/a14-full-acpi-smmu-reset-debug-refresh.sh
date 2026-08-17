@@ -27,7 +27,8 @@ verify_source(){
     grep -q 'smmu-reset-after-scr0-write' "$smmu" || die "SMMU final-write completion checkpoint missing"
     grep -q '{ "QCOM  ", "QCOMEDK2", 0x8380, ACPI_SIG_IORT, equal, "QCOM SMMU A14" }' "$qcom" || die "QCOMEDK2 0x8380 ACPI SMMU matcher missing"
     grep -q 'a14_iort_pcie_smmuv3_firmware_owned' "$iort" || die "PCIe SMMUv3 firmware-ownership quirk missing"
-    grep -q 'iort_table->oem_revision != 0x8380' "$iort" || die "PCIe SMMUv3 quirk lacks exact OEM revision guard"
+    grep -q 'header = &iort_table->header' "$iort" || die "PCIe SMMUv3 quirk does not use embedded IORT table header"
+    grep -q 'header->oem_revision != 0x8380' "$iort" || die "PCIe SMMUv3 quirk lacks exact OEM revision guard"
     grep -q 'smmu->base_address == 0x15400000' "$iort" || die "PCIe SMMUv3 quirk lacks exact base-address guard"
     grep -q 'is_kernel_in_hyp_mode()' "$iort" || die "PCIe SMMUv3 quirk lacks EL1/EL2 ownership guard"
     grep -q 'A14: leaving PCIe SMMUv3\[%llx\] firmware-owned at EL1' "$iort" || die "PCIe SMMUv3 ownership boot marker missing"
@@ -37,22 +38,13 @@ case "$ACTION" in
     build)
         [[ ${EUID:-$(id -u)} -ne 0 ]] || die "build as your normal user, not root"
         [[ -f "$SRC/Makefile" ]] || die "existing Linux 7.1.5 source tree missing: $SRC"
-        # First bring the existing transforms to their current semantic state.
         python3 "$ROOT/scripts/apply-a14-full-acpi-trace-checkpoints.py" "$SRC"
         python3 "$ROOT/scripts/apply-a14-full-acpi-smmu-checkpoints.py" "$SRC"
-        # Select Qualcomm's SMMUv2 implementation for the A14's actual IORT
-        # OEM revision instead of falling through to the generic ARM-SMMU path.
         python3 "$ROOT/scripts/apply-a14-full-acpi-smmu-qcom-8380.py" "$SRC"
-        # X1's upstream DT leaves PCIe SMMUv3 firmware-owned under Gunyah/EL1;
-        # mirror that ownership rule for this exact A14 IORT node.
         python3 "$ROOT/scripts/apply-a14-full-acpi-pcie-smmuv3-firmware-owned.py" "$SRC"
-        # Retain readable SMMU-only breadcrumbs/reset-internal stages in case a
-        # later SMMUv2 regression appears while we advance to the next blocker.
         python3 "$ROOT/scripts/apply-a14-full-acpi-trace-delay.py" "$SRC"
         python3 "$ROOT/scripts/apply-a14-full-acpi-smmu-reset-checkpoints.py" "$SRC"
         verify_source
-        # The existing refresh script re-validates all older transforms, builds
-        # the full Image, and writes a successful-image SHA stamp.
         bash "$ROOT/scripts/a14-full-acpi-checkpoint-refresh.sh" build
         verify_source
         say "A14_FULL_ACPI_SMMU_RESET_DEBUG_BUILD=COMPLETE"
