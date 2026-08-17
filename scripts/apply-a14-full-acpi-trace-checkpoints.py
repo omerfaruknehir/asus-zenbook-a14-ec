@@ -7,6 +7,48 @@ import sys
 KERNEL_VERSION = "7.1.5"
 
 
+# Exact checkpoint core emitted by apply-a14-full-acpi-checkpoints.py before
+# the later breadcrumb/timed-reboot upgrades modify it.  An older version of
+# the base transform could re-insert this block on an already trace-upgraded
+# source tree because it compared the whole function body for idempotency.
+# If and only if we find one exact legacy block alongside one trace-upgraded
+# implementation, it is safe to remove the stale legacy copy.
+LEGACY_CORE = '''/* A14 full-ACPI diagnostic only: selected with a14_acpi_halt=<stage>. */
+static char a14_acpi_halt_stage[40];
+
+static int __init a14_acpi_halt_setup(char *str)
+{
+\tif (!str || !*str)
+\t\treturn 0;
+
+\tstrscpy(a14_acpi_halt_stage, str, sizeof(a14_acpi_halt_stage));
+\treturn 0;
+}
+early_param("a14_acpi_halt", a14_acpi_halt_setup);
+
+void a14_acpi_checkpoint(const char *stage)
+{
+\tif (!a14_acpi_halt_stage[0] || strcmp(a14_acpi_halt_stage, stage))
+\t\treturn;
+
+\tpr_emerg("============================================================\\n");
+\tpr_emerg("A14 ACPI CHECKPOINT REACHED: %s\\n", stage);
+\tpr_emerg("Intentional hold. If this machine reboots anyway, the reset is external to later kernel boot code.\\n");
+\tpr_emerg("============================================================\\n");
+
+\tfor (;;) {
+\t\tint i;
+
+\t\t/* Avoid Linux software lockup noise while still allowing an
+\t\t * independently armed firmware/SoC watchdog to reveal itself. */
+\t\ttouch_nmi_watchdog();
+\t\tfor (i = 0; i < 100; i++)
+\t\t\tmdelay(10);
+\t}
+}
+'''
+
+
 def fail(msg: str) -> None:
     raise SystemExit(f"A14 ACPI trace checkpoints: {msg}")
 
@@ -28,6 +70,34 @@ def replace_once(text: str, old: str, new: str, label: str) -> str:
     return text.replace(old, new, 1)
 
 
+def repair_legacy_duplicate(text: str) -> str:
+    fn = 'void a14_acpi_checkpoint(const char *stage)\n{'
+    fn_count = text.count(fn)
+    legacy_count = text.count(LEGACY_CORE)
+    trace_present = 'pr_emerg("A14 ACPI TRACE: %s\\n", stage);' in text
+
+    if fn_count <= 1:
+        print("checkpoint_duplicate_core=none")
+        return text
+
+    # Known, mechanically-created partial-tree state: one untouched legacy
+    # core was inserted ahead of the already trace-upgraded core.  Remove only
+    # that byte-for-byte legacy block.  Anything else is ambiguous and must be
+    # inspected rather than guessed at.
+    if fn_count == 2 and legacy_count == 1 and trace_present:
+        text = text.replace(LEGACY_CORE, "", 1)
+        if text.count(fn) != 1:
+            fail("duplicate-core repair did not leave exactly one checkpoint implementation")
+        print("checkpoint_duplicate_core=repaired-exact-legacy-copy")
+        return text
+
+    fail(
+        "ambiguous duplicate checkpoint core: "
+        f"functions={fn_count}, exact_legacy_blocks={legacy_count}, "
+        f"trace_present={'yes' if trace_present else 'no'}"
+    )
+
+
 def main() -> None:
     if len(sys.argv) != 2:
         fail("usage: apply-a14-full-acpi-trace-checkpoints.py /path/to/linux-7.1.5")
@@ -40,6 +110,10 @@ def main() -> None:
     text = bus.read_text()
     if "A14 ACPI CHECKPOINT REACHED" not in text or "a14_acpi_halt_stage" not in text:
         fail("base A14 checkpoint implementation is missing")
+
+    # Repair the exact partial-tree state produced when the old base transform
+    # was re-run after the breadcrumb transform had changed its function body.
+    text = repair_legacy_duplicate(text)
 
     # First upgrade: every reached checkpoint is visible/saved, while only the
     # selected checkpoint enters the timed diagnostic stop/reboot sequence.
@@ -82,6 +156,8 @@ def main() -> None:
         if token not in final:
             fail(f"verification missing {token}")
 
+    if final.count('void a14_acpi_checkpoint(const char *stage)\n{') != 1:
+        fail("checkpoint implementation count is not exactly one after repair")
     if "Intentional hold. If this machine reboots anyway" in final:
         fail("old infinite checkpoint hold is still present")
 
