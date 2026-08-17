@@ -10,6 +10,7 @@ on:
       - 'scripts/apply-a14-full-acpi-checkpoints.py'
       - 'scripts/apply-a14-full-acpi-late-checkpoints.py'
       - 'scripts/apply-a14-full-acpi-device-bisect.py'
+      - 'scripts/apply-a14-full-acpi-smmu-checkpoints.py'
       - 'scripts/a14-full-acpi-kernel.sh'
       - '.github/workflows/a14-full-acpi-smoke.yml'
 
@@ -36,6 +37,7 @@ jobs:
           python3 scripts/apply-a14-full-acpi-checkpoints.py linux-7.1.5
           python3 scripts/apply-a14-full-acpi-late-checkpoints.py linux-7.1.5
           python3 scripts/apply-a14-full-acpi-device-bisect.py linux-7.1.5
+          python3 scripts/apply-a14-full-acpi-smmu-checkpoints.py linux-7.1.5
       - name: Configure ARM64
         run: |
           make -C linux-7.1.5 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- defconfig
@@ -61,6 +63,7 @@ jobs:
             init/main.o
             drivers/acpi/bus.o
             drivers/pci/pci-acpi.o
+            drivers/iommu/arm/arm-smmu/arm-smmu.o
             drivers/platform/wmi/core.o
             drivers/platform/asus/asus-wmi.o
             drivers/platform/asus/asus-nb-wmi.o
@@ -100,6 +103,9 @@ jobs:
           grep -F 'initcall-late-after' linux-7.1.5/init/main.c
           grep -F 'a14_device_halt_after' linux-7.1.5/init/main.c
           grep -F 'device-bisect' linux-7.1.5/init/main.c
+          grep -F 'smmu-init-enter' linux-7.1.5/drivers/iommu/arm/arm-smmu/arm-smmu.c
+          grep -F 'smmu-driver-registered' linux-7.1.5/drivers/iommu/arm/arm-smmu/arm-smmu.c
+          grep -F 'smmu-impl-registered' linux-7.1.5/drivers/iommu/arm/arm-smmu/arm-smmu.c
           grep -F 'pci-acpi-enter' linux-7.1.5/drivers/pci/pci-acpi.c
           grep -F 'X86 || ARM64' linux-7.1.5/drivers/platform/wmi/Kconfig
           grep -F 'CONFIG_ASUS_WMI' linux-7.1.5/drivers/platform/asus/Makefile
