@@ -37,6 +37,7 @@ build_checkpoint(){
     # the same diagnostic image while extending checkpoints later into boot.
     python3 "$ROOT/scripts/apply-a14-full-acpi-qppx.py" "$SRC"
     python3 "$ROOT/scripts/apply-a14-full-acpi-checkpoints.py" "$SRC"
+    python3 "$ROOT/scripts/apply-a14-full-acpi-trace-checkpoints.py" "$SRC"
     python3 "$ROOT/scripts/apply-a14-full-acpi-late-checkpoints.py" "$SRC"
     python3 "$ROOT/scripts/apply-a14-full-acpi-device-bisect.py" "$SRC"
     python3 "$ROOT/scripts/apply-a14-full-acpi-smmu-checkpoints.py" "$SRC"
@@ -64,6 +65,7 @@ build_checkpoint(){
     make -C "$SRC" O="$OUT" -j"${A14_BUILD_JOBS:-$(nproc)}" Image
     [[ -s "$OUT/arch/arm64/boot/Image" ]] || die "rebuilt Image missing"
     [[ -s "$OUT/vmlinux" ]] || die "rebuilt vmlinux missing"
+    grep -q 'A14 ACPI TRACE: %s' "$SRC/drivers/acpi/bus.c" || die "trace breadcrumbs missing after build"
     grep -q 'smmu-driver-registered' "$SRC/drivers/iommu/arm/arm-smmu/arm-smmu.c" || die "SMMU checkpoint source patch missing after build"
     grep -q 'smmu-probe%d-%s' "$SRC/drivers/iommu/arm/arm-smmu/arm-smmu.c" || die "per-probe SMMU checkpoints missing after build"
 
@@ -72,6 +74,7 @@ build_checkpoint(){
         printf 'kernelrelease=%s\n' "$KREL"
         printf 'image_sha256=%s\n' "$image_sha"
         printf 'smmu_checkpoints=yes\n'
+        printf 'trace_breadcrumbs=yes\n'
         printf 'persistent_logging=yes\n'
         printf 'efi_earlycon=yes\n'
     } > "$STAMP"
@@ -81,6 +84,7 @@ build_checkpoint(){
     say "late_checkpoints=yes"
     say "device_initcall_bisect=yes"
     say "smmu_checkpoints=yes"
+    say "trace_breadcrumbs=yes"
     say "persistent_logging=yes"
     say "efi_earlycon=yes"
     say "image=$OUT/arch/arm64/boot/Image"
@@ -101,10 +105,12 @@ install_checkpoint(){
     actual_sha="$(sha256sum "$OUT/arch/arm64/boot/Image" | awk '{print $1}')"
     [[ "$stamp_krel" == "$KREL" ]] || die "build stamp kernelrelease mismatch: ${stamp_krel:-missing}"
     [[ -n "$expected_sha" && "$expected_sha" == "$actual_sha" ]] || die "build image does not match successful-build stamp; rebuild before install"
+    grep -q '^trace_breadcrumbs=yes$' "$STAMP" || die "build stamp lacks trace breadcrumb validation"
     grep -q '^persistent_logging=yes$' "$STAMP" || die "build stamp lacks persistent logging validation"
     grep -q '^efi_earlycon=yes$' "$STAMP" || die "build stamp lacks EFI earlycon validation"
 
     grep -q 'A14 ACPI CHECKPOINT REACHED' "$SRC/drivers/acpi/bus.c" || die "checkpoint source patch missing"
+    grep -q 'A14 ACPI TRACE: %s' "$SRC/drivers/acpi/bus.c" || die "trace breadcrumb source patch missing"
     grep -q 'initcall-device-after' "$SRC/init/main.c" || die "late checkpoint source patch missing"
     grep -q 'a14_device_halt_after' "$SRC/init/main.c" || die "device bisect source patch missing"
     grep -q 'smmu-driver-registered' "$SRC/drivers/iommu/arm/arm-smmu/arm-smmu.c" || die "SMMU checkpoint source patch missing"
@@ -130,6 +136,7 @@ install_checkpoint(){
     say "installed=/boot/vmlinuz-$KREL"
     say "installed_sha256=$(sha256sum "/boot/vmlinuz-$KREL" | awk '{print $1}')"
     say "validated_build_stamp=$STAMP"
+    say "trace_breadcrumbs=yes"
     say "persistent_logging=yes"
     say "efi_earlycon=yes"
     say "backup=$BACKUP/vmlinuz-$KREL.pre-checkpoints"
