@@ -37,7 +37,11 @@ for n in 1 2 3 4; do
 done
 
 journalctl --list-boots --no-pager > "$out/journal-boots.txt" 2>&1 || true
-last -x > "$out/last-x.txt" 2>&1 || true
+if command -v last >/dev/null 2>&1; then
+    last -x > "$out/last-x.txt" 2>&1 || true
+else
+    echo "last(1) is not installed" > "$out/last-x.txt"
+fi
 
 # Focused kernel fault extraction from the prior boots.
 for n in 1 2 3 4; do
