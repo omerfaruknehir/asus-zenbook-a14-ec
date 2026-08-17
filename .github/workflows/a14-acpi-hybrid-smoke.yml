@@ -1,0 +1,59 @@
+name: A14 ACPI hybrid smoke
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - agent/mainline-a14-integration
+    paths:
+      - 'scripts/apply-a14-acpi-hybrid-v0.py'
+      - '.github/workflows/a14-acpi-hybrid-smoke.yml'
+
+jobs:
+  compile-acpi-sidecar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ARM64 kernel build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu \
+            bc bison flex libssl-dev libelf-dev dwarves
+
+      - name: Fetch exact Linux 7.1.5 stable source
+        run: |
+          git clone --filter=blob:none --no-checkout https://github.com/gregkh/linux.git linux-7.1.5
+          git -C linux-7.1.5 fetch --force --depth=1 origin refs/tags/v7.1.5:refs/tags/v7.1.5
+          git -C linux-7.1.5 checkout --detach v7.1.5
+          test "$(git -C linux-7.1.5 rev-parse HEAD)" = 155b42bec9cbb6b8cdc47dd9bd09503a81fbe493
+
+      - name: Apply A14 ACPI DT-sidecar transform
+        run: python3 scripts/apply-a14-acpi-hybrid-v0.py linux-7.1.5
+
+      - name: Configure ARM64 ACPI build
+        run: |
+          make -C linux-7.1.5 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- defconfig
+          linux-7.1.5/scripts/config --file linux-7.1.5/.config --enable ACPI
+          linux-7.1.5/scripts/config --file linux-7.1.5/.config --enable EFI
+          linux-7.1.5/scripts/config --file linux-7.1.5/.config --enable OF
+          linux-7.1.5/scripts/config --file linux-7.1.5/.config --disable LOCALVERSION_AUTO
+          linux-7.1.5/scripts/config --file linux-7.1.5/.config --set-str SYSTEM_TRUSTED_KEYS ''
+          linux-7.1.5/scripts/config --file linux-7.1.5/.config --set-str SYSTEM_REVOCATION_KEYS ''
+          make -C linux-7.1.5 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- olddefconfig
+
+      - name: Compile modified ACPI objects
+        env:
+          LOCALVERSION: ''
+        run: |
+          make -C linux-7.1.5 \
+            ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j2 \
+            arch/arm64/kernel/acpi.o drivers/acpi/bus.o
+
+      - name: Verify transform markers
+        run: |
+          grep -F 'strcmp(arg, "hybrid")' linux-7.1.5/arch/arm64/kernel/acpi.c
+          grep -F 'DT-hybrid sidecar ready' linux-7.1.5/drivers/acpi/bus.c
+          grep -F 'extern bool acpi_dt_hybrid;' linux-7.1.5/include/linux/acpi.h
