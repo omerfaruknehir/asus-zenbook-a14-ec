@@ -1,8 +1,8 @@
 #!/bin/bash
 # SPDX-License-Identifier: GPL-2.0-only
-# Apply the A14 QCOM SMMU ACPI revision fix, fine-grained SMMU reset
-# checkpoints, and readable SMMU-only trace delay, then reuse the validated
-# checkpoint refresh build/install pipeline.
+# Apply the A14 QCOM SMMU ACPI revision fix, mirror X1's firmware-owned PCIe
+# SMMUv3 rule at EL1, retain fine-grained SMMU reset checkpoints/readable
+# SMMU-only traces, then reuse the validated checkpoint build/install pipeline.
 set -euo pipefail
 
 ACTION="${1:-build}"
@@ -16,6 +16,7 @@ die(){ printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 
 verify_source(){
     local bus="$SRC/drivers/acpi/bus.c"
+    local iort="$SRC/drivers/acpi/arm64/iort.c"
     local smmu="$SRC/drivers/iommu/arm/arm-smmu/arm-smmu.c"
     local qcom="$SRC/drivers/iommu/arm/arm-smmu/arm-smmu-qcom.c"
     grep -q 'a14_acpi_trace_delay_ms' "$bus" || die "trace-delay source patch missing"
@@ -25,6 +26,11 @@ verify_source(){
     grep -q 'smmu-reset-before-scr0-write' "$smmu" || die "SMMU final-write checkpoint missing"
     grep -q 'smmu-reset-after-scr0-write' "$smmu" || die "SMMU final-write completion checkpoint missing"
     grep -q '{ "QCOM  ", "QCOMEDK2", 0x8380, ACPI_SIG_IORT, equal, "QCOM SMMU A14" }' "$qcom" || die "QCOMEDK2 0x8380 ACPI SMMU matcher missing"
+    grep -q 'a14_iort_pcie_smmuv3_firmware_owned' "$iort" || die "PCIe SMMUv3 firmware-ownership quirk missing"
+    grep -q 'iort_table->oem_revision != 0x8380' "$iort" || die "PCIe SMMUv3 quirk lacks exact OEM revision guard"
+    grep -q 'smmu->base_address == 0x15400000' "$iort" || die "PCIe SMMUv3 quirk lacks exact base-address guard"
+    grep -q 'is_kernel_in_hyp_mode()' "$iort" || die "PCIe SMMUv3 quirk lacks EL1/EL2 ownership guard"
+    grep -q 'A14: leaving PCIe SMMUv3\[%llx\] firmware-owned at EL1' "$iort" || die "PCIe SMMUv3 ownership boot marker missing"
 }
 
 case "$ACTION" in
@@ -34,10 +40,14 @@ case "$ACTION" in
         # First bring the existing transforms to their current semantic state.
         python3 "$ROOT/scripts/apply-a14-full-acpi-trace-checkpoints.py" "$SRC"
         python3 "$ROOT/scripts/apply-a14-full-acpi-smmu-checkpoints.py" "$SRC"
-        # Select Qualcomm's SMMU implementation for the A14's actual IORT
+        # Select Qualcomm's SMMUv2 implementation for the A14's actual IORT
         # OEM revision instead of falling through to the generic ARM-SMMU path.
         python3 "$ROOT/scripts/apply-a14-full-acpi-smmu-qcom-8380.py" "$SRC"
-        # Add readable SMMU-only breadcrumbs and reset-internal stages.
+        # X1's upstream DT leaves PCIe SMMUv3 firmware-owned under Gunyah/EL1;
+        # mirror that ownership rule for this exact A14 IORT node.
+        python3 "$ROOT/scripts/apply-a14-full-acpi-pcie-smmuv3-firmware-owned.py" "$SRC"
+        # Retain readable SMMU-only breadcrumbs/reset-internal stages in case a
+        # later SMMUv2 regression appears while we advance to the next blocker.
         python3 "$ROOT/scripts/apply-a14-full-acpi-trace-delay.py" "$SRC"
         python3 "$ROOT/scripts/apply-a14-full-acpi-smmu-reset-checkpoints.py" "$SRC"
         verify_source
@@ -48,6 +58,8 @@ case "$ACTION" in
         say "A14_FULL_ACPI_SMMU_RESET_DEBUG_BUILD=COMPLETE"
         say "qcom_iort_8380_fix=yes"
         say "selected_acpi_smmu_impl=qcom_smmu_500_impl0_data"
+        say "pcie_smmuv3_15400000_el1=firmware-owned"
+        say "pcie_smmuv3_15400000_el2=linux-owned-normal-iort"
         say "trace_delay_supported=yes"
         say "trace_delay_scope=smmu-probe-and-reset-only"
         say "smmu_reset_internal_checkpoints=yes"
@@ -59,6 +71,8 @@ case "$ACTION" in
         say "A14_FULL_ACPI_SMMU_RESET_DEBUG_INSTALL=COMPLETE"
         say "qcom_iort_8380_fix=yes"
         say "selected_acpi_smmu_impl=qcom_smmu_500_impl0_data"
+        say "pcie_smmuv3_15400000_el1=firmware-owned"
+        say "pcie_smmuv3_15400000_el2=linux-owned-normal-iort"
         say "trace_delay_supported=yes"
         say "trace_delay_scope=smmu-probe-and-reset-only"
         say "smmu_reset_internal_checkpoints=yes"
