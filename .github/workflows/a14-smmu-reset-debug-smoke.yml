@@ -1,0 +1,70 @@
+name: A14 SMMU reset debug smoke
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [agent/a14-full-acpi]
+    paths:
+      - 'scripts/apply-a14-full-acpi-trace-delay.py'
+      - 'scripts/apply-a14-full-acpi-smmu-reset-checkpoints.py'
+      - 'scripts/a14-full-acpi-smmu-reset-debug-refresh.sh'
+      - 'scripts/a14-full-acpi-checkpoint-entry.sh'
+      - '.github/workflows/a14-smmu-reset-debug-smoke.yml'
+
+jobs:
+  arm64-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu \
+            bc bison flex libssl-dev libelf-dev dwarves xz-utils curl
+      - name: Fetch exact Linux 7.1.5
+        run: |
+          curl --fail --location --retry 3 -o linux.tar.xz https://cdn.kernel.org/pub/linux/kernel/v7.x/linux-7.1.5.tar.xz
+          echo '22a0196b3cbcdf34dc27b77561f4d040585fd3447edc9ab3531a1ac79e3041e7  linux.tar.xz' | sha256sum -c -
+          tar -xJf linux.tar.xz
+      - name: Apply A14 transforms
+        run: |
+          python3 scripts/apply-a14-full-acpi.py linux-7.1.5
+          python3 scripts/apply-a14-full-acpi-qppx.py linux-7.1.5
+          python3 scripts/apply-a14-full-acpi-checkpoints.py linux-7.1.5
+          python3 scripts/apply-a14-full-acpi-trace-checkpoints.py linux-7.1.5
+          python3 scripts/apply-a14-full-acpi-late-checkpoints.py linux-7.1.5
+          python3 scripts/apply-a14-full-acpi-device-bisect.py linux-7.1.5
+          python3 scripts/apply-a14-full-acpi-smmu-checkpoints.py linux-7.1.5
+          python3 scripts/apply-a14-full-acpi-trace-delay.py linux-7.1.5
+          python3 scripts/apply-a14-full-acpi-smmu-reset-checkpoints.py linux-7.1.5
+          # Idempotency pass for the two new transforms.
+          python3 scripts/apply-a14-full-acpi-trace-delay.py linux-7.1.5
+          python3 scripts/apply-a14-full-acpi-smmu-reset-checkpoints.py linux-7.1.5
+      - name: Configure ARM64
+        run: |
+          make -C linux-7.1.5 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- defconfig
+          C='linux-7.1.5/scripts/config --file linux-7.1.5/.config'
+          $C --enable ACPI --enable EFI --enable SERIAL_EARLYCON
+          $C --enable ARM_SMMU --enable IOMMU_SUPPORT
+          $C --enable ARM64_PLATFORM_DEVICES --enable QCOM_WOA_PEP_COMPAT --enable QCOM_WOA_QPPX_COMPAT
+          $C --set-str SYSTEM_TRUSTED_KEYS '' --set-str SYSTEM_REVOCATION_KEYS ''
+          make -C linux-7.1.5 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- olddefconfig
+          grep -q '^CONFIG_EFI_EARLYCON=y$' linux-7.1.5/.config
+      - name: Compile modified objects
+        run: |
+          make -C linux-7.1.5 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j2 drivers/acpi/bus.o
+          make -C linux-7.1.5 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j2 drivers/iommu/arm/arm-smmu/arm-smmu.o
+      - name: Verify instrumentation
+        run: |
+          BUS=linux-7.1.5/drivers/acpi/bus.c
+          SMMU=linux-7.1.5/drivers/iommu/arm/arm-smmu/arm-smmu.c
+          grep -F 'early_param("a14_acpi_trace_delay_ms"' "$BUS"
+          grep -F 'unsigned int remaining = a14_acpi_trace_delay_ms;' "$BUS"
+          for stage in \
+            smmu-reset-enter smmu-reset-after-gfsr smmu-reset-after-streams \
+            smmu-reset-after-contexts smmu-reset-after-tlbi smmu-reset-after-scr0-read \
+            smmu-reset-before-impl smmu-reset-after-impl smmu-reset-before-sync \
+            smmu-reset-after-sync smmu-reset-before-scr0-write smmu-reset-after-scr0-write; do
+            grep -F "$stage" "$SMMU"
+          done
