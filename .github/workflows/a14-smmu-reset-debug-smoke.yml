@@ -42,6 +42,7 @@ jobs:
           python3 scripts/apply-a14-full-acpi-pcie-smmuv3-firmware-owned.py linux-7.1.5
           python3 scripts/apply-a14-full-acpi-trace-delay.py linux-7.1.5
           python3 scripts/apply-a14-full-acpi-smmu-reset-checkpoints.py linux-7.1.5
+          # Idempotency pass for the four newest transforms.
           python3 scripts/apply-a14-full-acpi-smmu-qcom-8380.py linux-7.1.5
           python3 scripts/apply-a14-full-acpi-pcie-smmuv3-firmware-owned.py linux-7.1.5
           python3 scripts/apply-a14-full-acpi-trace-delay.py linux-7.1.5
@@ -79,13 +80,15 @@ jobs:
           test "$(grep -Fc '0x8380, ACPI_SIG_IORT, equal, "QCOM SMMU A14"' "$QCOM")" -eq 1
           grep -F '#include <asm/virt.h>' "$IORT"
           grep -F 'a14_iort_pcie_smmuv3_firmware_owned' "$IORT"
-          grep -F 'header = &iort_table->header;' "$IORT"
-          grep -F 'header->oem_revision != 0x8380' "$IORT"
+          grep -F 'iort_table->oem_revision != 0x8380' "$IORT"
           grep -F 'smmu->base_address == 0x15400000' "$IORT"
           grep -F 'is_kernel_in_hyp_mode()' "$IORT"
           grep -F 'A14: leaving PCIe SMMUv3[%llx] firmware-owned at EL1' "$IORT"
+          grep -F 'continue;' "$IORT"
           test "$(grep -Fc 'static bool __init a14_iort_pcie_smmuv3_firmware_owned(' "$IORT")" -eq 1
-          test "$(grep -Fc 'next_iort_node:' "$IORT")" -eq 1
+          test "$(grep -Fc 'A14: leaving PCIe SMMUv3[%llx] firmware-owned at EL1' "$IORT")" -eq 1
+          ! grep -F 'goto next_iort_node;' "$IORT"
+          ! grep -F 'next_iort_node:' "$IORT"
           for stage in \
             smmu-reset-enter smmu-reset-after-gfsr smmu-reset-after-streams \
             smmu-reset-after-contexts smmu-reset-after-tlbi smmu-reset-after-scr0-read \
