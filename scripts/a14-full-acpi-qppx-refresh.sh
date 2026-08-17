@@ -75,8 +75,26 @@ install_qppx(){
     say "initramfs_rebuilt=no (QPPX is built-in; existing initramfs retained)"
 }
 
+rollback_qppx(){
+    [[ ${EUID:-$(id -u)} -eq 0 ]] || die "rollback requires sudo/root"
+    [[ "$(uname -r)" != "$KREL" ]] || die "boot a non-experimental kernel before restoring $KREL"
+    need install; need update-grub; need sha256sum
+    old="$BACKUP/vmlinuz-$KREL.pre-qppx"
+    [[ -s "$old" ]] || die "pre-QPPX backup missing: $old"
+    if [[ -f "$BACKUP/vmlinuz-$KREL.pre-qppx.sha256" ]]; then
+        (cd "$BACKUP" && sha256sum -c "vmlinuz-$KREL.pre-qppx.sha256") || die "pre-QPPX backup checksum failed"
+    fi
+    command install -m0644 "$old" "/boot/vmlinuz-$KREL"
+    sync "/boot/vmlinuz-$KREL"
+    update-grub
+    say "A14_FULL_ACPI_QPPX_ROLLBACK=COMPLETE"
+    say "restored=/boot/vmlinuz-$KREL"
+    say "restored_sha256=$(sha256sum "/boot/vmlinuz-$KREL" | awk '{print $1}')"
+}
+
 case "$ACTION" in
     build) build_qppx ;;
     install) install_qppx ;;
-    *) die "usage: $0 {build|install}" ;;
+    rollback) rollback_qppx ;;
+    *) die "usage: $0 {build|install|rollback}" ;;
 esac
