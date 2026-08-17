@@ -1,6 +1,6 @@
 #!/bin/bash
 # SPDX-License-Identifier: GPL-2.0-only
-# Maintain one ACPI-only GRUB entry that halts after device initcall ordinal N.
+# Maintain one visible ACPI-only GRUB entry that checkpoints after device initcall ordinal N.
 #
 # Stateful mode:
 #   first run:  sudo ... mid
@@ -8,8 +8,8 @@
 #               sudo ... rebooted
 #
 # The helper remembers the surviving suspect range and automatically chooses
-# the next midpoint.  This is useful when the failing initcall hard-resets the
-# machine and leaves no persistent log.
+# the next midpoint. The diagnostic always retains EFI framebuffer earlycon so
+# failures before the normal tty/framebuffer console remain visible.
 set -euo pipefail
 
 SELECT="${1:-mid}"
@@ -20,11 +20,15 @@ OUT="$WORK/build"
 VMLINUX="$OUT/vmlinux"
 CONFIG="$OUT/.config"
 KERNEL="/boot/vmlinuz-$KREL"
+BOOT_CONFIG="/boot/config-$KREL"
 INITRD="/boot/initrd.img-$KREL"
 SNIPPET="/etc/grub.d/41_a14_full_acpi_checkpoint"
 OLD_MOUNTROOT="/etc/grub.d/41_a14_full_acpi_mountroot_shell"
 STATE_DIR="/var/lib/a14-full-acpi"
 STATE="$STATE_DIR/device-bisect.state"
+REBOOT_DELAY_MS="${A14_ACPI_REBOOT_DELAY_MS:-5000}"
+TRACE_DELAY_MS="${A14_ACPI_TRACE_DELAY_MS:-2000}"
+VISIBLE_ARGS="earlycon=efifb,ram keep_bootcon console=tty0 loglevel=8 ignore_loglevel printk.time=1"
 
 die(){ echo "ERROR: $*" >&2; exit 1; }
 need(){ command -v "$1" >/dev/null 2>&1 || die "missing command: $1"; }
@@ -33,6 +37,12 @@ for c in python3 nm grub-probe grub-mkrelpath update-grub; do need "$c"; done
 [[ -s "$VMLINUX" ]] || die "missing built vmlinux: $VMLINUX"
 [[ -r "$CONFIG" ]] || die "missing build config: $CONFIG"
 [[ -r "$KERNEL" && -r "$INITRD" ]] || die "experimental kernel/initrd missing"
+[[ -r "$BOOT_CONFIG" ]] || die "missing installed kernel config: $BOOT_CONFIG"
+grep -q '^CONFIG_EFI_EARLYCON=y$' "$BOOT_CONFIG" || die "experimental kernel lacks EFI framebuffer earlycon"
+[[ "$REBOOT_DELAY_MS" =~ ^[0-9]+$ ]] || die "A14_ACPI_REBOOT_DELAY_MS must be an integer number of milliseconds"
+[[ "$TRACE_DELAY_MS" =~ ^[0-9]+$ ]] || die "A14_ACPI_TRACE_DELAY_MS must be an integer number of milliseconds"
+(( REBOOT_DELAY_MS <= 60000 )) || die "A14_ACPI_REBOOT_DELAY_MS must be <= 60000"
+(( TRACE_DELAY_MS <= 10000 )) || die "A14_ACPI_TRACE_DELAY_MS must be <= 10000"
 
 total="$(python3 - "$VMLINUX" "$CONFIG" <<'PY'
 import subprocess, sys
@@ -101,7 +111,7 @@ case "$SELECT" in
             current="$state_current"
         else
             # Backward-compatible recovery for a midpoint entry created by an
-            # older stateless helper.  The original range was 1..total.
+            # older stateless helper. The original range was 1..total.
             current="$(current_from_snippet || true)"
             [[ "$current" =~ ^[0-9]+$ ]] || die "cannot recover previous bisect ordinal from $SNIPPET"
             low=1
@@ -154,18 +164,18 @@ ip="$(grub-mkrelpath "$INITRD")"
 args=()
 for arg in $(cat /proc/cmdline); do
     case "$arg" in
-        BOOT_IMAGE=*|initrd=*|acpi=*|panic=*|oops=*|quiet|splash|break=*|debug|debug=*|loglevel=*|earlycon=*|console=*|ignore_loglevel|initcall_debug|keep_bootcon|a14_acpi_halt=*|a14_device_halt_after=*) ;;
+        BOOT_IMAGE=*|initrd=*|acpi=*|panic=*|oops=*|quiet|splash|break=*|debug|debug=*|loglevel=*|earlycon=*|console=*|ignore_loglevel|initcall_debug|keep_bootcon|a14_acpi_halt=*|a14_acpi_reboot_delay_ms=*|a14_acpi_trace_delay_ms=*|a14_device_halt_after=*|reserve_mem=*|ramoops.*|nokaslr|systemd.unit=*) ;;
         *) args+=("$arg") ;;
     esac
 done
-cmdline="${args[*]} acpi=force loglevel=8 ignore_loglevel printk.time=1 console=tty0 a14_acpi_halt=device-bisect a14_device_halt_after=$N"
+cmdline="${args[*]} $VISIBLE_ARGS acpi=force a14_acpi_halt=device-bisect a14_device_halt_after=$N a14_acpi_reboot_delay_ms=$REBOOT_DELAY_MS a14_acpi_trace_delay_ms=$TRACE_DELAY_MS"
 entry="ASUS Zenbook A14 — ACPI DEVICE BISECT after $N/$total ($KREL)"
 
 rm -f "$OLD_MOUNTROOT"
 cat > "$SNIPPET" <<EOF
 #!/bin/sh
 exec tail -n +3 \$0
-# Temporary ACPI-only device-initcall ordinal bisector. Intentionally no devicetree.
+# Temporary visible ACPI-only device-initcall ordinal bisector. Intentionally no devicetree.
 # A14_DEVICE_BISECT_TOTAL=$total
 # A14_DEVICE_BISECT_LOW=$low
 # A14_DEVICE_BISECT_HIGH=$high
@@ -178,9 +188,17 @@ menuentry '$entry' --class ubuntu --class gnu-linux --class gnu --class os {
 EOF
 chmod 0755 "$SNIPPET"
 
+linux_line="$(awk '/^menuentry .*ACPI DEVICE BISECT/{seen=1} seen && /^[[:space:]]*linux[[:space:]]/{print; exit}' "$SNIPPET")"
+[[ -n "$linux_line" ]] || die "failed to validate generated device-bisect entry"
 ! grep -qE '^[[:space:]]*devicetree[[:space:]]' "$SNIPPET" || die "unexpected devicetree command"
-grep -q 'a14_acpi_halt=device-bisect' "$SNIPPET" || die "device-bisect halt parameter missing"
-grep -q "a14_device_halt_after=$N" "$SNIPPET" || die "ordinal parameter missing"
+grep -q 'a14_acpi_halt=device-bisect' <<<"$linux_line" || die "device-bisect halt parameter missing"
+grep -q "a14_device_halt_after=$N" <<<"$linux_line" || die "ordinal parameter missing"
+grep -q "a14_acpi_reboot_delay_ms=$REBOOT_DELAY_MS" <<<"$linux_line" || die "timed reboot parameter missing"
+grep -q "a14_acpi_trace_delay_ms=$TRACE_DELAY_MS" <<<"$linux_line" || die "SMMU trace readability delay missing"
+grep -q 'earlycon=efifb,ram' <<<"$linux_line" || die "EFI framebuffer earlycon missing"
+grep -q 'keep_bootcon' <<<"$linux_line" || die "keep_bootcon missing"
+! grep -q 'reserve_mem=' <<<"$linux_line" || die "stale persistent-RAM reservation present"
+! grep -q 'ramoops\.' <<<"$linux_line" || die "stale ramoops arguments present"
 
 save_state "$low" "$high" "$N" "$outcome"
 update-grub
@@ -191,5 +209,10 @@ echo "device_initcall_total=$total"
 echo "suspect_range=$low..$high"
 echo "halt_after=$N"
 echo "entry=$entry"
+echo "checkpoint_reboot_delay_ms=$REBOOT_DELAY_MS"
+echo "trace_delay_ms=$TRACE_DELAY_MS"
+echo "trace_delay_scope=smmu-probe-and-reset-only"
 echo "hardware_dtb_loaded=false"
+echo "efifb_earlycon=enabled"
+echo "keep_bootcon=enabled"
 echo "custom_checkpoint_entries=1"
