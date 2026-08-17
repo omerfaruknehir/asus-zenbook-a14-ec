@@ -73,40 +73,51 @@ def main() -> None:
         "checkpoint_main_include",
     )
 
-    replace_once(
-        mainc,
-        "\tdo_trace_initcall_level(initcall_level_names[level]);\n"
-        "\tfor (fn = initcall_levels[level]; fn < initcall_levels[level+1]; fn++)\n"
-        "\t\tdo_one_initcall(initcall_from_entry(fn));\n"
-        "}\n",
-        "\tdo_trace_initcall_level(initcall_level_names[level]);\n"
-        "\tfor (fn = initcall_levels[level]; fn < initcall_levels[level+1]; fn++)\n"
-        "\t\tdo_one_initcall(initcall_from_entry(fn));\n\n"
-        "\t/* A14 ACPI diagnostic: stop only after complete initcall levels. */\n"
-        "\tswitch (level) {\n"
-        "\tcase 4:\n"
-        "\t\ta14_acpi_checkpoint(\"initcall-subsys-after\");\n"
-        "\t\tbreak;\n"
-        "\tcase 5:\n"
-        "\t\ta14_acpi_checkpoint(\"initcall-fs-after\");\n"
-        "\t\tbreak;\n"
-        "\tcase 6:\n"
-        "\t\ta14_acpi_checkpoint(\"initcall-device-after\");\n"
-        "\t\tbreak;\n"
-        "\tcase 7:\n"
-        "\t\ta14_acpi_checkpoint(\"initcall-late-after\");\n"
-        "\t\tbreak;\n"
-        "\t}\n"
-        "}\n",
-        "checkpoint_initcall_levels",
-    )
-
-    expected = [
-        "acpi-init-done",
+    initcall_stages = (
         "initcall-subsys-after",
         "initcall-fs-after",
         "initcall-device-after",
         "initcall-late-after",
+    )
+    main_text = mainc.read_text()
+    if all(f'a14_acpi_checkpoint("{stage}")' in main_text for stage in initcall_stages):
+        # The later device-bisect transform intentionally rewrites the initcall
+        # loop while preserving these four level checkpoints.  Treat that tree
+        # as already current instead of requiring the original pre-bisect loop
+        # anchor to still exist.
+        print("checkpoint_initcall_levels=current")
+    else:
+        replace_once(
+            mainc,
+            "\tdo_trace_initcall_level(initcall_level_names[level]);\n"
+            "\tfor (fn = initcall_levels[level]; fn < initcall_levels[level+1]; fn++)\n"
+            "\t\tdo_one_initcall(initcall_from_entry(fn));\n"
+            "}\n",
+            "\tdo_trace_initcall_level(initcall_level_names[level]);\n"
+            "\tfor (fn = initcall_levels[level]; fn < initcall_levels[level+1]; fn++)\n"
+            "\t\tdo_one_initcall(initcall_from_entry(fn));\n\n"
+            "\t/* A14 ACPI diagnostic: stop only after complete initcall levels. */\n"
+            "\tswitch (level) {\n"
+            "\tcase 4:\n"
+            "\t\ta14_acpi_checkpoint(\"initcall-subsys-after\");\n"
+            "\t\tbreak;\n"
+            "\tcase 5:\n"
+            "\t\ta14_acpi_checkpoint(\"initcall-fs-after\");\n"
+            "\t\tbreak;\n"
+            "\tcase 6:\n"
+            "\t\ta14_acpi_checkpoint(\"initcall-device-after\");\n"
+            "\t\tbreak;\n"
+            "\tcase 7:\n"
+            "\t\ta14_acpi_checkpoint(\"initcall-late-after\");\n"
+            "\t\tbreak;\n"
+            "\t}\n"
+            "}\n",
+            "checkpoint_initcall_levels",
+        )
+
+    expected = [
+        "acpi-init-done",
+        *initcall_stages,
     ]
     combined = bus.read_text() + mainc.read_text()
     missing = [stage for stage in expected if stage not in combined]
