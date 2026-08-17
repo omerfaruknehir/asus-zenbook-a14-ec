@@ -7,6 +7,7 @@ on:
     paths:
       - 'scripts/apply-a14-full-acpi-trace-delay.py'
       - 'scripts/apply-a14-full-acpi-smmu-reset-checkpoints.py'
+      - 'scripts/apply-a14-full-acpi-smmu-qcom-8380.py'
       - 'scripts/a14-full-acpi-smmu-reset-debug-refresh.sh'
       - 'scripts/a14-full-acpi-checkpoint-entry.sh'
       - '.github/workflows/a14-smmu-reset-debug-smoke.yml'
@@ -36,9 +37,11 @@ jobs:
           python3 scripts/apply-a14-full-acpi-late-checkpoints.py linux-7.1.5
           python3 scripts/apply-a14-full-acpi-device-bisect.py linux-7.1.5
           python3 scripts/apply-a14-full-acpi-smmu-checkpoints.py linux-7.1.5
+          python3 scripts/apply-a14-full-acpi-smmu-qcom-8380.py linux-7.1.5
           python3 scripts/apply-a14-full-acpi-trace-delay.py linux-7.1.5
           python3 scripts/apply-a14-full-acpi-smmu-reset-checkpoints.py linux-7.1.5
-          # Idempotency pass for the two new transforms.
+          # Idempotency pass for the three new transforms.
+          python3 scripts/apply-a14-full-acpi-smmu-qcom-8380.py linux-7.1.5
           python3 scripts/apply-a14-full-acpi-trace-delay.py linux-7.1.5
           python3 scripts/apply-a14-full-acpi-smmu-reset-checkpoints.py linux-7.1.5
       - name: Configure ARM64
@@ -55,15 +58,20 @@ jobs:
         run: |
           make -C linux-7.1.5 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j2 drivers/acpi/bus.o
           make -C linux-7.1.5 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j2 drivers/iommu/arm/arm-smmu/arm-smmu.o
+          make -C linux-7.1.5 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j2 drivers/iommu/arm/arm-smmu/arm-smmu-qcom.o
       - name: Verify instrumentation
         run: |
           BUS=linux-7.1.5/drivers/acpi/bus.c
           SMMU=linux-7.1.5/drivers/iommu/arm/arm-smmu/arm-smmu.c
+          QCOM=linux-7.1.5/drivers/iommu/arm/arm-smmu/arm-smmu-qcom.c
           grep -F 'early_param("a14_acpi_trace_delay_ms"' "$BUS"
           grep -F 'unsigned int remaining = 0;' "$BUS"
           grep -F '!strncmp(stage, "smmu-probe", 10)' "$BUS"
           grep -F '!strncmp(stage, "smmu-reset-", 11)' "$BUS"
           ! grep -F 'unsigned int remaining = a14_acpi_trace_delay_ms;' "$BUS"
+          grep -F '{ "QCOM  ", "QCOMEDK2", 0x8180, ACPI_SIG_IORT, equal, "QCOM SMMU" }' "$QCOM"
+          grep -F '{ "QCOM  ", "QCOMEDK2", 0x8380, ACPI_SIG_IORT, equal, "QCOM SMMU A14" }' "$QCOM"
+          test "$(grep -Fc '0x8380, ACPI_SIG_IORT, equal, "QCOM SMMU A14"' "$QCOM")" -eq 1
           for stage in \
             smmu-reset-enter smmu-reset-after-gfsr smmu-reset-after-streams \
             smmu-reset-after-contexts smmu-reset-after-tlbi smmu-reset-after-scr0-read \
