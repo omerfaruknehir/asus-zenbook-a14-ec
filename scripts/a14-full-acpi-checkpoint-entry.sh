@@ -16,12 +16,18 @@ DIAG_ID="a14-acpi-checkpoint-log"
 COLLECT_ID="a14-pstore-collector"
 REBOOT_DELAY_MS="${A14_ACPI_REBOOT_DELAY_MS:-5000}"
 
-# Keep this logging layout identical between the failing ACPI boot and the
+# Keep the ramoops layout identical between the failing ACPI boot and the
 # same-Image DT collector boot. nokaslr makes reserve_mem's memblock allocation
 # deterministic enough to recover ramoops data across the soft reset.
 RAMOOPS_RESERVE="reserve_mem=2M:1M:a14log"
 RAMOOPS_ARGS="ramoops.mem_name=a14log ramoops.console_size=1048576 ramoops.record_size=262144 ramoops.ftrace_size=0 ramoops.pmsg_size=0"
-VISIBLE_ARGS="earlycon=efifb,ram keep_bootcon console=tty0 loglevel=8 ignore_loglevel printk.time=1"
+
+# The diagnostic needs a boot console that survives until the SMMU checkpoint.
+# The collector must NOT keep EFIFB as a boot console: doing so can conflict with
+# the normal DT framebuffer/DRM handoff. Use a conventional tty0 console and a
+# text-only userspace target for the recovery side instead.
+DIAG_VISIBLE_ARGS="earlycon=efifb,ram keep_bootcon console=tty0 loglevel=8 ignore_loglevel printk.time=1"
+COLLECT_VISIBLE_ARGS="console=tty0 loglevel=7 printk.time=1 systemd.unit=multi-user.target"
 
 stages=(
     acpi-early-enter
@@ -127,15 +133,15 @@ install_entry(){
     args=()
     for arg in $(cat /proc/cmdline); do
         case "$arg" in
-            BOOT_IMAGE=*|initrd=*|acpi=*|panic=*|oops=*|quiet|splash|break=*|debug|debug=*|loglevel=*|earlycon=*|console=*|ignore_loglevel|initcall_debug|keep_bootcon|a14_acpi_halt=*|a14_acpi_reboot_delay_ms=*|a14_device_halt_after=*|initcall_blacklist=*|reserve_mem=*|ramoops.*|nokaslr)
+            BOOT_IMAGE=*|initrd=*|acpi=*|panic=*|oops=*|quiet|splash|break=*|debug|debug=*|loglevel=*|earlycon=*|console=*|ignore_loglevel|initcall_debug|keep_bootcon|a14_acpi_halt=*|a14_acpi_reboot_delay_ms=*|a14_device_halt_after=*|initcall_blacklist=*|reserve_mem=*|ramoops.*|nokaslr|systemd.unit=*)
                 ;;
             *) args+=("$arg") ;;
         esac
     done
 
-    common="${args[*]} nokaslr $RAMOOPS_RESERVE $RAMOOPS_ARGS $VISIBLE_ARGS"
-    diag_cmdline="$common acpi=force a14_acpi_halt=$STAGE a14_acpi_reboot_delay_ms=$REBOOT_DELAY_MS"
-    collect_cmdline="$common acpi=off"
+    common="${args[*]} nokaslr $RAMOOPS_RESERVE $RAMOOPS_ARGS"
+    diag_cmdline="$common $DIAG_VISIBLE_ARGS acpi=force a14_acpi_halt=$STAGE a14_acpi_reboot_delay_ms=$REBOOT_DELAY_MS"
+    collect_cmdline="$common $COLLECT_VISIBLE_ARGS acpi=off"
     diag_entry="ASUS Zenbook A14 — ACPI CHECKPOINT+LOG: $STAGE ($KREL)"
     collect_entry="ASUS Zenbook A14 — PSTORE COLLECTOR — SAME KERNEL + KNOWN-GOOD DT ($KREL)"
 
@@ -157,6 +163,8 @@ menuentry '$diag_entry' --id '$DIAG_ID' --class ubuntu --class gnu-linux --class
 }
 
 # 2) Same experimental Image/initrd, but known-good live DT and ACPI disabled.
+# Deliberately do not use earlycon=efifb or keep_bootcon here: the collector
+# should follow the normal DT console/DRM handoff and stop at multi-user.target.
 # next_entry is one-shot, so after this collector boot normal GRUB behavior resumes.
 menuentry '$collect_entry' --id '$COLLECT_ID' --class ubuntu --class gnu-linux --class gnu --class os {
     search --no-floppy --fs-uuid --set=root $uuid
@@ -173,17 +181,22 @@ EOF
     grep -q 'acpi=force' <<<"$diag_linux" || die "diagnostic lacks acpi=force"
     grep -q "a14_acpi_halt=$STAGE" <<<"$diag_linux" || die "diagnostic checkpoint argument missing"
     grep -q "a14_acpi_reboot_delay_ms=$REBOOT_DELAY_MS" <<<"$diag_linux" || die "timed reboot argument missing"
+    grep -q 'earlycon=efifb,ram' <<<"$diag_linux" || die "diagnostic EFI framebuffer earlycon missing"
+    grep -q 'keep_bootcon' <<<"$diag_linux" || die "diagnostic keep_bootcon missing"
     ! grep -qE '^[[:space:]]*devicetree[[:space:]]' <<<"$(sed -n "/CHECKPOINT+LOG/,/PSTORE COLLECTOR/p" "$SNIPPET")" || die "diagnostic unexpectedly loads a devicetree"
+
     grep -q 'acpi=off' <<<"$collect_linux" || die "collector lacks acpi=off"
+    grep -q 'systemd.unit=multi-user.target' <<<"$collect_linux" || die "collector is not text-only"
+    ! grep -q 'earlycon=' <<<"$collect_linux" || die "collector unexpectedly keeps an early console"
+    ! grep -q 'keep_bootcon' <<<"$collect_linux" || die "collector unexpectedly keeps boot console alive"
     grep -qE '^[[:space:]]*devicetree[[:space:]]' "$SNIPPET" || die "collector lacks devicetree"
+
     grep -q -- "--id '$DIAG_ID'" "$SNIPPET" || die "diagnostic GRUB id missing"
     grep -q -- "--id '$COLLECT_ID'" "$SNIPPET" || die "collector GRUB id missing"
     grep -q "set next_entry='$COLLECT_ID'" "$SNIPPET" || die "collector one-shot next_entry is not armed"
     grep -q 'save_env next_entry' "$SNIPPET" || die "GRUB next_entry is not persisted"
 
     for line in "$diag_linux" "$collect_linux"; do
-        grep -q 'earlycon=efifb,ram' <<<"$line" || die "EFI framebuffer earlycon missing"
-        grep -q 'keep_bootcon' <<<"$line" || die "keep_bootcon missing"
         grep -q "$RAMOOPS_RESERVE" <<<"$line" || die "reserve_mem logging region missing"
         grep -q 'ramoops.mem_name=a14log' <<<"$line" || die "ramoops mem_name missing"
         grep -q 'nokaslr' <<<"$line" || die "diagnostic RAM layout is not deterministic"
@@ -209,7 +222,10 @@ EOF
     echo "collector_hardware_dtb_loaded=true"
     echo "collector_dtb=$DTB"
     echo "collector_dtb_sha256=$(sha256sum "$DTB" | awk '{print $1}')"
-    echo "efifb_earlycon=enabled"
+    echo "diagnostic_efifb_earlycon=enabled"
+    echo "collector_efifb_earlycon=disabled"
+    echo "collector_keep_bootcon=disabled"
+    echo "collector_userspace_target=multi-user.target"
     echo "persistent_console=ramoops"
     echo "reserve_mem=2M:1M:a14log"
     echo "nokaslr=diagnostic-pair-only"
