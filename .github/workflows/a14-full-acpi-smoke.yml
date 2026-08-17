@@ -59,7 +59,10 @@ jobs:
           $C --enable EFI_VARS_PSTORE
           $C --set-str SYSTEM_TRUSTED_KEYS '' --set-str SYSTEM_REVOCATION_KEYS ''
           make -C linux-7.1.5 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- olddefconfig
-          for sym in ACPI_WMI ASUS_WMI ASUS_NB_WMI I2C_QCOM_GENI PINCTRL_X1E80100 QCOM_WOA_PEP_COMPAT QCOM_WOA_QPPX_COMPAT PSTORE PSTORE_RAM PSTORE_CONSOLE SERIAL_EARLYCON EFI_EARLYCON; do
+          for sym in ACPI_WMI ASUS_WMI ASUS_NB_WMI I2C_QCOM_GENI PINCTRL_X1E80100 QCOM_WOA_PEP_COMPAT QCOM_WOA_QPPX_COMPAT; do
+            grep -Eq "^CONFIG_${sym}=(y|m)$" linux-7.1.5/.config
+          done
+          for sym in PSTORE PSTORE_RAM PSTORE_CONSOLE SERIAL_EARLYCON EFI_EARLYCON; do
             grep -q "^CONFIG_${sym}=y$" linux-7.1.5/.config
           done
       - name: Compile modified objects
