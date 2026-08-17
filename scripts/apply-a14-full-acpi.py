@@ -83,7 +83,9 @@ def main() -> None:
         'source "drivers/platform/wmi/Kconfig"\n\nsource "drivers/platform/asus/Kconfig"\n',
         "asus_platform_kconfig")
     platform_m = root / "drivers/platform/Makefile"
-    append_once(platform_m, "CONFIG_ASUS_WMI_ARM64", "obj-$(CONFIG_ASUS_WMI_ARM64)\t+= asus/", "asus_platform_makefile")
+    append_once(platform_m, "# A14 full ACPI: ARM64 ASUS WMI",
+        "# A14 full ACPI: ARM64 ASUS WMI\nobj-$(CONFIG_ARM64)\t\t+= asus/",
+        "asus_platform_makefile")
 
     asus_dir = root / "drivers/platform/asus"
     asus_dir.mkdir(parents=True, exist_ok=True)
@@ -93,13 +95,16 @@ def main() -> None:
             fail(f"missing ASUS source {src}")
         shutil.copyfile(src, asus_dir / name)
     write_if_changed(asus_dir / "Makefile", '''# SPDX-License-Identifier: GPL-2.0
-obj-$(CONFIG_ASUS_WMI_ARM64) += asus-wmi.o
-obj-$(CONFIG_ASUS_NB_WMI_ARM64) += asus-nb-wmi.o
+obj-$(CONFIG_ASUS_WMI) += asus-wmi.o
+obj-$(CONFIG_ASUS_NB_WMI) += asus-nb-wmi.o
 ''', "asus_makefile")
+    # Reuse the established symbols because include/linux/platform_data/x86/asus-wmi.h
+    # gates its real declarations on CONFIG_ASUS_WMI. The x86 definitions are under
+    # `if X86_PLATFORM_DEVICES`; this second definition supplies an ARM64-visible prompt.
     write_if_changed(asus_dir / "Kconfig", '''# SPDX-License-Identifier: GPL-2.0-only
 
-config ASUS_WMI_ARM64
-\ttristate "ASUS WMI support on ARM64 (experimental)"
+config ASUS_WMI
+\ttristate "ASUS WMI Driver on ARM64 (experimental)"
 \tdepends on ARM64 && ACPI_WMI
 \tdepends on ACPI_BATTERY
 \tdepends on INPUT
@@ -118,9 +123,9 @@ config ASUS_WMI_ARM64
 \t  driver for Windows-on-ARM ASUS laptops. The UX3407RA firmware exposes
 \t  the same ASUS management GUID and device IDs used by this driver.
 
-config ASUS_NB_WMI_ARM64
-\ttristate "ASUS notebook WMI support on ARM64 (experimental)"
-\tdepends on ASUS_WMI_ARM64
+config ASUS_NB_WMI
+\ttristate "ASUS notebook WMI Driver on ARM64 (experimental)"
+\tdepends on ARM64 && ASUS_WMI
 \thelp
 \t  Build the existing ASUS notebook WMI event driver on ARM64.
 ''', "asus_kconfig")
@@ -217,6 +222,7 @@ MODULE_LICENSE("GPL");
         px: ['QCOM0C0D', 'acpi_match_table'],
         armk: ['QCOM_WOA_PEP_COMPAT'],
         root / 'drivers/platform/arm64/qcom-woa-pep-compat.c': ['QCOM0C17', 'acpi_dev_clear_dependencies'],
+        asus_dir / 'Makefile': ['CONFIG_ASUS_WMI', 'CONFIG_ASUS_NB_WMI'],
         asus_dir / 'asus-wmi.c': ['ASUS_WMI_MGMT_GUID'],
         asus_dir / 'asus-nb-wmi.c': ['ASUS_NB_WMI_EVENT_GUID'],
     }
@@ -232,7 +238,7 @@ MODULE_LICENSE("GPL");
     print("qcom_i2c_hid=QCOM0C10")
     print("qcom_tlmm_hid=QCOM0C0D")
     print("qcom_pep_hid=QCOM0C17")
-    print("asus_wmi_arm64=enabled-by-config")
+    print("asus_wmi_arm64=existing-CONFIG_ASUS_WMI")
     print("tpm_start_method_9=left-unmodified")
 
 if __name__ == '__main__':
