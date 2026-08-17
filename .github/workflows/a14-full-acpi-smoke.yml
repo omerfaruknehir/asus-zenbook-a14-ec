@@ -40,15 +40,31 @@ jobs:
           $C --set-str SYSTEM_TRUSTED_KEYS '' --set-str SYSTEM_REVOCATION_KEYS ''
           make -C linux-7.1.5 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- olddefconfig
       - name: Compile modified objects
+        shell: bash
         run: |
-          make -C linux-7.1.5 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j2 \
-            drivers/platform/wmi/core.o \
-            drivers/platform/asus/asus-wmi.o \
-            drivers/platform/asus/asus-nb-wmi.o \
-            drivers/platform/arm64/qcom-woa-pep-compat.o \
-            drivers/i2c/busses/i2c-qcom-geni.o \
-            drivers/pinctrl/qcom/pinctrl-msm.o \
+          set -uo pipefail
+          targets=(
+            drivers/platform/wmi/core.o
+            drivers/platform/asus/asus-wmi.o
+            drivers/platform/asus/asus-nb-wmi.o
+            drivers/platform/arm64/qcom-woa-pep-compat.o
+            drivers/i2c/busses/i2c-qcom-geni.o
+            drivers/pinctrl/qcom/pinctrl-msm.o
             drivers/pinctrl/qcom/pinctrl-x1e80100.o
+          )
+          for target in "${targets[@]}"; do
+            echo "===== BUILD $target ====="
+            set +e
+            make -C linux-7.1.5 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j2 "$target" >compile.log 2>&1
+            rc=$?
+            set -e
+            cat compile.log
+            if (( rc != 0 )); then
+              msg=$(tail -n 80 compile.log | sed -e 's/%/%25/g' -e 's/\r/%0D/g' -e 's/$/%0A/' | tr -d '\n')
+              echo "::error title=Compile failed: $target::$msg"
+              exit "$rc"
+            fi
+          done
       - name: Verify expected transform
         run: |
           grep -F 'QCOM0C10' linux-7.1.5/drivers/i2c/busses/i2c-qcom-geni.c
