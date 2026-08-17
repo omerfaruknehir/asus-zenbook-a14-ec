@@ -21,6 +21,11 @@ stages=(
     acpi-bus-done
     acpi-scan-before
     acpi-scan-after
+    acpi-init-done
+    initcall-subsys-after
+    initcall-fs-after
+    initcall-device-after
+    initcall-late-after
 )
 
 die(){ echo "ERROR: $*" >&2; exit 1; }
@@ -55,9 +60,6 @@ install_entry(){
     kp="$(grub-mkrelpath "$KERNEL")"
     ip="$(grub-mkrelpath "$INITRD")"
 
-    # Start from the currently working DT boot's ordinary platform arguments.
-    # Strip anything that changes ACPI authority, hides output, forces reboot,
-    # or belongs to an older diagnostic test.
     args=()
     for arg in $(cat /proc/cmdline); do
         case "$arg" in
@@ -70,8 +72,6 @@ install_entry(){
     cmdline="${args[*]} acpi=force loglevel=8 ignore_loglevel printk.time=1 console=tty0 a14_acpi_halt=$STAGE"
     entry="ASUS Zenbook A14 — ACPI CHECKPOINT: $STAGE ($KREL)"
 
-    # Retire the old mountroot experiment when replacing it with this single
-    # checkpoint entry. No kernel or normal GRUB source is removed.
     rm -f "$OLD_MOUNTROOT"
     cat > "$SNIPPET" <<EOF
 #!/bin/sh
