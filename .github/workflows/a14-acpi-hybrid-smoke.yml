@@ -21,14 +21,16 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu \
-            bc bison flex libssl-dev libelf-dev dwarves
+            bc bison flex libssl-dev libelf-dev dwarves xz-utils curl
 
       - name: Fetch exact Linux 7.1.5 stable source
         run: |
-          git clone --filter=blob:none --no-checkout https://github.com/gregkh/linux.git linux-7.1.5
-          git -C linux-7.1.5 fetch --force --depth=1 origin refs/tags/v7.1.5:refs/tags/v7.1.5
-          git -C linux-7.1.5 checkout --detach v7.1.5
-          test "$(git -C linux-7.1.5 rev-parse HEAD)" = 155b42bec9cbb6b8cdc47dd9bd09503a81fbe493
+          curl --fail --location --retry 3 \
+            -o linux-7.1.5.tar.xz \
+            https://cdn.kernel.org/pub/linux/kernel/v7.x/linux-7.1.5.tar.xz
+          echo '22a0196b3cbcdf34dc27b77561f4d040585fd3447edc9ab3531a1ac79e3041e7  linux-7.1.5.tar.xz' | sha256sum -c -
+          tar -xJf linux-7.1.5.tar.xz
+          test "$(make -s -C linux-7.1.5 kernelversion)" = 7.1.5
 
       - name: Apply A14 ACPI DT-sidecar transform
         run: python3 scripts/apply-a14-acpi-hybrid-v0.py linux-7.1.5
