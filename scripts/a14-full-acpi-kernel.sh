@@ -50,11 +50,15 @@ prepare(){
   $C --enable I2C --enable I2C_QCOM_GENI
   $C --enable PINCTRL_MSM --enable PINCTRL_X1E80100
   $C --enable ARM64_PLATFORM_DEVICES --enable QCOM_WOA_PEP_COMPAT
-  $C --enable ASUS_WMI_ARM64 --enable ASUS_NB_WMI_ARM64
+  $C --enable ASUS_WMI --enable ASUS_NB_WMI
   $C --enable TCG_TPM --enable TCG_CRB
+  $C --enable PSTORE --enable EFI_VARS_PSTORE
   $C --set-str SYSTEM_TRUSTED_KEYS "" --set-str SYSTEM_REVOCATION_KEYS ""
   export LOCALVERSION=
   make -C "$SRC" O="$OUT" olddefconfig
+  for sym in ACPI_WMI ASUS_WMI ASUS_NB_WMI I2C_QCOM_GENI PINCTRL_X1E80100 QCOM_WOA_PEP_COMPAT; do
+    grep -Eq "^CONFIG_${sym}=(y|m)$" "$OUT/.config" || die "required CONFIG_${sym} was lost by olddefconfig"
+  done
   [[ "$(make -s -C "$SRC" O="$OUT" kernelrelease)" == "$KREL" ]] || die "unexpected kernelrelease"
   cat >"$META" <<EOF
 KREL='$KREL'
@@ -83,7 +87,7 @@ write_grub(){
   kp="$(grub-mkrelpath "$kernel")"; ip="$(grub-mkrelpath "$initrd")"
   args=()
   for arg in $(cat /proc/cmdline); do case "$arg" in BOOT_IMAGE=*|initrd=*|acpi=*) ;; *) args+=("$arg");; esac; done
-  cmdline="${args[*]} acpi=force"
+  cmdline="${args[*]} acpi=force loglevel=7"
   cat >"$GRUB_SNIPPET" <<EOF
 #!/bin/sh
 exec tail -n +3 \$0
@@ -132,7 +136,9 @@ status(){
     say "----- buses / WMI / TPM -----"
     ls -ld /sys/bus/i2c/devices/i2c-* /sys/bus/wmi/devices/* /dev/tpm* 2>/dev/null || true
     say "----- diagnostic dmesg -----"
-    dmesg 2>/dev/null | grep -Ei 'ACPI|QCOM0C|PEP|GENI|I2C|WMI|ASUS|TPM|IORT|PCI' | tail -n 400 || true
+    dmesg 2>/dev/null | grep -Ei 'ACPI|QCOM0C|PEP|GENI|I2C|WMI|ASUS|TPM|IORT|PCI|NVMe' | tail -n 500 || true
+    say "----- pstore -----"
+    ls -la /sys/fs/pstore 2>/dev/null || true
   fi
 }
 
