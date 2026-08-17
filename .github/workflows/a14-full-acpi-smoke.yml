@@ -1,0 +1,57 @@
+name: A14 full ACPI smoke
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [agent/a14-full-acpi]
+    paths:
+      - 'scripts/apply-a14-full-acpi.py'
+      - '.github/workflows/a14-full-acpi-smoke.yml'
+
+jobs:
+  arm64-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu \
+            bc bison flex libssl-dev libelf-dev dwarves xz-utils curl rsync
+      - name: Fetch exact Linux 7.1.5
+        run: |
+          curl --fail --location --retry 3 -o linux.tar.xz https://cdn.kernel.org/pub/linux/kernel/v7.x/linux-7.1.5.tar.xz
+          echo '22a0196b3cbcdf34dc27b77561f4d040585fd3447edc9ab3531a1ac79e3041e7  linux.tar.xz' | sha256sum -c -
+          tar -xJf linux.tar.xz
+      - name: Apply full-ACPI transform
+        run: python3 scripts/apply-a14-full-acpi.py linux-7.1.5
+      - name: Configure ARM64
+        run: |
+          make -C linux-7.1.5 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- defconfig
+          C='linux-7.1.5/scripts/config --file linux-7.1.5/.config'
+          $C --enable ACPI --enable EFI --enable OF --enable PCI --enable PCI_ACPI
+          $C --enable ACPI_WMI --enable ACPI_BATTERY --enable ACPI_VIDEO
+          $C --enable I2C --enable I2C_QCOM_GENI
+          $C --enable PINCTRL_MSM --enable PINCTRL_X1E80100
+          $C --enable ARM64_PLATFORM_DEVICES --enable QCOM_WOA_PEP_COMPAT
+          $C --enable ASUS_WMI_ARM64 --enable ASUS_NB_WMI_ARM64
+          $C --enable TCG_TPM --enable TCG_CRB
+          $C --set-str SYSTEM_TRUSTED_KEYS '' --set-str SYSTEM_REVOCATION_KEYS ''
+          make -C linux-7.1.5 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- olddefconfig
+      - name: Compile modified objects
+        run: |
+          make -C linux-7.1.5 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j2 \
+            drivers/platform/wmi/core.o \
+            drivers/platform/asus/asus-wmi.o \
+            drivers/platform/asus/asus-nb-wmi.o \
+            drivers/platform/arm64/qcom-woa-pep-compat.o \
+            drivers/i2c/busses/i2c-qcom-geni.o \
+            drivers/pinctrl/qcom/pinctrl-msm.o \
+            drivers/pinctrl/qcom/pinctrl-x1e80100.o
+      - name: Verify expected transform
+        run: |
+          grep -F 'QCOM0C10' linux-7.1.5/drivers/i2c/busses/i2c-qcom-geni.c
+          grep -F 'QCOM0C0D' linux-7.1.5/drivers/pinctrl/qcom/pinctrl-x1e80100.c
+          grep -F 'QCOM0C17' linux-7.1.5/drivers/platform/arm64/qcom-woa-pep-compat.c
+          grep -F 'X86 || ARM64' linux-7.1.5/drivers/platform/wmi/Kconfig
