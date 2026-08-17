@@ -14,7 +14,7 @@ die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 need() { command -v "$1" >/dev/null 2>&1 || die "missing command: $1"; }
 
 [[ ${EUID:-$(id -u)} -eq 0 ]] || die "run with sudo/root"
-for c in git modinfo depmod install strings grep; do need "$c"; done
+for c in git modinfo depmod install grep sha256sum; do need "$c"; done
 command -v update-initramfs >/dev/null 2>&1 || die "update-initramfs not found"
 [[ -e "/lib/modules/$KVER/build/Makefile" ]] || die "missing headers for $KVER"
 [[ -x "$ROOT/scripts/a14-kbuild-compat.sh" ]] || die "missing kbuild compatibility wrapper"
@@ -33,6 +33,7 @@ EOF
 # The committed source is the known-good pre-Fn-lock keyboard implementation.
 grep -Fq 'static int asus_hid_initialise' "$WORK/hid_asus_ec.c" || die "committed HID source lacks old initializer"
 grep -Fq '0xd0, 0x8f, 0x01' "$WORK/hid_asus_ec.c" || die "committed HID source lacks old OOBE/backlight bring-up sequence"
+grep -Fq 'A14_EC_REPORT_ID, 0xba, 0xc5, 0xc4, 0,' "$WORK/hid_asus_ec.c" || die "committed HID source lacks known-good backlight command"
 if grep -Fq 'A14_HID_FNLOCK_WINDOWS_FULL_FEATURE_REPORT' "$WORK/hid_asus_ec.c"; then
     die "committed HID source unexpectedly contains generated Fn-lock stack"
 fi
@@ -50,11 +51,19 @@ BUILT="$WORK/hid_asus_ec.ko"
 VERMAGIC="$(modinfo -F vermagic "$BUILT" 2>/dev/null || true)"
 [[ "$VERMAGIC" == "$KVER "* || "$VERMAGIC" == "$KVER"* ]] || die "built vermagic does not match $KVER: $VERMAGIC"
 
-# Guard against accidentally installing another generated Fn-lock module.
-if strings "$BUILT" | grep -Fq 'Fn-lock hardware path ready'; then
-    die "built recovery module still contains Fn-lock generated code"
-fi
-strings "$BUILT" | grep -Fq 'Zenbook A14 EC keyboard support enabled' || die "built module identity check failed"
+# Verify the built object using module metadata rather than `strings`. Compiler
+# and ELF layout changes can make arbitrary printable-string probes brittle,
+# while .modinfo is the kernel module's intended identity surface.
+BUILT_NAME="$(modinfo -F name "$BUILT" 2>/dev/null || true)"
+BUILT_DESC="$(modinfo -F description "$BUILT" 2>/dev/null || true)"
+[[ "$BUILT_NAME" == "hid_asus_ec" ]] || die "built module name mismatch: $BUILT_NAME"
+[[ "$BUILT_DESC" == *"ASUS Zenbook A14 EC HID keyboard driver"* ]] || die "built module description mismatch: $BUILT_DESC"
+
+say "built_module=$BUILT"
+say "built_sha256=$(sha256sum "$BUILT" | awk '{print $1}')"
+say "built_name=$BUILT_NAME"
+say "built_description=$BUILT_DESC"
+say "built_vermagic=$VERMAGIC"
 
 CURRENT="$(modinfo -k "$KVER" -n hid_asus_ec 2>/dev/null || true)"
 [[ -n "$CURRENT" && -f "$CURRENT" ]] || die "cannot resolve currently installed hid_asus_ec module"
