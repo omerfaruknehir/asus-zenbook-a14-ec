@@ -1,0 +1,54 @@
+name: A14 early pstore collector smoke
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [agent/a14-full-acpi]
+    paths:
+      - 'scripts/apply-a14-full-acpi-pstore-collector.py'
+      - 'scripts/a14-full-acpi-pstore-collector-refresh.sh'
+      - 'scripts/a14-full-acpi-early-pstore-entry.sh'
+      - '.github/workflows/a14-pstore-collector-smoke.yml'
+
+jobs:
+  arm64-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu \
+            bc bison flex libssl-dev libelf-dev dwarves xz-utils curl
+      - name: Fetch exact Linux 7.1.5
+        run: |
+          curl --fail --location --retry 3 -o linux.tar.xz https://cdn.kernel.org/pub/linux/kernel/v7.x/linux-7.1.5.tar.xz
+          echo '22a0196b3cbcdf34dc27b77561f4d040585fd3447edc9ab3531a1ac79e3041e7  linux.tar.xz' | sha256sum -c -
+          tar -xJf linux.tar.xz
+      - name: Apply early collector transform twice
+        run: |
+          python3 scripts/apply-a14-full-acpi-pstore-collector.py linux-7.1.5
+          python3 scripts/apply-a14-full-acpi-pstore-collector.py linux-7.1.5
+      - name: Configure ARM64
+        run: |
+          make -C linux-7.1.5 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- defconfig
+          C='linux-7.1.5/scripts/config --file linux-7.1.5/.config'
+          $C --enable PSTORE --enable PSTORE_RAM --enable PSTORE_CONSOLE
+          $C --enable SERIAL_EARLYCON
+          make -C linux-7.1.5 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- olddefconfig
+          for sym in PSTORE PSTORE_RAM PSTORE_CONSOLE SERIAL_EARLYCON EFI_EARLYCON; do
+            grep -q "^CONFIG_${sym}=y$" linux-7.1.5/.config
+          done
+      - name: Compile ramoops object
+        run: |
+          make -C linux-7.1.5 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j2 fs/pstore/ram.o
+      - name: Verify early collector
+        run: |
+          test "$(grep -c 'static void ramoops_a14_echo_previous_console' linux-7.1.5/fs/pstore/ram.c)" -eq 1
+          grep -F 'persistent_ram_old_size(cxt->cprz)' linux-7.1.5/fs/pstore/ram.c
+          grep -F 'ramoops_a14_echo_previous_console(cxt);' linux-7.1.5/fs/pstore/ram.c
+          grep -F 'A14 PSTORE EARLY COLLECTOR' linux-7.1.5/fs/pstore/ram.c
+          grep -F 'A14 PSTORE: collector reboot now' linux-7.1.5/fs/pstore/ram.c
+          grep -F 'emergency_restart();' linux-7.1.5/fs/pstore/ram.c
+          grep -F 'postcore_initcall(ramoops_init)' linux-7.1.5/fs/pstore/ram.c
