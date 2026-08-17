@@ -1,0 +1,50 @@
+name: A14 GENI wrapperless ACPI smoke
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [agent/a14-full-acpi]
+    paths:
+      - 'scripts/apply-a14-full-acpi-geni-wrapperless.py'
+      - 'scripts/a14-full-acpi-geni-wrapperless-refresh.sh'
+      - '.github/workflows/a14-geni-wrapperless-smoke.yml'
+
+jobs:
+  arm64-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu \
+            bc bison flex libssl-dev libelf-dev dwarves xz-utils curl
+      - name: Fetch exact Linux 7.1.5
+        run: |
+          curl --fail --location --retry 3 -o linux.tar.xz https://cdn.kernel.org/pub/linux/kernel/v7.x/linux-7.1.5.tar.xz
+          echo '22a0196b3cbcdf34dc27b77561f4d040585fd3447edc9ab3531a1ac79e3041e7  linux.tar.xz' | sha256sum -c -
+          tar -xJf linux.tar.xz
+      - name: Apply base ACPI and wrapperless GENI transforms
+        run: |
+          python3 scripts/apply-a14-full-acpi.py linux-7.1.5
+          python3 scripts/apply-a14-full-acpi-geni-wrapperless.py linux-7.1.5
+          python3 scripts/apply-a14-full-acpi-geni-wrapperless.py linux-7.1.5
+      - name: Configure ARM64
+        run: |
+          make -C linux-7.1.5 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- defconfig
+          C='linux-7.1.5/scripts/config --file linux-7.1.5/.config'
+          $C --enable ACPI --enable I2C_QCOM_GENI --enable QCOM_GENI_SE
+          $C --set-str SYSTEM_TRUSTED_KEYS '' --set-str SYSTEM_REVOCATION_KEYS ''
+          make -C linux-7.1.5 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- olddefconfig
+      - name: Compile GENI objects
+        run: |
+          make -C linux-7.1.5 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j2 drivers/soc/qcom/qcom-geni-se.o
+          make -C linux-7.1.5 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j2 drivers/i2c/busses/i2c-qcom-geni.o
+      - name: Verify fix
+        run: |
+          I2C=linux-7.1.5/drivers/i2c/busses/i2c-qcom-geni.c
+          grep -F 'has_acpi_companion(dev) && !gi2c->se.wrapper' "$I2C"
+          grep -F 'TX_FIFO_DEPTH_MSK_256_BYTES' "$I2C"
+          grep -F 'A14 ACPI: wrapperless GENI SE, TX FIFO depth' "$I2C"
+          test "$(grep -Fc 'A14 ACPI: wrapperless GENI SE, TX FIFO depth' "$I2C")" -eq 1
