@@ -43,6 +43,20 @@ jobs:
           python3 scripts/apply-a14-full-acpi-late-checkpoints.py linux-7.1.5
           python3 scripts/apply-a14-full-acpi-device-bisect.py linux-7.1.5
           python3 scripts/apply-a14-full-acpi-smmu-checkpoints.py linux-7.1.5
+      - name: Reproduce and repair incremental checkpoint duplication
+        run: |
+          # Recreate the exact partial-tree failure seen on the A14: the old
+          # base transform is rerun after the trace/timed body has changed.
+          python3 scripts/apply-a14-full-acpi-checkpoints.py linux-7.1.5
+          test "$(grep -c '^void a14_acpi_checkpoint(const char \*stage)$' linux-7.1.5/drivers/acpi/bus.c)" -eq 2
+          grep -F 'Intentional hold. If this machine reboots anyway' linux-7.1.5/drivers/acpi/bus.c
+
+          # The trace transform must remove exactly the stale legacy copy and
+          # leave the already-upgraded timed implementation intact.
+          python3 scripts/apply-a14-full-acpi-trace-checkpoints.py linux-7.1.5
+          test "$(grep -c '^void a14_acpi_checkpoint(const char \*stage)$' linux-7.1.5/drivers/acpi/bus.c)" -eq 1
+          ! grep -F 'Intentional hold. If this machine reboots anyway' linux-7.1.5/drivers/acpi/bus.c
+          grep -F 'A14 ACPI CHECKPOINT REBOOT NOW: %s' linux-7.1.5/drivers/acpi/bus.c
       - name: Configure ARM64
         run: |
           make -C linux-7.1.5 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- defconfig
@@ -106,6 +120,7 @@ jobs:
           grep -F 'QCOM0C96' linux-7.1.5/drivers/platform/arm64/qcom-woa-qppx-compat.c
           grep -F 'QCOMFFE4' linux-7.1.5/drivers/platform/arm64/qcom-woa-qppx-compat.c
           grep -F 'acpi_dev_clear_dependencies' linux-7.1.5/drivers/platform/arm64/qcom-woa-qppx-compat.c
+          test "$(grep -c '^void a14_acpi_checkpoint(const char \*stage)$' linux-7.1.5/drivers/acpi/bus.c)" -eq 1
           grep -F 'a14_acpi_halt' linux-7.1.5/drivers/acpi/bus.c
           grep -F 'A14 ACPI TRACE: %s' linux-7.1.5/drivers/acpi/bus.c
           grep -F 'a14_acpi_reboot_delay_ms' linux-7.1.5/drivers/acpi/bus.c
