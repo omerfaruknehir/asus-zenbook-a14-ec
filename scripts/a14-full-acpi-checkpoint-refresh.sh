@@ -22,6 +22,27 @@ check_tree(){
     [[ -f "$SRC/include/linux/a14_full_acpi.h" ]] || die "source tree is not the transformed A14 full-ACPI tree"
 }
 
+base_checkpoints_present(){
+    local bus="$SRC/drivers/acpi/bus.c"
+    local pci="$SRC/drivers/pci/pci-acpi.c"
+    local hdr="$SRC/include/linux/a14_full_acpi.h"
+
+    [[ -r "$bus" && -r "$pci" && -r "$hdr" ]] || return 1
+    grep -q 'void a14_acpi_checkpoint(const char \*stage);' "$hdr" || return 1
+    grep -q 'a14_acpi_halt_stage' "$bus" || return 1
+    grep -q 'acpi-early-enter' "$bus" || return 1
+    grep -q 'acpi-early-after-subsystem' "$bus" || return 1
+    grep -q 'acpi-subsystem-enter' "$bus" || return 1
+    grep -q 'acpi-subsystem-after-enable' "$bus" || return 1
+    grep -q 'acpi-init-enter' "$bus" || return 1
+    grep -q 'acpi-bus-done' "$bus" || return 1
+    grep -q 'acpi-scan-before' "$bus" || return 1
+    grep -q 'acpi-scan-after' "$bus" || return 1
+    grep -q 'pci-acpi-enter' "$pci" || return 1
+    grep -q 'pci-acpi-after' "$pci" || return 1
+    return 0
+}
+
 build_checkpoint(){
     [[ ${EUID:-$(id -u)} -ne 0 ]] || die "build as your normal user, not root"
     case "$(uname -m)" in aarch64|arm64) ;; *) die "AArch64 host required";; esac
@@ -33,10 +54,17 @@ build_checkpoint(){
     # of an older Image merely because that file still exists in OUT.
     rm -f "$STAMP"
 
-    # All transforms are idempotent; keep the previously validated QPPX fix in
-    # the same diagnostic image while extending checkpoints later into boot.
+    # Keep the previously validated QPPX fix in the same diagnostic image while
+    # extending checkpoints later into boot. The base checkpoint transform is
+    # intentionally skipped once its semantic markers are already present: its
+    # historical whole-function idempotency check cannot recognize the later
+    # breadcrumb/timed-reboot body and could otherwise re-insert a legacy core.
     python3 "$ROOT/scripts/apply-a14-full-acpi-qppx.py" "$SRC"
-    python3 "$ROOT/scripts/apply-a14-full-acpi-checkpoints.py" "$SRC"
+    if base_checkpoints_present; then
+        say "base_checkpoints=semantic-current"
+    else
+        python3 "$ROOT/scripts/apply-a14-full-acpi-checkpoints.py" "$SRC"
+    fi
     python3 "$ROOT/scripts/apply-a14-full-acpi-trace-checkpoints.py" "$SRC"
     python3 "$ROOT/scripts/apply-a14-full-acpi-late-checkpoints.py" "$SRC"
     python3 "$ROOT/scripts/apply-a14-full-acpi-device-bisect.py" "$SRC"
@@ -65,6 +93,7 @@ build_checkpoint(){
     make -C "$SRC" O="$OUT" -j"${A14_BUILD_JOBS:-$(nproc)}" Image
     [[ -s "$OUT/arch/arm64/boot/Image" ]] || die "rebuilt Image missing"
     [[ -s "$OUT/vmlinux" ]] || die "rebuilt vmlinux missing"
+    [[ "$(grep -c '^void a14_acpi_checkpoint(const char \*stage)$' "$SRC/drivers/acpi/bus.c")" -eq 1 ]] || die "checkpoint implementation is duplicated after transforms"
     grep -q 'A14 ACPI TRACE: %s' "$SRC/drivers/acpi/bus.c" || die "trace breadcrumbs missing after build"
     grep -q 'a14_acpi_reboot_delay_ms' "$SRC/drivers/acpi/bus.c" || die "timed checkpoint reboot parameter missing after build"
     grep -q 'A14 ACPI CHECKPOINT REBOOT NOW: %s' "$SRC/drivers/acpi/bus.c" || die "timed checkpoint reboot marker missing after build"
@@ -117,6 +146,7 @@ install_checkpoint(){
     grep -q '^efi_earlycon=yes$' "$STAMP" || die "build stamp lacks EFI earlycon validation"
     grep -q '^timed_checkpoint_reboot=yes$' "$STAMP" || die "build stamp lacks timed checkpoint reboot validation"
 
+    [[ "$(grep -c '^void a14_acpi_checkpoint(const char \*stage)$' "$SRC/drivers/acpi/bus.c")" -eq 1 ]] || die "checkpoint implementation is duplicated"
     grep -q 'A14 ACPI CHECKPOINT REACHED' "$SRC/drivers/acpi/bus.c" || die "checkpoint source patch missing"
     grep -q 'A14 ACPI TRACE: %s' "$SRC/drivers/acpi/bus.c" || die "trace breadcrumb source patch missing"
     grep -q 'a14_acpi_reboot_delay_ms' "$SRC/drivers/acpi/bus.c" || die "timed reboot parameter source patch missing"
