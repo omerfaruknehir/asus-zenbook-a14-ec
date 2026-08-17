@@ -41,10 +41,24 @@ build_checkpoint(){
     python3 "$ROOT/scripts/apply-a14-full-acpi-device-bisect.py" "$SRC"
     python3 "$ROOT/scripts/apply-a14-full-acpi-smmu-checkpoints.py" "$SRC"
 
-    "$SRC/scripts/config" --file "$OUT/.config" --enable QCOM_WOA_QPPX_COMPAT
+    C="$SRC/scripts/config"
+    "$C" --file "$OUT/.config" --enable QCOM_WOA_QPPX_COMPAT
+    # Persistent diagnostic console: ramoops is built in so it is active at
+    # postcore_initcall, well before the failing device_initcall. EFI earlycon
+    # is a def_bool selected on ARM64 when SERIAL_EARLYCON is enabled.
+    "$C" --file "$OUT/.config" --enable PSTORE
+    "$C" --file "$OUT/.config" --enable PSTORE_RAM
+    "$C" --file "$OUT/.config" --enable PSTORE_CONSOLE
+    "$C" --file "$OUT/.config" --enable SERIAL_EARLYCON
+
     export LOCALVERSION=
     make -C "$SRC" O="$OUT" olddefconfig
     grep -q '^CONFIG_QCOM_WOA_QPPX_COMPAT=y$' "$OUT/.config" || die "QPPX provider is not built-in"
+    grep -q '^CONFIG_PSTORE=y$' "$OUT/.config" || die "PSTORE is not built-in"
+    grep -q '^CONFIG_PSTORE_RAM=y$' "$OUT/.config" || die "PSTORE_RAM/ramoops is not built-in"
+    grep -q '^CONFIG_PSTORE_CONSOLE=y$' "$OUT/.config" || die "PSTORE_CONSOLE is not enabled"
+    grep -q '^CONFIG_SERIAL_EARLYCON=y$' "$OUT/.config" || die "SERIAL_EARLYCON is not enabled"
+    grep -q '^CONFIG_EFI_EARLYCON=y$' "$OUT/.config" || die "EFI_EARLYCON was not selected on ARM64"
     [[ "$(make -s -C "$SRC" O="$OUT" kernelrelease)" == "$KREL" ]] || die "kernelrelease changed unexpectedly"
 
     make -C "$SRC" O="$OUT" -j"${A14_BUILD_JOBS:-$(nproc)}" Image
@@ -58,6 +72,8 @@ build_checkpoint(){
         printf 'kernelrelease=%s\n' "$KREL"
         printf 'image_sha256=%s\n' "$image_sha"
         printf 'smmu_checkpoints=yes\n'
+        printf 'persistent_logging=yes\n'
+        printf 'efi_earlycon=yes\n'
     } > "$STAMP"
 
     say "A14_FULL_ACPI_CHECKPOINT_BUILD=COMPLETE"
@@ -65,6 +81,8 @@ build_checkpoint(){
     say "late_checkpoints=yes"
     say "device_initcall_bisect=yes"
     say "smmu_checkpoints=yes"
+    say "persistent_logging=yes"
+    say "efi_earlycon=yes"
     say "image=$OUT/arch/arm64/boot/Image"
     say "image_sha256=$image_sha"
     say "build_stamp=$STAMP"
@@ -83,12 +101,17 @@ install_checkpoint(){
     actual_sha="$(sha256sum "$OUT/arch/arm64/boot/Image" | awk '{print $1}')"
     [[ "$stamp_krel" == "$KREL" ]] || die "build stamp kernelrelease mismatch: ${stamp_krel:-missing}"
     [[ -n "$expected_sha" && "$expected_sha" == "$actual_sha" ]] || die "build image does not match successful-build stamp; rebuild before install"
+    grep -q '^persistent_logging=yes$' "$STAMP" || die "build stamp lacks persistent logging validation"
+    grep -q '^efi_earlycon=yes$' "$STAMP" || die "build stamp lacks EFI earlycon validation"
 
     grep -q 'A14 ACPI CHECKPOINT REACHED' "$SRC/drivers/acpi/bus.c" || die "checkpoint source patch missing"
     grep -q 'initcall-device-after' "$SRC/init/main.c" || die "late checkpoint source patch missing"
     grep -q 'a14_device_halt_after' "$SRC/init/main.c" || die "device bisect source patch missing"
     grep -q 'smmu-driver-registered' "$SRC/drivers/iommu/arm/arm-smmu/arm-smmu.c" || die "SMMU checkpoint source patch missing"
     grep -q 'smmu-probe%d-%s' "$SRC/drivers/iommu/arm/arm-smmu/arm-smmu.c" || die "per-probe SMMU checkpoint source patch missing"
+    grep -q '^CONFIG_PSTORE_RAM=y$' "$OUT/.config" || die "installed build would lack built-in ramoops"
+    grep -q '^CONFIG_PSTORE_CONSOLE=y$' "$OUT/.config" || die "installed build would lack pstore console"
+    grep -q '^CONFIG_EFI_EARLYCON=y$' "$OUT/.config" || die "installed build would lack EFI earlycon"
     [[ -f "/boot/vmlinuz-$KREL" ]] || die "installed experimental kernel missing"
 
     mkdir -p "$BACKUP"
@@ -107,6 +130,8 @@ install_checkpoint(){
     say "installed=/boot/vmlinuz-$KREL"
     say "installed_sha256=$(sha256sum "/boot/vmlinuz-$KREL" | awk '{print $1}')"
     say "validated_build_stamp=$STAMP"
+    say "persistent_logging=yes"
+    say "efi_earlycon=yes"
     say "backup=$BACKUP/vmlinuz-$KREL.pre-checkpoints"
     say "normal_kernel_untouched=7.1.5-070105-generic"
     say "initramfs_rebuilt=no"
