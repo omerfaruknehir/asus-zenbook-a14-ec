@@ -12,6 +12,7 @@ WORK="${A14_FULL_ACPI_WORK:-$OWNER_HOME/Downloads/a14-full-acpi-kernel}"
 SRC="$WORK/linux-7.1.5"
 OUT="$WORK/build"
 BACKUP="$WORK/checkpoint-backup"
+STAMP="$WORK/checkpoint-build.ready"
 
 say(){ printf '%s\n' "$*"; }
 die(){ printf 'ERROR: %s\n' "$*" >&2; exit 1; }
@@ -26,6 +27,11 @@ build_checkpoint(){
     case "$(uname -m)" in aarch64|arm64) ;; *) die "AArch64 host required";; esac
     for c in python3 make gcc sha256sum; do need "$c"; done
     check_tree
+
+    # Invalidate any previous successful-build stamp before touching the tree.
+    # Therefore a failed transform/compile can never be followed by an install
+    # of an older Image merely because that file still exists in OUT.
+    rm -f "$STAMP"
 
     # All transforms are idempotent; keep the previously validated QPPX fix in
     # the same diagnostic image while extending checkpoints later into boot.
@@ -44,6 +50,15 @@ build_checkpoint(){
     make -C "$SRC" O="$OUT" -j"${A14_BUILD_JOBS:-$(nproc)}" Image
     [[ -s "$OUT/arch/arm64/boot/Image" ]] || die "rebuilt Image missing"
     [[ -s "$OUT/vmlinux" ]] || die "rebuilt vmlinux missing"
+    grep -q 'smmu-driver-registered' "$SRC/drivers/iommu/arm/arm-smmu/arm-smmu.c" || die "SMMU checkpoint source patch missing after build"
+    grep -q 'smmu-probe%d-%s' "$SRC/drivers/iommu/arm/arm-smmu/arm-smmu.c" || die "per-probe SMMU checkpoints missing after build"
+
+    image_sha="$(sha256sum "$OUT/arch/arm64/boot/Image" | awk '{print $1}')"
+    {
+        printf 'kernelrelease=%s\n' "$KREL"
+        printf 'image_sha256=%s\n' "$image_sha"
+        printf 'smmu_checkpoints=yes\n'
+    } > "$STAMP"
 
     say "A14_FULL_ACPI_CHECKPOINT_BUILD=COMPLETE"
     say "kernelrelease=$KREL"
@@ -51,19 +66,29 @@ build_checkpoint(){
     say "device_initcall_bisect=yes"
     say "smmu_checkpoints=yes"
     say "image=$OUT/arch/arm64/boot/Image"
-    say "image_sha256=$(sha256sum "$OUT/arch/arm64/boot/Image" | awk '{print $1}')"
+    say "image_sha256=$image_sha"
+    say "build_stamp=$STAMP"
 }
 
 install_checkpoint(){
     [[ ${EUID:-$(id -u)} -eq 0 ]] || die "install requires sudo/root"
     [[ "$(uname -r)" != "$KREL" ]] || die "boot the normal kernel before replacing $KREL"
-    for c in install update-grub sha256sum; do need "$c"; done
+    for c in install update-grub sha256sum awk; do need "$c"; done
     check_tree
     [[ -s "$OUT/arch/arm64/boot/Image" ]] || die "rebuilt Image missing"
+    [[ -r "$STAMP" ]] || die "no successful checkpoint build stamp; run build successfully before install"
+
+    stamp_krel="$(awk -F= '$1 == "kernelrelease" {print $2}' "$STAMP")"
+    expected_sha="$(awk -F= '$1 == "image_sha256" {print $2}' "$STAMP")"
+    actual_sha="$(sha256sum "$OUT/arch/arm64/boot/Image" | awk '{print $1}')"
+    [[ "$stamp_krel" == "$KREL" ]] || die "build stamp kernelrelease mismatch: ${stamp_krel:-missing}"
+    [[ -n "$expected_sha" && "$expected_sha" == "$actual_sha" ]] || die "build image does not match successful-build stamp; rebuild before install"
+
     grep -q 'A14 ACPI CHECKPOINT REACHED' "$SRC/drivers/acpi/bus.c" || die "checkpoint source patch missing"
     grep -q 'initcall-device-after' "$SRC/init/main.c" || die "late checkpoint source patch missing"
     grep -q 'a14_device_halt_after' "$SRC/init/main.c" || die "device bisect source patch missing"
     grep -q 'smmu-driver-registered' "$SRC/drivers/iommu/arm/arm-smmu/arm-smmu.c" || die "SMMU checkpoint source patch missing"
+    grep -q 'smmu-probe%d-%s' "$SRC/drivers/iommu/arm/arm-smmu/arm-smmu.c" || die "per-probe SMMU checkpoint source patch missing"
     [[ -f "/boot/vmlinuz-$KREL" ]] || die "installed experimental kernel missing"
 
     mkdir -p "$BACKUP"
@@ -81,6 +106,7 @@ install_checkpoint(){
     say "A14_FULL_ACPI_CHECKPOINT_INSTALL=COMPLETE"
     say "installed=/boot/vmlinuz-$KREL"
     say "installed_sha256=$(sha256sum "/boot/vmlinuz-$KREL" | awk '{print $1}')"
+    say "validated_build_stamp=$STAMP"
     say "backup=$BACKUP/vmlinuz-$KREL.pre-checkpoints"
     say "normal_kernel_untouched=7.1.5-070105-generic"
     say "initramfs_rebuilt=no"
