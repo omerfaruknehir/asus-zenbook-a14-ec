@@ -32,6 +32,7 @@ build_checkpoint(){
     python3 "$ROOT/scripts/apply-a14-full-acpi-qppx.py" "$SRC"
     python3 "$ROOT/scripts/apply-a14-full-acpi-checkpoints.py" "$SRC"
     python3 "$ROOT/scripts/apply-a14-full-acpi-late-checkpoints.py" "$SRC"
+    python3 "$ROOT/scripts/apply-a14-full-acpi-device-bisect.py" "$SRC"
 
     "$SRC/scripts/config" --file "$OUT/.config" --enable QCOM_WOA_QPPX_COMPAT
     export LOCALVERSION=
@@ -41,10 +42,12 @@ build_checkpoint(){
 
     make -C "$SRC" O="$OUT" -j"${A14_BUILD_JOBS:-$(nproc)}" Image
     [[ -s "$OUT/arch/arm64/boot/Image" ]] || die "rebuilt Image missing"
+    [[ -s "$OUT/vmlinux" ]] || die "rebuilt vmlinux missing"
 
     say "A14_FULL_ACPI_CHECKPOINT_BUILD=COMPLETE"
     say "kernelrelease=$KREL"
     say "late_checkpoints=yes"
+    say "device_initcall_bisect=yes"
     say "image=$OUT/arch/arm64/boot/Image"
     say "image_sha256=$(sha256sum "$OUT/arch/arm64/boot/Image" | awk '{print $1}')"
 }
@@ -57,6 +60,7 @@ install_checkpoint(){
     [[ -s "$OUT/arch/arm64/boot/Image" ]] || die "rebuilt Image missing"
     grep -q 'A14 ACPI CHECKPOINT REACHED' "$SRC/drivers/acpi/bus.c" || die "checkpoint source patch missing"
     grep -q 'initcall-device-after' "$SRC/init/main.c" || die "late checkpoint source patch missing"
+    grep -q 'a14_device_halt_after' "$SRC/init/main.c" || die "device bisect source patch missing"
     [[ -f "/boot/vmlinuz-$KREL" ]] || die "installed experimental kernel missing"
 
     mkdir -p "$BACKUP"
