@@ -109,6 +109,12 @@ prepare_source() {
     "$SRC/scripts/config" --file "$OUT/.config" --set-str SYSTEM_TRUSTED_KEYS ""
     "$SRC/scripts/config" --file "$OUT/.config" --set-str SYSTEM_REVOCATION_KEYS ""
 
+    # The source tree is intentionally modified by the hybrid transform. Linux
+    # otherwise appends '+' to the release when LOCALVERSION is unset and the
+    # Git tree is dirty. Export an explicitly empty Kbuild LOCALVERSION while
+    # keeping the requested suffix in CONFIG_LOCALVERSION above.
+    export LOCALVERSION=
+
     make -C "$SRC" O="$OUT" olddefconfig
 
     local krel
@@ -122,7 +128,7 @@ BASE_KVER='$BASE_KVER'
 KREL='$krel'
 SRC='$SRC'
 OUT='$OUT'
-LOCALVERSION='$LOCALVERSION'
+LOCALVERSION='-a14-acpi-hybrid0'
 EOF
 
     say "A14_ACPI_HYBRID_PREPARED=1"
@@ -262,6 +268,9 @@ install_kernel() {
     need depmod
     need update-initramfs
     need sha256sum
+
+    # Keep the same explicit empty Kbuild LOCALVERSION used by the build.
+    export LOCALVERSION=
 
     say "Installing modules for $KREL..."
     make -C "$SRC" O="$OUT" modules_install
