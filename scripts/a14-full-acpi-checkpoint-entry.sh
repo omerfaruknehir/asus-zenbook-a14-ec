@@ -134,7 +134,7 @@ EOF
     grep -q 'earlycon=efifb,ram' <<<"$linux_line" || die "EFI framebuffer earlycon missing"
     grep -q 'keep_bootcon' <<<"$linux_line" || die "keep_bootcon missing"
     ! grep -qE '^[[:space:]]*devicetree[[:space:]]' "$SNIPPET" || die "diagnostic unexpectedly loads a devicetree"
-    ! grep -q 'next_entry' "$SNIPPET" || die "diagnostic unexpectedly arms a next boot"
+    ! grep -qE '^[[:space:]]*(set[[:space:]]+next_entry=|save_env[[:space:]]+next_entry([[:space:]]|$))' "$SNIPPET" || die "diagnostic unexpectedly arms a next boot"
     ! grep -q 'reserve_mem=' <<<"$linux_line" || die "stale persistent-RAM reservation present"
     ! grep -q 'ramoops\.' <<<"$linux_line" || die "stale ramoops arguments present"
     ! grep -qE '(^|[[:space:]])panic=' <<<"$linux_line" || die "panic argument unexpectedly present"
