@@ -34,7 +34,7 @@ if "QCOM0C0D" in table:
     raise SystemExit("ERROR: A14 IPC0 HID QCOM0C0D still present in TLMM table")
 print("A14_GIO0_TLMM_SOURCE=VERIFIED")
 print("gio0_ids=QCOM0C0C,QCOMFFEB")
-print("ipc0_qcom0d_match=false")
+print("ipc0_qcom0c0d_match=false")
 PY
 }
 
@@ -52,7 +52,7 @@ if b"QCOM0C0D\x00" in b:
     raise SystemExit("ERROR: built TLMM object still contains IPC0 match QCOM0C0D")
 print("A14_GIO0_TLMM_OBJECT=VERIFIED")
 print("built_gio0_ids=QCOM0C0C,QCOMFFEB")
-print("built_ipc0_qcom0d_match=false")
+print("built_ipc0_qcom0c0d_match=false")
 PY
 }
 
@@ -106,8 +106,6 @@ run_modules_phase() {
         return "$make_rc"
     fi
 
-    # Make success is authoritative. Re-scan once after wait to close any tiny
-    # race where the watcher observed the child exiting just before final cleanup.
     if (( watch_rc != 0 )); then
         python3 "$WATCH" --build "$OUT" --logfile "$logfile" --once || true
     fi
