@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: GPL-2.0-only
 # Reproduce the known-good A14 full-ACPI state from repository commit 74c9bd5.
 #
-# IMPORTANT: this does not reuse the mutable/current kernel source tree.  It
+# IMPORTANT: this does not reuse the mutable/current kernel source tree. It
 # creates a detached worktree at the exact historical repository commit and a
 # dedicated Linux build directory, then runs the historical scripts themselves.
 set -euo pipefail
@@ -50,11 +50,11 @@ ensure_historical_worktree(){
 }
 
 verify_historical_cmdline_script(){
-    grep -q 'BOOT_UI_ARGS="earlycon=efifb,ram console=tty0 loglevel=8 ignore_loglevel printk.time=1"' "$HIST_ENTRY" \
+    grep -Fq 'BOOT_UI_ARGS="earlycon=efifb,ram console=tty0 loglevel=8 ignore_loglevel printk.time=1"' "$HIST_ENTRY" \
         || die "74c9bd5 verbose command line no longer matches expected historical script"
-    grep -q 'cmdline="${args\[\*\]} $BOOT_UI_ARGS acpi=force"' "$HIST_ENTRY" \
+    grep -Fq 'cmdline="${args[*]} $BOOT_UI_ARGS acpi=force"' "$HIST_ENTRY" \
         || die "74c9bd5 acpi=force command-line construction mismatch"
-    grep -q 'SNIPPET="/etc/grub.d/41_a14_full_acpi_checkpoint"' "$HIST_ENTRY" \
+    grep -Fq 'SNIPPET="/etc/grub.d/41_a14_full_acpi_checkpoint"' "$HIST_ENTRY" \
         || die "74c9bd5 unrestricted GRUB snippet path mismatch"
     say "historical_cmdline=VERIFIED"
     say "historical_boot_ui_args=earlycon=efifb,ram console=tty0 loglevel=8 ignore_loglevel printk.time=1"
@@ -81,7 +81,6 @@ build_good(){
     [[ -s "$image" ]] || die "historical final Image missing: $image"
     [[ -s "$HIST_WORK/build/vmlinux" ]] || die "historical vmlinux missing"
 
-    # Verify characteristic source markers from the exact 74c9 build chain.
     grep -q 'A14 ACPI: wrapperless GENI SE, TX FIFO depth' "$HIST_WORK/linux-7.1.5/drivers/i2c/busses/i2c-qcom-geni.c" \
         || die "historical wrapperless GENI marker missing"
     grep -q 'a14_iort_pcie_smmuv3_firmware_owned' "$HIST_WORK/linux-7.1.5/drivers/acpi/arm64/iort.c" \
@@ -146,15 +145,9 @@ install_good(){
     [[ "$stamp_krel" == "$KREL" ]] || die "build stamp kernelrelease mismatch"
     [[ -n "$expected_sha" && "$expected_sha" == "$actual_sha" ]] || die "historical Image changed since successful build"
 
-    # Use the exact historical base installer on the final historical build tree:
-    # it installs modules, the current final Image/config/System.map, depmod and
-    # regenerates this kernel's initramfs.
     say "A14_74C9_INSTALL_STAGE=1/3 historical-kernel-install"
     A14_FULL_ACPI_WORK="$HIST_WORK" bash "$HIST_BASE" install
 
-    # The base installer creates its generic historical entry. Remove every A14
-    # experiment snippet (including later diagnostics) before recreating exactly
-    # the 74c9 unrestricted entry, leaving a single custom A14 entry.
     say "A14_74C9_INSTALL_STAGE=2/3 grub-cleanup"
     cleanup_a14_grub
 
@@ -171,10 +164,10 @@ install_good(){
     linux_line="$(awk '/^menuentry .*ACPI-ONLY UNRESTRICTED/{seen=1} seen && /^[[:space:]]*linux[[:space:]]/{print; exit}' "$snippet")"
     [[ -n "$linux_line" ]] || die "cannot find historical unrestricted linux line"
     for required in 'earlycon=efifb,ram' 'console=tty0' 'loglevel=8' 'ignore_loglevel' 'printk.time=1' 'acpi=force'; do
-        grep -q "$required" <<<"$linux_line" || die "installed GRUB line lacks historical parameter: $required"
+        grep -Fq "$required" <<<"$linux_line" || die "installed GRUB line lacks historical parameter: $required"
     done
     for forbidden in 'keep_bootcon' 'initcall_debug' 'a14_acpi_halt=' 'a14_acpi_reboot_delay_ms=' 'a14_acpi_trace_delay_ms=' 'a14_device_halt_after=' 'initcall_blacklist=' 'ramoops.' 'reserve_mem='; do
-        ! grep -q "$forbidden" <<<"$linux_line" || die "installed GRUB line contains non-74c9 diagnostic parameter: $forbidden"
+        ! grep -Fq "$forbidden" <<<"$linux_line" || die "installed GRUB line contains non-74c9 diagnostic parameter: $forbidden"
     done
     ! grep -qE '^[[:space:]]*devicetree[[:space:]]' "$snippet" || die "historical unrestricted entry unexpectedly loads DTB"
 
