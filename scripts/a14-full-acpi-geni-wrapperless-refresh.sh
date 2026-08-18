@@ -75,15 +75,32 @@ prepare_and_patch() {
     verify_source
 }
 
-build_patched() {
-    prepare_and_patch
-    export LOCALVERSION=
-    make -C "$SRC" O="$OUT" -j"${A14_BUILD_JOBS:-$(nproc)}" Image modules
+finish_build() {
     [[ -s "$OUT/arch/arm64/boot/Image" ]] || { echo "ERROR: Image missing" >&2; exit 1; }
     verify_built_object
     echo "A14_FULL_ACPI_GENI_GPIO_BUILD=COMPLETE"
     echo "image=$OUT/arch/arm64/boot/Image"
     echo "sha256=$(sha256sum "$OUT/arch/arm64/boot/Image" | awk '{print $1}')"
+}
+
+build_patched() {
+    prepare_and_patch
+    export LOCALVERSION=
+    make -C "$SRC" O="$OUT" -j"${A14_BUILD_JOBS:-$(nproc)}" Image modules
+    finish_build
+}
+
+resume_patched() {
+    [[ -f "$SRC/Makefile" ]] || { echo "ERROR: kernel source missing; run '$0 build' first" >&2; exit 1; }
+    [[ -f "$OUT/.config" ]] || { echo "ERROR: build configuration missing; run '$0 build' first" >&2; exit 1; }
+    verify_source
+    echo "A14_FULL_ACPI_GENI_GPIO_RESUME=START"
+    echo "source=$SRC"
+    echo "build=$OUT"
+    export LOCALVERSION=
+    # Do NOT call prepare here: make will reuse all valid objects from the interrupted build.
+    make -C "$SRC" O="$OUT" -j"${A14_BUILD_JOBS:-$(nproc)}" Image modules
+    finish_build
 }
 
 verify_installable() {
@@ -103,6 +120,9 @@ case "${1:-}" in
     build)
         build_patched
         ;;
+    resume)
+        resume_patched
+        ;;
     install)
         verify_installable
         bash "$BASE" install
@@ -112,7 +132,7 @@ case "${1:-}" in
         bash "$BASE" install
         ;;
     *)
-        echo "usage: $0 [build|install|build-install]" >&2
+        echo "usage: $0 [build|resume|install|build-install]" >&2
         exit 2
         ;;
 esac
