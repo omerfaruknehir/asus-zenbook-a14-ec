@@ -12,6 +12,7 @@ KERNEL="/boot/vmlinuz-$KREL"
 BACKUP="/boot/vmlinuz-$KREL.pre-acpi-scan-trace"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 PATCHER="$SCRIPT_DIR/apply-a14-full-acpi-scan-trace.py"
+PATCHER2="$SCRIPT_DIR/apply-a14-full-acpi-scan-trace-v2.py"
 PROGRESS="$SCRIPT_DIR/a14-kbuild-progress.py"
 JOBS="${A14_BUILD_JOBS:-$(nproc)}"
 LOG="$ROOT/a14-build-acpi-scan-trace-Image.log"
@@ -25,12 +26,16 @@ verify_tree(){
     [[ -f "$SRC/Makefile" ]] || die "missing source tree: $SRC"
     [[ -f "$OUT/.config" ]] || die "missing build tree: $OUT"
     [[ -f "$PATCHER" ]] || die "missing trace patcher: $PATCHER"
+    [[ -f "$PATCHER2" ]] || die "missing v2 trace patcher: $PATCHER2"
 }
 
 verify_trace_source(){
     grep -q 'A14_ACPI_SCAN_TRACE_V1' "$SRC/drivers/acpi/power.c" || die "trace marker missing from power.c"
     grep -q 'A14TRACE acpi_scan_init before root acpi_bus_scan' "$SRC/drivers/acpi/scan.c" || die "scan trace marker missing"
     grep -q 'A14TRACE acpi_init before acpi_scan_init' "$SRC/drivers/acpi/bus.c" || die "bus trace marker missing"
+    grep -q 'A14_ACPI_SCAN_TRACE_V2' "$SRC/drivers/acpi/scan.c" || die "v2 namespace trace marker missing"
+    grep -q 'A14TRACE2 WALK1 callback ENTER' "$SRC/drivers/acpi/scan.c" || die "v2 callback trace missing"
+    grep -q 'A14TRACE2 before fetch-existing' "$SRC/drivers/acpi/scan.c" || die "v2 pre-fetch trace missing"
 }
 
 verify_trace_image(){
@@ -40,20 +45,29 @@ verify_trace_image(){
         'A14TRACE power before tie-acpi-dev' \
         'A14TRACE power after device-finalize; return' \
         'A14TRACE acpi_scan_init before root acpi_bus_scan' \
-        'A14TRACE acpi_init before acpi_scan_init'; do
+        'A14TRACE acpi_init before acpi_scan_init' \
+        'A14TRACE2 WALK1 callback ENTER' \
+        'A14TRACE2 check-add ENTER' \
+        'A14TRACE2 before fetch-existing' \
+        'A14TRACE2 before get-type' \
+        'A14TRACE2 before add-single-object' \
+        'A14TRACE2 WALK1 callback RETURN'; do
         grep -aFq "$s" "$image" || die "built Image lacks trace string: $s"
     done
     say "A14_ACPI_SCAN_TRACE_IMAGE=VERIFIED"
+    say "trace_generation=v2"
 }
 
 build_trace(){
     need_user
     verify_tree
     python3 "$PATCHER" "$SRC"
+    python3 "$PATCHER2" "$SRC"
     verify_trace_source
     export LOCALVERSION=
     say "A14_ACPI_SCAN_TRACE_BUILD=START"
     say "scope=incremental Image only; existing modules preserved"
+    say "trace_generation=v2"
     say "jobs=$JOBS"
     say "raw_log=$LOG"
 
@@ -61,7 +75,7 @@ build_trace(){
     if [[ -t 1 && -f "$PROGRESS" ]]; then
         make -C "$SRC" O="$OUT" -j"$JOBS" Image 2>&1 \
             | tee "$LOG" \
-            | python3 "$PROGRESS" --label "ACPI scan trace Image" --logfile "$LOG" --module-total 0 --module-built 0
+            | python3 "$PROGRESS" --label "ACPI namespace trace v2 Image" --logfile "$LOG" --module-total 0 --module-built 0
         rc=${PIPESTATUS[0]}
     else
         make -C "$SRC" O="$OUT" -j"$JOBS" Image 2>&1 | tee "$LOG"
@@ -98,6 +112,7 @@ install_trace(){
     install -m0644 "$OUT/arch/arm64/boot/Image" "$KERNEL"
     cmp -s "$OUT/arch/arm64/boot/Image" "$KERNEL" || die "installed trace Image does not match build"
     say "A14_ACPI_SCAN_TRACE_INSTALL=COMPLETE"
+    say "trace_generation=v2"
     say "kernel=$KERNEL"
     say "installed_sha256=$(sha256sum "$KERNEL" | awk '{print $1}')"
     say "initramfs_unchanged=true"
@@ -121,7 +136,8 @@ status(){
     say "build=$OUT"
     say "kernel=$KERNEL"
     say "backup=$BACKUP"
-    say "trace_source=$([[ -f "$SRC/drivers/acpi/power.c" ]] && grep -q A14_ACPI_SCAN_TRACE_V1 "$SRC/drivers/acpi/power.c" && echo yes || echo no)"
+    say "trace_v1_source=$([[ -f "$SRC/drivers/acpi/power.c" ]] && grep -q A14_ACPI_SCAN_TRACE_V1 "$SRC/drivers/acpi/power.c" && echo yes || echo no)"
+    say "trace_v2_source=$([[ -f "$SRC/drivers/acpi/scan.c" ]] && grep -q A14_ACPI_SCAN_TRACE_V2 "$SRC/drivers/acpi/scan.c" && echo yes || echo no)"
     say "backup_exists=$([[ -s "$BACKUP" ]] && echo yes || echo no)"
 }
 
