@@ -8,7 +8,9 @@
 # printk output after console handoff.
 #
 # Default: verbose diagnostic console.
-# Opt in to a normal quiet/Plymouth boot with A14_ACPI_SPLASH=1.
+# Opt in to a normal quiet/Plymouth boot with A14_ACPI_SPLASH=1. Quiet/splash
+# changes what is painted on the console; it does not disable kernel ring-buffer
+# logging or normal systemd journal logging.
 set -euo pipefail
 
 KREL="7.1.5-a14-acpi-full0"
@@ -47,7 +49,10 @@ for arg in $(cat /proc/cmdline); do
 done
 
 if [[ "$SPLASH" == 1 ]]; then
-    BOOT_UI_ARGS="earlycon=efifb,ram console=tty0 quiet splash"
+    # Keep printk timestamps and all normal kernel/journal recording, but let
+    # Plymouth own the visible boot surface instead of forcing every printk
+    # onto it. The details remain available after boot via journalctl/dmesg.
+    BOOT_UI_ARGS="earlycon=efifb,ram console=tty0 quiet splash printk.time=1"
     entry="ASUS Zenbook A14 — ACPI-ONLY UNRESTRICTED [splash] ($KREL)"
 else
     BOOT_UI_ARGS="earlycon=efifb,ram console=tty0 loglevel=8 ignore_loglevel printk.time=1"
@@ -73,6 +78,7 @@ linux_line="$(awk '/^menuentry .*ACPI-ONLY UNRESTRICTED/{seen=1} seen && /^[[:sp
 [[ -n "$linux_line" ]] || die "failed to validate generated unrestricted entry"
 grep -q 'acpi=force' <<<"$linux_line" || die "unrestricted entry lacks acpi=force"
 grep -q 'earlycon=efifb,ram' <<<"$linux_line" || die "EFI framebuffer earlycon missing"
+grep -q 'printk.time=1' <<<"$linux_line" || die "printk timestamps unexpectedly disabled"
 ! grep -qE '(^|[[:space:]])keep_bootcon([[:space:]]|$)' <<<"$linux_line" || die "keep_bootcon unexpectedly present"
 ! grep -qE '^[[:space:]]*devicetree[[:space:]]' "$SNIPPET" || die "unexpected devicetree command"
 ! grep -q 'a14_acpi_halt=' <<<"$linux_line" || die "checkpoint halt unexpectedly present"
@@ -88,8 +94,8 @@ grep -q 'earlycon=efifb,ram' <<<"$linux_line" || die "EFI framebuffer earlycon m
 if [[ "$SPLASH" == 1 ]]; then
     grep -qE '(^|[[:space:]])quiet([[:space:]]|$)' <<<"$linux_line" || die "splash mode lacks quiet"
     grep -qE '(^|[[:space:]])splash([[:space:]]|$)' <<<"$linux_line" || die "splash mode lacks splash"
-    ! grep -q 'ignore_loglevel' <<<"$linux_line" || die "splash mode unexpectedly forces ignore_loglevel"
-    ! grep -q 'loglevel=8' <<<"$linux_line" || die "splash mode unexpectedly forces loglevel=8"
+    ! grep -q 'ignore_loglevel' <<<"$linux_line" || die "splash mode unexpectedly forces console printk verbosity"
+    ! grep -q 'loglevel=8' <<<"$linux_line" || die "splash mode unexpectedly forces console printk verbosity"
 else
     ! grep -qE '(^|[[:space:]])quiet([[:space:]]|$)' <<<"$linux_line" || die "verbose mode unexpectedly contains quiet"
     ! grep -qE '(^|[[:space:]])splash([[:space:]]|$)' <<<"$linux_line" || die "verbose mode unexpectedly contains splash"
@@ -104,10 +110,12 @@ echo "entry=$entry"
 echo "hardware_dtb_loaded=false"
 echo "acpi_force=true"
 echo "splash_enabled=$([[ "$SPLASH" == 1 ]] && echo true || echo false)"
+echo "kernel_ring_buffer_logging=enabled"
+echo "systemd_journal_logging=unchanged"
+echo "pstore_persistent_logging=disabled"
 echo "checkpoint=disabled"
 echo "device_bisect=disabled"
 echo "timed_reboot=disabled"
-echo "persistent_logging=disabled"
 echo "collector=disabled"
 echo "next_entry=disabled"
 echo "efifb_earlycon=enabled"
