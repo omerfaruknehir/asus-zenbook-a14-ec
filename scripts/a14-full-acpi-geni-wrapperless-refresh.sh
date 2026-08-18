@@ -16,16 +16,9 @@ GPIO_PATCH="$SCRIPT_DIR/apply-a14-full-acpi-woa-gpio-xlate.py"
 [[ -f "$GPIO_PATCH" ]] || { echo "ERROR: missing $GPIO_PATCH" >&2; exit 1; }
 [[ -f "$SRC/Makefile" ]] || { echo "ERROR: kernel source missing: $SRC" >&2; exit 1; }
 
-# The transforms are idempotent and validate their postconditions. Apply both
-# every refresh so an older local source tree cannot silently retain the A14
-# IPC0-as-TLMM QCOM0C0D match or omit the virtual-PDC GPIO translation.
 python3 "$GENI_PATCH" "$SRC"
 python3 "$GPIO_PATCH" "$SRC"
 
-# Hard fail if the resulting x1e80100 ACPI match table still contains the A14
-# IPC0 HID. On this firmware QCOM0C0D is IPC0 and has no MMIO _CRS; binding
-# pinctrl to it produces "invalid resource (null)" and prevents the real GIO0
-# dependency chain from becoming usable.
 python3 - "$SRC/drivers/pinctrl/qcom/pinctrl-x1e80100.c" <<'PY'
 from pathlib import Path
 import sys
