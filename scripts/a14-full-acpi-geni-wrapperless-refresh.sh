@@ -1,49 +1,68 @@
 #!/bin/bash
 # SPDX-License-Identifier: GPL-2.0-only
-# Apply/verify the wrapperless ACPI GENI-I2C fix, then reuse the validated
-# full-ACPI SMMU/checkpoint build and install pipeline.
+# Refresh the A14 full-ACPI experimental kernel with the wrapperless GENI I2C
+# fix and the audited UX3407RA WoA GPIO/TLMM transform.
 set -euo pipefail
 
-ACTION="${1:-build}"
-ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
-OWNER_HOME="$(if [[ -n "${SUDO_USER:-}" && "${SUDO_USER}" != root ]]; then getent passwd "$SUDO_USER" | cut -d: -f6; else printf '%s' "$HOME"; fi)"
-WORK="${A14_FULL_ACPI_WORK:-$OWNER_HOME/Downloads/a14-full-acpi-kernel}"
-SRC="$WORK/linux-7.1.5"
-I2C="$SRC/drivers/i2c/busses/i2c-qcom-geni.c"
+ROOT="${A14_FULL_ACPI_WORKDIR:-$HOME/Downloads/a14-full-acpi-kernel}"
+SRC="$ROOT/linux-7.1.5"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+BASE="$SCRIPT_DIR/a14-full-acpi-kernel.sh"
+GENI_PATCH="$SCRIPT_DIR/apply-a14-full-acpi-geni-wrapperless.py"
+GPIO_PATCH="$SCRIPT_DIR/apply-a14-full-acpi-woa-gpio-xlate.py"
 
-say(){ printf '%s\n' "$*"; }
-die(){ printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+[[ -x "$BASE" ]] || { echo "ERROR: missing $BASE" >&2; exit 1; }
+[[ -f "$GENI_PATCH" ]] || { echo "ERROR: missing $GENI_PATCH" >&2; exit 1; }
+[[ -f "$GPIO_PATCH" ]] || { echo "ERROR: missing $GPIO_PATCH" >&2; exit 1; }
+[[ -f "$SRC/Makefile" ]] || { echo "ERROR: kernel source missing: $SRC" >&2; exit 1; }
 
-verify_source(){
-    [[ -r "$I2C" ]] || die "missing GENI I2C source: $I2C"
-    grep -q 'has_acpi_companion(dev) && !gi2c->se.wrapper' "$I2C" || die "wrapperless ACPI GENI guard missing"
-    grep -q 'TX_FIFO_DEPTH_MSK_256_BYTES' "$I2C" || die "wrapperless FIFO-depth field missing"
-    grep -q 'A14 ACPI: wrapperless GENI SE, TX FIFO depth' "$I2C" || die "wrapperless GENI boot marker missing"
-}
+# The transforms are idempotent and validate their postconditions.  Apply both
+# every refresh so an older local source tree cannot silently retain the A14
+# IPC0-as-TLMM QCOM0C0D match or omit the virtual-PDC GPIO translation.
+python3 "$GENI_PATCH" "$SRC"
+python3 "$GPIO_PATCH" "$SRC"
 
-case "$ACTION" in
+# Hard fail if the resulting x1e80100 ACPI match table still contains the A14
+# IPC0 HID.  On this firmware QCOM0C0D is IPC0 and has no MMIO _CRS; binding
+# pinctrl to it produces "invalid resource (null)" and prevents the real GIO0
+# dependency chain from becoming usable.
+python3 - "$SRC/drivers/pinctrl/qcom/pinctrl-x1e80100.c" <<'PY'
+from pathlib import Path
+import sys
+p = Path(sys.argv[1])
+t = p.read_text()
+try:
+    table = t.split("x1e80100_pinctrl_acpi_match[]", 1)[1].split("};", 1)[0]
+except IndexError:
+    raise SystemExit("ERROR: x1e80100 ACPI match table not found")
+for required in ('QCOM0C0C', 'QCOMFFEB'):
+    if required not in table:
+        raise SystemExit(f"ERROR: GIO0 ACPI ID missing from TLMM table: {required}")
+if 'QCOM0C0D' in table:
+    raise SystemExit("ERROR: A14 IPC0 HID QCOM0C0D still present in TLMM table")
+print("A14_GIO0_TLMM_MATCH=VERIFIED")
+print("gio0_ids=QCOM0C0C,QCOMFFEB")
+print("ipc0_qcom0c0d_match=false")
+PY
+
+case "${1:-}" in
+    "")
+        echo "A14_FULL_ACPI_GENI_GPIO_REFRESH=READY"
+        echo "source=$SRC"
+        echo "next=$BASE build"
+        ;;
     build)
-        [[ ${EUID:-$(id -u)} -ne 0 ]] || die "build as your normal user, not root"
-        [[ -f "$SRC/Makefile" ]] || die "existing Linux 7.1.5 source tree missing: $SRC"
-        python3 "$ROOT/scripts/apply-a14-full-acpi-geni-wrapperless.py" "$SRC"
-        verify_source
-        bash "$ROOT/scripts/a14-full-acpi-smmu-reset-debug-refresh.sh" build
-        verify_source
-        say "A14_FULL_ACPI_GENI_WRAPPERLESS_BUILD=COMPLETE"
-        say "acpi_null_wrapper_guard=yes"
-        say "fifo_depth_source=SE_HW_PARAM_0"
-        say "dt_wrapper_path=unchanged"
+        "$BASE" build
         ;;
     install)
-        [[ ${EUID:-$(id -u)} -eq 0 ]] || die "install requires sudo/root"
-        verify_source
-        bash "$ROOT/scripts/a14-full-acpi-smmu-reset-debug-refresh.sh" install
-        say "A14_FULL_ACPI_GENI_WRAPPERLESS_INSTALL=COMPLETE"
-        say "acpi_null_wrapper_guard=yes"
-        say "fifo_depth_source=SE_HW_PARAM_0"
-        say "dt_wrapper_path=unchanged"
+        "$BASE" install
+        ;;
+    build-install)
+        "$BASE" build
+        "$BASE" install
         ;;
     *)
-        die "usage: $0 {build|install}"
+        echo "usage: $0 [build|install|build-install]" >&2
+        exit 2
         ;;
 esac
