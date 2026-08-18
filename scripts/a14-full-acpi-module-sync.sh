@@ -19,6 +19,11 @@ STAGE="$WORK/module-sync-stage"
 BACKUP="$WORK/module-sync-backup"
 STAMP="$WORK/module-sync-build.ready"
 
+# Match the original full-ACPI build environment exactly. CONFIG_LOCALVERSION
+# already contains -a14-acpi-full0 and CONFIG_LOCALVERSION_AUTO is disabled;
+# an inherited make LOCALVERSION must not alter the release used for modules.
+export LOCALVERSION=
+
 say(){ printf '%s\n' "$*"; }
 die(){ printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 need(){ command -v "$1" >/dev/null 2>&1 || die "missing command: $1"; }
@@ -27,7 +32,8 @@ check_tree(){
     [[ -f "$SRC/Makefile" && -f "$OUT/.config" ]] || die "existing A14 full-ACPI build tree not found under $WORK"
     [[ -s "$OUT/vmlinux" ]] || die "current rebuilt vmlinux missing: $OUT/vmlinux"
     [[ -s "$OUT/arch/arm64/boot/Image" ]] || die "current rebuilt Image missing: $OUT/arch/arm64/boot/Image"
-    [[ "$(make -s -C "$SRC" O="$OUT" kernelrelease)" == "$KREL" ]] || die "kernelrelease changed unexpectedly"
+    actual_krel="$(make -s -C "$SRC" O="$OUT" kernelrelease)"
+    [[ "$actual_krel" == "$KREL" ]] || die "kernelrelease changed unexpectedly: expected $KREL, got $actual_krel"
 }
 
 config_value(){
