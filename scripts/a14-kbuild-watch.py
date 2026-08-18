@@ -127,11 +127,8 @@ def stat_ns(path: Path) -> int:
 
 
 def btf_busy(ko: Path) -> bool:
-    # gen-btf.sh cleans these only when the BTF generation/embed/ID-patch step exits.
-    return any(
-        Path(str(ko) + suffix).exists()
-        for suffix in (".BTF.1", ".BTF", ".BTF.base", ".BTF_ids")
-    )
+    return any(Path(str(ko) + suffix).exists()
+               for suffix in (".BTF.1", ".BTF", ".BTF.base", ".BTF_ids"))
 
 
 def module_complete(obj: Path, mod_obj: Path, ko: Path, *, vmlinux_ns: int,
@@ -157,6 +154,17 @@ def module_complete(obj: Path, mod_obj: Path, ko: Path, *, vmlinux_ns: int,
 def pid_alive(pid: int) -> bool:
     if pid <= 0:
         return True
+    # A background child that exited but has not yet been waited for remains as
+    # a zombie; kill(pid, 0) still succeeds for it, so inspect /proc first.
+    try:
+        stat_text = Path(f"/proc/{pid}/stat").read_text(errors="replace")
+        rparen = stat_text.rfind(")")
+        if rparen >= 0:
+            fields = stat_text[rparen + 2:].split()
+            if fields and fields[0] == "Z":
+                return False
+    except OSError:
+        return False
     try:
         os.kill(pid, 0)
         return True
@@ -178,8 +186,7 @@ def current_action(logfile: Path | None) -> str:
         return ""
     action = re.compile(r"^\s*(?:CC|LD|BTF|MODPOST|AR|AS|GEN|NM|OBJCOPY)(?:\s+\[M\])?\s+(.+)$")
     for line in reversed(text.splitlines()):
-        m = action.match(line)
-        if m:
+        if action.match(line):
             return line.strip()
     return ""
 
@@ -208,10 +215,8 @@ def draw(done: int, total: int, elapsed: float, start_done: int, action: str) ->
     else:
         eta = float("inf")
     suffix = f"  {action}" if action else ""
-    line = (
-        f"[{bar}] {ratio * 100:6.2f}%  {done}/{total} finalized  "
-        f"elapsed {fmt_time(elapsed)}  ETA {fmt_time(eta)}{suffix}"
-    )
+    line = (f"[{bar}] {ratio * 100:6.2f}%  {done}/{total} finalized  "
+            f"elapsed {fmt_time(elapsed)}  ETA {fmt_time(eta)}{suffix}")
     sys.stdout.write("\r" + line[: max(1, width - 1)].ljust(max(1, width - 1)))
     sys.stdout.flush()
 
