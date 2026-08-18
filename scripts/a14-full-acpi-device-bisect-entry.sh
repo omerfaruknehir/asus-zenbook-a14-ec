@@ -28,7 +28,12 @@ STATE_DIR="/var/lib/a14-full-acpi"
 STATE="$STATE_DIR/device-bisect.state"
 REBOOT_DELAY_MS="${A14_ACPI_REBOOT_DELAY_MS:-5000}"
 TRACE_DELAY_MS="${A14_ACPI_TRACE_DELAY_MS:-2000}"
-VISIBLE_ARGS="earlycon=efifb,ram keep_bootcon console=tty0 loglevel=8 ignore_loglevel printk.time=1"
+# Do not force the EFI framebuffer to write-back cacheability here.  The
+# default efifb earlycon mapping is write-combining, which is the safer
+# diagnostic choice for firmware GOP memory.  initcall_debug gives us the
+# function that entered but never returned if a device initcall itself hangs.
+# Explicit Plymouth/systemd status arguments remove userspace splash ambiguity.
+VISIBLE_ARGS="earlycon=efifb keep_bootcon console=tty0 loglevel=8 ignore_loglevel printk.time=1 initcall_debug plymouth.enable=0 systemd.show_status=1 rd.systemd.show_status=1"
 
 die(){ echo "ERROR: $*" >&2; exit 1; }
 need(){ command -v "$1" >/dev/null 2>&1 || die "missing command: $1"; }
@@ -164,7 +169,7 @@ ip="$(grub-mkrelpath "$INITRD")"
 args=()
 for arg in $(cat /proc/cmdline); do
     case "$arg" in
-        BOOT_IMAGE=*|initrd=*|acpi=*|panic=*|oops=*|quiet|splash|break=*|debug|debug=*|loglevel=*|earlycon=*|console=*|ignore_loglevel|initcall_debug|keep_bootcon|a14_acpi_halt=*|a14_acpi_reboot_delay_ms=*|a14_acpi_trace_delay_ms=*|a14_device_halt_after=*|reserve_mem=*|ramoops.*|nokaslr|systemd.unit=*) ;;
+        BOOT_IMAGE=*|initrd=*|acpi=*|panic=*|oops=*|quiet|splash|break=*|debug|debug=*|loglevel=*|earlycon=*|console=*|ignore_loglevel|initcall_debug|keep_bootcon|plymouth.enable=*|systemd.show_status=*|rd.systemd.show_status=*|a14_acpi_halt=*|a14_acpi_reboot_delay_ms=*|a14_acpi_trace_delay_ms=*|a14_device_halt_after=*|reserve_mem=*|ramoops.*|nokaslr|systemd.unit=*) ;;
         *) args+=("$arg") ;;
     esac
 done
@@ -195,8 +200,13 @@ grep -q 'a14_acpi_halt=device-bisect' <<<"$linux_line" || die "device-bisect hal
 grep -q "a14_device_halt_after=$N" <<<"$linux_line" || die "ordinal parameter missing"
 grep -q "a14_acpi_reboot_delay_ms=$REBOOT_DELAY_MS" <<<"$linux_line" || die "timed reboot parameter missing"
 grep -q "a14_acpi_trace_delay_ms=$TRACE_DELAY_MS" <<<"$linux_line" || die "SMMU trace readability delay missing"
-grep -q 'earlycon=efifb,ram' <<<"$linux_line" || die "EFI framebuffer earlycon missing"
+grep -q 'earlycon=efifb' <<<"$linux_line" || die "EFI framebuffer earlycon missing"
+! grep -q 'earlycon=efifb,ram' <<<"$linux_line" || die "unsafe write-back EFI earlycon mode still present"
 grep -q 'keep_bootcon' <<<"$linux_line" || die "keep_bootcon missing"
+grep -q 'initcall_debug' <<<"$linux_line" || die "initcall_debug missing"
+grep -q 'plymouth.enable=0' <<<"$linux_line" || die "Plymouth disable argument missing"
+! grep -qE '(^|[[:space:]])quiet([[:space:]]|$)' <<<"$linux_line" || die "quiet unexpectedly present"
+! grep -qE '(^|[[:space:]])splash([[:space:]]|$)' <<<"$linux_line" || die "splash unexpectedly present"
 ! grep -q 'reserve_mem=' <<<"$linux_line" || die "stale persistent-RAM reservation present"
 ! grep -q 'ramoops\.' <<<"$linux_line" || die "stale ramoops arguments present"
 
@@ -214,5 +224,8 @@ echo "trace_delay_ms=$TRACE_DELAY_MS"
 echo "trace_delay_scope=smmu-probe-and-reset-only"
 echo "hardware_dtb_loaded=false"
 echo "efifb_earlycon=enabled"
+echo "efifb_earlycon_mode=write-combining-default"
+echo "initcall_debug=enabled"
+echo "plymouth=disabled"
 echo "keep_bootcon=enabled"
 echo "custom_checkpoint_entries=1"
