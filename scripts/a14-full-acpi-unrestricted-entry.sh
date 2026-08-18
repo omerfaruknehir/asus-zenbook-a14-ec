@@ -7,9 +7,10 @@
 # console takes over; keep_bootcon is deliberately omitted to avoid duplicate
 # printk output after console handoff.
 #
-# Plymouth is left enabled but no `splash`/`quiet` kernel arguments are passed:
-# the boot therefore starts in the detailed console view while Plymouth remains
-# available for its normal Escape-key details <-> graphical-theme toggle.
+# The system is known to reach graphical.target in ACPI-only mode; the current
+# visible failure is the absence of a usable Qualcomm DRM GPU, not an initrd or
+# root-mount stall.  Keep this entry unrestricted so GDM/GNOME behavior remains
+# observable after every kernel refresh.
 set -euo pipefail
 
 KREL="7.1.5-a14-acpi-full0"
@@ -19,7 +20,7 @@ CONFIG="/boot/config-$KREL"
 SNIPPET="/etc/grub.d/41_a14_full_acpi_checkpoint"
 OLD_MOUNTROOT="/etc/grub.d/41_a14_full_acpi_mountroot_shell"
 ENTRY_ID="a14-full-acpi-unrestricted"
-BOOT_UI_ARGS="earlycon=efifb,ram console=tty0 loglevel=8 ignore_loglevel printk.time=1"
+BOOT_UI_ARGS="earlycon=efifb console=tty0 loglevel=8 ignore_loglevel printk.time=1"
 
 die(){ echo "ERROR: $*" >&2; exit 1; }
 need(){ command -v "$1" >/dev/null 2>&1 || die "missing command: $1"; }
@@ -47,14 +48,13 @@ for arg in $(cat /proc/cmdline); do
 done
 
 cmdline="${args[*]} $BOOT_UI_ARGS acpi=force"
-entry="ASUS Zenbook A14 — ACPI-ONLY UNRESTRICTED [details; Esc toggles splash] ($KREL)"
+entry="ASUS Zenbook A14 — ACPI-ONLY UNRESTRICTED ($KREL)"
 
 rm -f "$OLD_MOUNTROOT"
 cat > "$SNIPPET" <<EOF
 #!/bin/sh
 exec tail -n +3 \$0
 # Unrestricted A14 ACPI-only boot. Intentionally no devicetree and no checkpoint.
-# Plymouth remains available, but details are the initial visible view.
 menuentry '$entry' --id '$ENTRY_ID' --class ubuntu --class gnu-linux --class gnu --class os {
     search --no-floppy --fs-uuid --set=root $uuid
     linux $kp $cmdline
@@ -66,14 +66,13 @@ chmod 0755 "$SNIPPET"
 linux_line="$(awk '/^menuentry .*ACPI-ONLY UNRESTRICTED/{seen=1} seen && /^[[:space:]]*linux[[:space:]]/{print; exit}' "$SNIPPET")"
 [[ -n "$linux_line" ]] || die "failed to validate generated unrestricted entry"
 grep -q 'acpi=force' <<<"$linux_line" || die "unrestricted entry lacks acpi=force"
-grep -q 'earlycon=efifb,ram' <<<"$linux_line" || die "EFI framebuffer earlycon missing"
+grep -qE '(^|[[:space:]])earlycon=efifb([[:space:]]|$)' <<<"$linux_line" || die "EFI framebuffer earlycon missing"
+! grep -q 'earlycon=efifb,ram' <<<"$linux_line" || die "write-back efifb override unexpectedly present"
 grep -q 'printk.time=1' <<<"$linux_line" || die "printk timestamps unexpectedly disabled"
 grep -q 'loglevel=8' <<<"$linux_line" || die "details mode lacks loglevel=8"
 grep -q 'ignore_loglevel' <<<"$linux_line" || die "details mode lacks ignore_loglevel"
 ! grep -qE '(^|[[:space:]])quiet([[:space:]]|$)' <<<"$linux_line" || die "details-first entry unexpectedly contains quiet"
 ! grep -qE '(^|[[:space:]])splash([[:space:]]|$)' <<<"$linux_line" || die "details-first entry unexpectedly contains splash"
-! grep -qE '(^|[[:space:]])plymouth\.enable=0([[:space:]]|$)' <<<"$linux_line" || die "Plymouth is unexpectedly disabled"
-! grep -qE '(^|[[:space:]])rd\.plymouth=0([[:space:]]|$)' <<<"$linux_line" || die "initramfs Plymouth is unexpectedly disabled"
 ! grep -qE '(^|[[:space:]])keep_bootcon([[:space:]]|$)' <<<"$linux_line" || die "keep_bootcon unexpectedly present"
 ! grep -qE '^[[:space:]]*devicetree[[:space:]]' "$SNIPPET" || die "unexpected devicetree command"
 ! grep -q 'a14_acpi_halt=' <<<"$linux_line" || die "checkpoint halt unexpectedly present"
@@ -92,20 +91,13 @@ echo "A14_FULL_ACPI_UNRESTRICTED_ENTRY=READY"
 echo "entry=$entry"
 echo "hardware_dtb_loaded=false"
 echo "acpi_force=true"
-echo "plymouth_enabled=true"
-echo "plymouth_default_view=details"
-echo "plymouth_escape_toggle=details<->splash"
-echo "quiet_arg=false"
-echo "splash_arg=false"
-echo "kernel_ring_buffer_logging=enabled"
-echo "systemd_journal_logging=unchanged"
-echo "pstore_persistent_logging=disabled"
 echo "checkpoint=disabled"
 echo "device_bisect=disabled"
 echo "timed_reboot=disabled"
 echo "collector=disabled"
 echo "next_entry=disabled"
 echo "efifb_earlycon=enabled"
+echo "efifb_earlycon_mode=write-combining-default"
 echo "keep_bootcon=disabled"
 echo "normal_kernel_untouched=true"
 echo "custom_checkpoint_entries=1"
