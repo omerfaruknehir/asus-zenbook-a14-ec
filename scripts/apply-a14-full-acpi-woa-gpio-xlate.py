@@ -13,9 +13,17 @@ Example from the audited UX3407RA DSDT and known-good DT:
                        -> CIPR { 0x58, 0x43, 0x253 }
                        -> TLMM GPIO 67
 
-This transform is deliberately fail-closed and only translates GpioInt
-resources on a Qualcomm GIO0 controller exposing the expected ACPI IDs and
-PDC _DSM. GpioIo resources and ordinary ACPI GPIO controllers are unchanged.
+The UX3407RA also uses ACPI _HID QCOM0C0D for IPC0, a GLINK dependency device
+with no MMIO _CRS.  Upstream's older X1E WoA TLMM ACPI match for QCOM0C0D must
+therefore not match this machine: doing so binds the pinctrl driver to IPC0 and
+fails with "invalid resource (null)".  This transform replaces the ACPI match
+set with the IDs actually exposed by GIO0 on the audited UX3407RA:
+QCOM0C0C / QCOMFFEB.
+
+The virtual-pin transform is deliberately fail-closed and only translates
+GpioInt resources on a Qualcomm GIO0 controller exposing those expected ACPI
+IDs and PDC _DSM. GpioIo resources and ordinary ACPI GPIO controllers are
+unchanged.
 """
 
 from pathlib import Path
@@ -64,26 +72,26 @@ def main() -> None:
     if found != KERNEL_VERSION:
         fail(f"targets exactly {KERNEL_VERSION}; found {found}")
 
-    # The audited UX3407RA DSDT exposes GIO0 as QCOM0C0C / QCOMFFEB.
-    # Keep the older QCOM0C0D ID too so this does not regress firmware variants
-    # already handled by the initial experiment.
+    # Audited UX3407RA namespace:
+    #   GIO0 = _HID QCOM0C0C, _CID QCOMFFEB, with TLMM MMIO in _CRS.
+    #   IPC0 = _HID QCOM0C0D, no MMIO _CRS.
+    # Do not retain QCOM0C0D as a TLMM match on this board: it binds the
+    # pinctrl driver to IPC0 and qcom_pinctrl_probe() then sees resource NULL.
     x1 = root / "drivers/pinctrl/qcom/pinctrl-x1e80100.c"
-    replace_once(
-        x1,
-        '''static const struct acpi_device_id x1e80100_pinctrl_acpi_match[] = {
-\t{ "QCOM0C0D", 0 },
-\t{ }
-};
-''',
-        '''static const struct acpi_device_id x1e80100_pinctrl_acpi_match[] = {
-\t{ "QCOM0C0C", 0 }, /* UX3407RA GIO0 _HID */
-\t{ "QCOMFFEB", 0 }, /* UX3407RA GIO0 _CID */
-\t{ "QCOM0C0D", 0 }, /* Earlier WoA TLMM firmware ID */
-\t{ }
-};
-''',
-        "x1e_gio0_acpi_ids",
+    text = x1.read_text()
+    old_variants = (
+        '''static const struct acpi_device_id x1e80100_pinctrl_acpi_match[] = {\n\t{ "QCOM0C0D", 0 },\n\t{ }\n};\n''',
+        '''static const struct acpi_device_id x1e80100_pinctrl_acpi_match[] = {\n\t{ "QCOM0C0C", 0 }, /* UX3407RA GIO0 _HID */\n\t{ "QCOMFFEB", 0 }, /* UX3407RA GIO0 _CID */\n\t{ "QCOM0C0D", 0 }, /* Earlier WoA TLMM firmware ID */\n\t{ }\n};\n''',
     )
+    new_match = '''static const struct acpi_device_id x1e80100_pinctrl_acpi_match[] = {\n\t{ "QCOM0C0C", 0 }, /* UX3407RA GIO0 _HID */\n\t{ "QCOMFFEB", 0 }, /* UX3407RA GIO0 _CID */\n\t{ }\n};\n'''
+    if new_match in text:
+        print("x1e_gio0_acpi_ids=current")
+    else:
+        hits = [old for old in old_variants if old in text]
+        if len(hits) != 1:
+            fail(f"x1e_gio0_acpi_ids: expected one known ACPI match-table form, found {len(hits)}")
+        x1.write_text(text.replace(hits[0], new_match, 1))
+        print("x1e_gio0_acpi_ids=applied")
 
     gpio = root / "drivers/gpio/gpiolib-acpi-core.c"
     text = gpio.read_text()
@@ -106,7 +114,6 @@ static const guid_t qcom_woa_pdc_dsm_guid =
 static const struct acpi_device_id qcom_woa_gpio_controller_ids[] = {
 	{ "QCOM0C0C", 0 },
 	{ "QCOMFFEB", 0 },
-	{ "QCOM0C0D", 0 },
 	{ }
 };
 
@@ -213,68 +220,44 @@ out:
         gpio.write_text(text)
         print("qcom_woa_gpio_helper=applied")
 
+    # If an earlier experiment already inserted the helper with QCOM0C0D in
+    # its local controller-ID table, remove only that one A14-invalid entry.
+    text = gpio.read_text()
+    old_ids = '''static const struct acpi_device_id qcom_woa_gpio_controller_ids[] = {\n\t{ "QCOM0C0C", 0 },\n\t{ "QCOMFFEB", 0 },\n\t{ "QCOM0C0D", 0 },\n\t{ }\n};\n'''
+    new_ids = '''static const struct acpi_device_id qcom_woa_gpio_controller_ids[] = {\n\t{ "QCOM0C0C", 0 },\n\t{ "QCOMFFEB", 0 },\n\t{ }\n};\n'''
+    if old_ids in text:
+        gpio.write_text(text.replace(old_ids, new_ids, 1))
+        print("qcom_woa_gpio_ids_drop_ipc0=applied")
+    elif new_ids in text:
+        print("qcom_woa_gpio_ids_drop_ipc0=current")
+    else:
+        fail("qcom_woa_gpio_ids_drop_ipc0: expected helper ACPI ID table not found")
+
     # Pass GpioInt-vs-GpioIo knowledge into acpi_get_gpiod(). Only GpioInt is
     # eligible for virtual-PDC translation.
     replace_once(
         gpio,
-        '''static struct gpio_desc *acpi_get_gpiod(char *path, unsigned int pin)
-{
-\tacpi_handle handle;
-\tacpi_status status;
-''',
-        '''static struct gpio_desc *acpi_get_gpiod(char *path, unsigned int pin, bool gpioint)
-{
-\tacpi_handle handle;
-\tacpi_status status;
-''',
+        '''static struct gpio_desc *acpi_get_gpiod(char *path, unsigned int pin)\n{\n\tacpi_handle handle;\n\tacpi_status status;\n''',
+        '''static struct gpio_desc *acpi_get_gpiod(char *path, unsigned int pin, bool gpioint)\n{\n\tacpi_handle handle;\n\tacpi_status status;\n''',
         "acpi_get_gpiod_gpioint_arg",
     )
 
     replace_once(
         gpio,
-        '''\tstruct gpio_device *gdev __free(gpio_device_put) =
-\t\t\t\tgpio_device_find(handle, acpi_gpiochip_find);
-\tif (!gdev)
-\t\treturn ERR_PTR(-EPROBE_DEFER);
-
-\t/*
-\t * FIXME: keep track of the reference to the GPIO device somehow
-\t * instead of putting it here.
-\t */
-\treturn gpio_device_get_desc(gdev, pin);
-''',
-        '''\tstruct gpio_device *gdev __free(gpio_device_put) =
-\t\t\t\tgpio_device_find(handle, acpi_gpiochip_find);
-\tif (!gdev)
-\t\treturn ERR_PTR(-EPROBE_DEFER);
-
-\tif (gpioint)
-\t\tpin = qcom_woa_acpi_gpio_xlate(handle, pin);
-
-\t/*
-\t * FIXME: keep track of the reference to the GPIO device somehow
-\t * instead of putting it here.
-\t */
-\treturn gpio_device_get_desc(gdev, pin);
-''',
+        '''\tstruct gpio_device *gdev __free(gpio_device_put) =\n\t\t\t\tgpio_device_find(handle, acpi_gpiochip_find);\n\tif (!gdev)\n\t\treturn ERR_PTR(-EPROBE_DEFER);\n\n\t/*\n\t * FIXME: keep track of the reference to the GPIO device somehow\n\t * instead of putting it here.\n\t */\n\treturn gpio_device_get_desc(gdev, pin);\n''',
+        '''\tstruct gpio_device *gdev __free(gpio_device_put) =\n\t\t\t\tgpio_device_find(handle, acpi_gpiochip_find);\n\tif (!gdev)\n\t\treturn ERR_PTR(-EPROBE_DEFER);\n\n\tif (gpioint)\n\t\tpin = qcom_woa_acpi_gpio_xlate(handle, pin);\n\n\t/*\n\t * FIXME: keep track of the reference to the GPIO device somehow\n\t * instead of putting it here.\n\t */\n\treturn gpio_device_get_desc(gdev, pin);\n''',
         "acpi_get_gpiod_virtual_xlate",
     )
 
     replace_once(
         gpio,
-        '''\t\telse
-\t\t\tdesc = acpi_get_gpiod(agpio->resource_source.string_ptr,
-\t\t\t\t\t      agpio->pin_table[pin_index]);
-''',
-        '''\t\telse
-\t\t\tdesc = acpi_get_gpiod(agpio->resource_source.string_ptr,
-\t\t\t\t\t      agpio->pin_table[pin_index], gpioint);
-''',
+        '''\t\telse\n\t\t\tdesc = acpi_get_gpiod(agpio->resource_source.string_ptr,\n\t\t\t\t\t      agpio->pin_table[pin_index]);\n''',
+        '''\t\telse\n\t\t\tdesc = acpi_get_gpiod(agpio->resource_source.string_ptr,\n\t\t\t\t\t      agpio->pin_table[pin_index], gpioint);\n''',
         "acpi_gpio_lookup_pass_gpioint",
     )
 
     checks = {
-        x1: ["QCOM0C0C", "QCOMFFEB", "QCOM0C0D"],
+        x1: ["QCOM0C0C", "QCOMFFEB"],
         gpio: [
             MARKER,
             "qcom_woa_pdc_dsm_guid",
@@ -290,12 +273,19 @@ out:
         if missing:
             fail(f"post-transform check failed for {path}: {missing}")
 
+    x1_body = x1.read_text()
+    match_table = x1_body.split("x1e80100_pinctrl_acpi_match[]", 1)[1].split("};", 1)[0]
+    if "QCOM0C0D" in match_table:
+        fail("post-transform check failed: A14 IPC0 HID QCOM0C0D still matches TLMM")
+
     print(f"{MARKER}=APPLIED")
     print("scope=Qualcomm-WoA-GpioInt-only")
     print("virtual_encoding=crs-irq-index-times-0x40")
     print("mapping_source=QCOM-PDC-DSM-CIPR")
     print("gio0_hid=QCOM0C0C")
     print("gio0_cid=QCOMFFEB")
+    print("ipc0_hid=QCOM0C0D")
+    print("ipc0_tlmm_match=false")
     print("ordinary_gpioio=unchanged")
     print("fallback=original-pin")
 
