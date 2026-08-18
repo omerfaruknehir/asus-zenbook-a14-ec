@@ -1,0 +1,57 @@
+name: A14 WoA GPIO xlate smoke
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [agent/a14-full-acpi]
+    paths:
+      - 'scripts/apply-a14-full-acpi.py'
+      - 'scripts/apply-a14-full-acpi-woa-gpio-xlate.py'
+      - '.github/workflows/a14-woa-gpio-xlate-smoke.yml'
+
+jobs:
+  arm64-compile:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bc bison flex libssl-dev libelf-dev dwarves python3
+
+      - name: Fetch exact Linux 7.1.5
+        run: |
+          git clone --filter=blob:none --no-checkout https://github.com/torvalds/linux.git linux
+          git -C linux fetch --depth=1 origin 155b42bec9cbb6b8cdc47dd9bd09503a81fbe493
+          git -C linux checkout --detach FETCH_HEAD
+          test "$(git -C linux rev-parse HEAD)" = 155b42bec9cbb6b8cdc47dd9bd09503a81fbe493
+
+      - name: Apply A14 transforms twice
+        run: |
+          python3 scripts/apply-a14-full-acpi.py linux
+          python3 scripts/apply-a14-full-acpi-woa-gpio-xlate.py linux
+          python3 scripts/apply-a14-full-acpi-woa-gpio-xlate.py linux
+          grep -q 'QCOM0C0C' linux/drivers/pinctrl/qcom/pinctrl-x1e80100.c
+          grep -q 'QCOMFFEB' linux/drivers/pinctrl/qcom/pinctrl-x1e80100.c
+          grep -q 'A14_QCOM_WOA_ACPI_GPIO_XLATE' linux/drivers/gpio/gpiolib-acpi-core.c
+
+      - name: Configure ARM64
+        run: |
+          make -C linux ARCH=arm64 defconfig
+          linux/scripts/config --file linux/.config \
+            --enable ACPI \
+            --enable I2C \
+            --enable PINCTRL \
+            --enable PINCTRL_MSM \
+            --enable PINCTRL_X1E80100 \
+            --enable GPIOLIB \
+            --enable GPIOLIB_IRQCHIP
+          make -C linux ARCH=arm64 olddefconfig
+
+      - name: Compile affected objects
+        run: |
+          make -C linux ARCH=arm64 -j2 \
+            drivers/gpio/gpiolib-acpi-core.o \
+            drivers/pinctrl/qcom/pinctrl-msm.o \
+            drivers/pinctrl/qcom/pinctrl-x1e80100.o
