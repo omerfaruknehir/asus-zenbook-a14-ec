@@ -24,6 +24,11 @@ logfile = args.logfile
 module_total = max(0, args.module_total)
 module_done = max(0, args.module_built)
 module_start = module_done
+# If every .ko already exists when `make modules` starts, existence is no longer
+# a useful completion metric: Kbuild can still have thousands of BTF/final-link
+# actions left. In that case show an honest finalization activity mode instead
+# of pinning the UI at a fake ~99%.
+finalization_mode = module_total > 0 and module_start >= module_total
 start = time.monotonic()
 actions = 0
 warnings = 0
@@ -31,6 +36,8 @@ shown = 0
 last_target = "starting"
 spin_i = 0
 seen_ko = set()
+btf_actions = 0
+module_link_actions = 0
 
 act = re.compile(
     r"^\s*(AR|AS|BTF|BTFIDS|CALL|CC|CHK|DTC|DTB|GEN|HOSTCC|HOSTCXX|HOSTLD|"
@@ -44,6 +51,8 @@ err = re.compile(
     re.I,
 )
 ko = re.compile(r"^\s*(?:LD|BTF)\s+\[M\]\s+(.+\.ko)\s*$")
+btf_ko = re.compile(r"^\s*BTF\s+\[M\]\s+(.+\.ko)\s*$")
+ld_ko = re.compile(r"^\s*LD\s+\[M\]\s+(.+\.ko)\s*$")
 
 
 def hms(value):
@@ -58,18 +67,33 @@ def clear_line():
     sys.stdout.write("\r" + " " * max(1, width - 1) + "\r")
 
 
-def draw():
+def activity_bar(width):
     global spin_i
+    span = min(6, width)
+    pos = spin_i % max(1, width - span + 1)
+    spin_i += 1
+    chars = list("-" * width)
+    for i in range(pos, pos + span):
+        chars[i] = "#"
+    return "".join(chars)
+
+
+def draw():
     elapsed = time.monotonic() - start
     width = shutil.get_terminal_size((120, 20)).columns
     bar_width = max(12, min(34, width // 4))
 
-    if module_total > 0:
+    if finalization_mode:
+        bar = activity_bar(bar_width)
+        prefix = "FINALIZING"
+        counts = f"BTF:{btf_actions} LD.ko:{module_link_actions} actions:{actions}"
+        eta = "--:--"
+    elif module_total > 0:
         ratio = min(module_done / module_total, 0.99)
         filled = int(bar_width * ratio)
         bar = "#" * filled + "-" * (bar_width - filled)
         prefix = f"~{int(ratio * 100):2d}%"
-        counts = f"{module_done}/{module_total} modules"
+        counts = f"{module_done}/{module_total} module artifacts"
         advanced = max(0, module_done - module_start)
         if advanced >= 2 and elapsed > 0:
             rate = advanced / elapsed
@@ -77,19 +101,13 @@ def draw():
         else:
             eta = "--:--"
     else:
-        span = min(6, bar_width)
-        pos = spin_i % max(1, bar_width - span + 1)
-        spin_i += 1
-        chars = list("-" * bar_width)
-        for i in range(pos, pos + span):
-            chars[i] = "#"
-        bar = "".join(chars)
+        bar = activity_bar(bar_width)
         prefix = "running"
         counts = f"actions:{actions}"
         eta = "--:--"
 
     target = last_target
-    max_target = max(18, width - bar_width - 68)
+    max_target = max(18, width - bar_width - 76)
     if len(target) > max_target:
         target = "…" + target[-(max_target - 1):]
 
@@ -104,7 +122,12 @@ def draw():
 print(f"A14_BUILD_PHASE={label}")
 if module_total:
     print(f"modules_total={module_total}")
-    print(f"modules_already_built={module_done}")
+    print(f"module_artifacts_present_at_start={module_done}")
+    if finalization_mode:
+        print(
+            "progress_mode=module finalization/BTF activity; all .ko files already "
+            "exist, so artifact count is not a completion percentage"
+        )
 else:
     print("progress_mode=immediate activity bar; no blocking Kbuild preflight")
 print(f"raw_log={logfile}")
@@ -114,10 +137,15 @@ try:
     for raw in sys.stdin:
         line = raw.rstrip("\n")
 
+        if btf_ko.match(line):
+            btf_actions += 1
+        if ld_ko.match(line):
+            module_link_actions += 1
+
         km = ko.match(line)
         if km and km.group(1) not in seen_ko:
             seen_ko.add(km.group(1))
-            if module_total:
+            if module_total and not finalization_mode:
                 module_done = min(module_total, module_done + 1)
 
         m = act.match(line)
@@ -145,6 +173,8 @@ finally:
 
 print(f"A14_BUILD_PHASE_STREAM_END={label}")
 print(f"actions_observed={actions}")
+print(f"btf_module_actions_observed={btf_actions}")
+print(f"module_link_actions_observed={module_link_actions}")
 print(f"warnings_observed={warnings}")
 if warnings > shown:
     print(
