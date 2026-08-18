@@ -67,7 +67,7 @@ build_modules(){
     require_if_module CONFIG_BLK_DEV_NVME 'nvme.ko*' "NVMe host driver"
     require_if_module CONFIG_NVME_CORE 'nvme-core.ko*' "NVMe core"
     require_if_module CONFIG_HID 'hid.ko*' "HID core"
-    require_if_module CONFIG_I2C_HID 'i2c-hid.ko*' "I2C HID core"
+    require_if_module CONFIG_I2C_HID_CORE 'i2c-hid.ko*' "I2C HID core"
     require_if_module CONFIG_I2C_HID_ACPI 'i2c-hid-acpi.ko*' "I2C HID ACPI"
 
     image_sha="$(sha256sum "$OUT/arch/arm64/boot/Image" | awk '{print $1}')"
@@ -92,7 +92,7 @@ build_modules(){
     say "nvme_config=$(config_value CONFIG_BLK_DEV_NVME)"
     say "nvme_core_config=$(config_value CONFIG_NVME_CORE)"
     say "hid_config=$(config_value CONFIG_HID)"
-    say "i2c_hid_config=$(config_value CONFIG_I2C_HID)"
+    say "i2c_hid_core_config=$(config_value CONFIG_I2C_HID_CORE)"
     say "i2c_hid_acpi_config=$(config_value CONFIG_I2C_HID_ACPI)"
     say "normal_kernel_untouched=true"
 }
