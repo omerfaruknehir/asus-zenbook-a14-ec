@@ -6,6 +6,9 @@
 # EFI framebuffer earlycon remains enabled for visibility until the normal
 # console takes over; keep_bootcon is deliberately omitted to avoid duplicate
 # printk output after console handoff.
+#
+# Default: verbose diagnostic console.
+# Opt in to a normal quiet/Plymouth boot with A14_ACPI_SPLASH=1.
 set -euo pipefail
 
 KREL="7.1.5-a14-acpi-full0"
@@ -15,11 +18,12 @@ CONFIG="/boot/config-$KREL"
 SNIPPET="/etc/grub.d/41_a14_full_acpi_checkpoint"
 OLD_MOUNTROOT="/etc/grub.d/41_a14_full_acpi_mountroot_shell"
 ENTRY_ID="a14-full-acpi-unrestricted"
-VISIBLE_ARGS="earlycon=efifb,ram console=tty0 loglevel=8 ignore_loglevel printk.time=1"
+SPLASH="${A14_ACPI_SPLASH:-0}"
 
 die(){ echo "ERROR: $*" >&2; exit 1; }
 need(){ command -v "$1" >/dev/null 2>&1 || die "missing command: $1"; }
 [[ ${EUID:-$(id -u)} -eq 0 ]] || die "run with sudo/root"
+[[ "$SPLASH" == 0 || "$SPLASH" == 1 ]] || die "A14_ACPI_SPLASH must be 0 or 1"
 for c in grub-probe grub-mkrelpath update-grub; do need "$c"; done
 [[ -r "$KERNEL" ]] || die "missing $KERNEL"
 [[ -r "$INITRD" ]] || die "missing $INITRD"
@@ -42,8 +46,15 @@ for arg in $(cat /proc/cmdline); do
     esac
 done
 
-cmdline="${args[*]} $VISIBLE_ARGS acpi=force"
-entry="ASUS Zenbook A14 — ACPI-ONLY UNRESTRICTED ($KREL)"
+if [[ "$SPLASH" == 1 ]]; then
+    BOOT_UI_ARGS="earlycon=efifb,ram console=tty0 quiet splash"
+    entry="ASUS Zenbook A14 — ACPI-ONLY UNRESTRICTED [splash] ($KREL)"
+else
+    BOOT_UI_ARGS="earlycon=efifb,ram console=tty0 loglevel=8 ignore_loglevel printk.time=1"
+    entry="ASUS Zenbook A14 — ACPI-ONLY UNRESTRICTED ($KREL)"
+fi
+
+cmdline="${args[*]} $BOOT_UI_ARGS acpi=force"
 
 rm -f "$OLD_MOUNTROOT"
 cat > "$SNIPPET" <<EOF
@@ -74,12 +85,25 @@ grep -q 'earlycon=efifb,ram' <<<"$linux_line" || die "EFI framebuffer earlycon m
 ! grep -qE '(^|[[:space:]])initcall_blacklist=' <<<"$linux_line" || die "stale initcall blacklist unexpectedly present"
 ! grep -qE '^[[:space:]]*(set[[:space:]]+next_entry=|save_env[[:space:]]+next_entry([[:space:]]|$))' "$SNIPPET" || die "entry unexpectedly arms a next boot"
 
+if [[ "$SPLASH" == 1 ]]; then
+    grep -qE '(^|[[:space:]])quiet([[:space:]]|$)' <<<"$linux_line" || die "splash mode lacks quiet"
+    grep -qE '(^|[[:space:]])splash([[:space:]]|$)' <<<"$linux_line" || die "splash mode lacks splash"
+    ! grep -q 'ignore_loglevel' <<<"$linux_line" || die "splash mode unexpectedly forces ignore_loglevel"
+    ! grep -q 'loglevel=8' <<<"$linux_line" || die "splash mode unexpectedly forces loglevel=8"
+else
+    ! grep -qE '(^|[[:space:]])quiet([[:space:]]|$)' <<<"$linux_line" || die "verbose mode unexpectedly contains quiet"
+    ! grep -qE '(^|[[:space:]])splash([[:space:]]|$)' <<<"$linux_line" || die "verbose mode unexpectedly contains splash"
+    grep -q 'loglevel=8' <<<"$linux_line" || die "verbose mode lacks loglevel=8"
+    grep -q 'ignore_loglevel' <<<"$linux_line" || die "verbose mode lacks ignore_loglevel"
+fi
+
 update-grub
 
 echo "A14_FULL_ACPI_UNRESTRICTED_ENTRY=READY"
 echo "entry=$entry"
 echo "hardware_dtb_loaded=false"
 echo "acpi_force=true"
+echo "splash_enabled=$([[ "$SPLASH" == 1 ]] && echo true || echo false)"
 echo "checkpoint=disabled"
 echo "device_bisect=disabled"
 echo "timed_reboot=disabled"
