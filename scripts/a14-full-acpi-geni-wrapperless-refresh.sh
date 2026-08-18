@@ -17,7 +17,7 @@ BASE="$SCRIPT_DIR/a14-full-acpi-kernel.sh"
 GENI_PATCH="$SCRIPT_DIR/apply-a14-full-acpi-geni-wrapperless.py"
 GPIO_PATCH="$SCRIPT_DIR/apply-a14-full-acpi-woa-gpio-xlate.py"
 
-[[ -x "$BASE" ]] || { echo "ERROR: missing $BASE" >&2; exit 1; }
+[[ -f "$BASE" ]] || { echo "ERROR: base helper file missing from worktree: $BASE" >&2; echo "       Verify with: git ls-tree -r --name-only HEAD -- scripts/a14-full-acpi-kernel.sh" >&2; exit 1; }
 [[ -f "$GENI_PATCH" ]] || { echo "ERROR: missing $GENI_PATCH" >&2; exit 1; }
 [[ -f "$GPIO_PATCH" ]] || { echo "ERROR: missing $GPIO_PATCH" >&2; exit 1; }
 
@@ -64,8 +64,9 @@ PY
 }
 
 prepare_and_patch() {
-    # This reset/clean MUST happen first.
-    "$BASE" prepare
+    # This reset/clean MUST happen first. Invoke through bash so the repository's
+    # executable bit / filesystem noexec state cannot masquerade as a missing file.
+    bash "$BASE" prepare
     [[ -f "$SRC/Makefile" ]] || { echo "ERROR: kernel source missing after prepare: $SRC" >&2; exit 1; }
 
     # Apply the additive transforms only after the destructive prepare step.
@@ -104,11 +105,11 @@ case "${1:-}" in
         ;;
     install)
         verify_installable
-        "$BASE" install
+        bash "$BASE" install
         ;;
     build-install)
         build_patched
-        "$BASE" install
+        bash "$BASE" install
         ;;
     *)
         echo "usage: $0 [build|install|build-install]" >&2
