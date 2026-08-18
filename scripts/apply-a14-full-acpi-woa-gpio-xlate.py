@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: GPL-2.0-only
 """Add Qualcomm WoA ACPI virtual-GPIO translation to Linux v7.1.5.
 
-The UX3407RA firmware exposes TLMM as ACPI GIO0.  GpioInt consumers do not
+The UX3407RA firmware exposes TLMM as ACPI GIO0. GpioInt consumers do not
 always contain literal TLMM GPIO numbers: PDC-routed pins are encoded as an
 index into GIO0's ordered _CRS Interrupt resources, multiplied by 0x40.
 GIO0's Qualcomm PDC _DSM then exposes CIPR tuples mapping each GSI back to the
@@ -92,7 +92,7 @@ def main() -> None:
  *
  * Windows-on-ARM Qualcomm firmware can encode PDC-routed GpioInt pins as
  *   virtual_pin = GIO0 _CRS interrupt index * 0x40
- * rather than as literal TLMM GPIO offsets.  The controller's Qualcomm PDC
+ * rather than as literal TLMM GPIO offsets. The controller's Qualcomm PDC
  * _DSM (function 2) returns CIPR tuples { pdc, tlmm_gpio, gsi } which let us
  * recover the physical TLMM GPIO without board-specific pin tables.
  *
@@ -186,12 +186,13 @@ static unsigned int qcom_woa_acpi_gpio_xlate(acpi_handle handle,
 			continue;
 
 		mapped = tuple->package.elements[1].integer.value;
-		if (mapped > UINT_MAX)
+		/* Qualcomm TLMMs are far smaller than 16-bit; reject nonsense. */
+		if (mapped > 0xffff)
 			break;
 
 		pr_info("ACPI: QCOM WoA GPIO: virtual 0x%x -> TLMM GPIO %llu (GSI 0x%x)\n",
-			pin, mapped, ctx.gsi);
-		pin = mapped;
+			pin, (unsigned long long)mapped, ctx.gsi);
+		pin = (unsigned int)mapped;
 		break;
 	}
 
