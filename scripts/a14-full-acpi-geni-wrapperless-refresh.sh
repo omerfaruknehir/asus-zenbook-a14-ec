@@ -8,7 +8,8 @@
 # transforms MUST be applied after `prepare`, not before `build`.
 set -euo pipefail
 
-ROOT="${A14_FULL_ACPI_WORKDIR:-${A14_FULL_ACPI_WORK:-$HOME/Downloads/a14-full-acpi-kernel}}"
+OWNER_HOME="$(if [[ -n "${SUDO_USER:-}" && "${SUDO_USER}" != root ]]; then getent passwd "$SUDO_USER" | cut -d: -f6; else printf '%s' "$HOME"; fi)"
+ROOT="${A14_FULL_ACPI_WORKDIR:-${A14_FULL_ACPI_WORK:-$OWNER_HOME/Downloads/a14-full-acpi-kernel}}"
 SRC="$ROOT/linux-7.1.5"
 OUT="$ROOT/build"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
