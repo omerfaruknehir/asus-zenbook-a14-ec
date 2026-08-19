@@ -7,9 +7,15 @@
 # console takes over; keep_bootcon is deliberately omitted to avoid duplicate
 # printk output after console handoff.
 #
+# The firmware advertises TPM2 in ACPI, but the current ACPI-only kernel does
+# not create /dev/tpm0 or /dev/tpmrm0. systemd's TPM2 generator would therefore
+# hold sysinit.target for the full device timeout. systemd.tpm2_wait=0 is the
+# upstream-supported switch to disable only that initial synchronization wait;
+# it does not blacklist or disable a TPM that may appear later.
+#
 # The system is known to reach graphical.target in ACPI-only mode; the current
 # visible failure is the absence of a usable Qualcomm DRM GPU, not an initrd or
-# root-mount stall.  Keep this entry unrestricted so GDM/GNOME behavior remains
+# root-mount stall. Keep this entry unrestricted so GDM/GNOME behavior remains
 # observable after every kernel refresh.
 set -euo pipefail
 
@@ -21,6 +27,7 @@ SNIPPET="/etc/grub.d/41_a14_full_acpi_checkpoint"
 OLD_MOUNTROOT="/etc/grub.d/41_a14_full_acpi_mountroot_shell"
 ENTRY_ID="a14-full-acpi-unrestricted"
 BOOT_UI_ARGS="earlycon=efifb console=tty0 loglevel=8 ignore_loglevel printk.time=1"
+BOOT_RUNTIME_ARGS="systemd.tpm2_wait=0"
 
 die(){ echo "ERROR: $*" >&2; exit 1; }
 need(){ command -v "$1" >/dev/null 2>&1 || die "missing command: $1"; }
@@ -37,17 +44,19 @@ ip="$(grub-mkrelpath "$INITRD")"
 
 # Preserve the normal machine-specific baseline cmdline (efi=noruntime,
 # clk/pd/cma/stubble/crashkernel, etc.) while removing all diagnostic/test and
-# UI-selection parameters inherited from the currently running kernel.
+# UI-selection parameters inherited from the currently running kernel. Strip
+# systemd.tpm2_wait=* as well so BOOT_RUNTIME_ARGS below is authoritative and
+# can never be duplicated by a prior ACPI-only boot.
 args=()
 for arg in $(cat /proc/cmdline); do
     case "$arg" in
-        BOOT_IMAGE=*|initrd=*|acpi=*|panic=*|oops=*|quiet|splash|break=*|debug|debug=*|loglevel=*|earlycon=*|console=*|ignore_loglevel|initcall_debug|keep_bootcon|a14_acpi_halt=*|a14_acpi_reboot_delay_ms=*|a14_acpi_trace_delay_ms=*|a14_device_halt_after=*|initcall_blacklist=*|reserve_mem=*|ramoops.*|nokaslr|systemd.unit=*|plymouth.enable=*|rd.plymouth=*)
+        BOOT_IMAGE=*|initrd=*|acpi=*|panic=*|oops=*|quiet|splash|break=*|debug|debug=*|loglevel=*|earlycon=*|console=*|ignore_loglevel|initcall_debug|keep_bootcon|a14_acpi_halt=*|a14_acpi_reboot_delay_ms=*|a14_acpi_trace_delay_ms=*|a14_device_halt_after=*|initcall_blacklist=*|reserve_mem=*|ramoops.*|nokaslr|systemd.unit=*|systemd.tpm2_wait=*|plymouth.enable=*|rd.plymouth=*)
             ;;
         *) args+=("$arg") ;;
     esac
 done
 
-cmdline="${args[*]} $BOOT_UI_ARGS acpi=force"
+cmdline="${args[*]} $BOOT_UI_ARGS $BOOT_RUNTIME_ARGS acpi=force"
 entry="ASUS Zenbook A14 — ACPI-ONLY UNRESTRICTED ($KREL)"
 
 rm -f "$OLD_MOUNTROOT"
@@ -71,6 +80,8 @@ grep -qE '(^|[[:space:]])earlycon=efifb([[:space:]]|$)' <<<"$linux_line" || die 
 grep -q 'printk.time=1' <<<"$linux_line" || die "printk timestamps unexpectedly disabled"
 grep -q 'loglevel=8' <<<"$linux_line" || die "details mode lacks loglevel=8"
 grep -q 'ignore_loglevel' <<<"$linux_line" || die "details mode lacks ignore_loglevel"
+grep -qE '(^|[[:space:]])systemd\.tpm2_wait=0([[:space:]]|$)' <<<"$linux_line" || die "TPM2 boot-wait suppression missing"
+[[ "$(grep -oE '(^|[[:space:]])systemd\.tpm2_wait=[^[:space:]]+' <<<"$linux_line" | wc -l)" -eq 1 ]] || die "unexpected duplicate/conflicting systemd.tpm2_wait parameter"
 ! grep -qE '(^|[[:space:]])quiet([[:space:]]|$)' <<<"$linux_line" || die "details-first entry unexpectedly contains quiet"
 ! grep -qE '(^|[[:space:]])splash([[:space:]]|$)' <<<"$linux_line" || die "details-first entry unexpectedly contains splash"
 ! grep -qE '(^|[[:space:]])keep_bootcon([[:space:]]|$)' <<<"$linux_line" || die "keep_bootcon unexpectedly present"
@@ -91,6 +102,8 @@ echo "A14_FULL_ACPI_UNRESTRICTED_ENTRY=READY"
 echo "entry=$entry"
 echo "hardware_dtb_loaded=false"
 echo "acpi_force=true"
+echo "tpm2_initial_wait=disabled"
+echo "tpm2_device_support=unchanged"
 echo "checkpoint=disabled"
 echo "device_bisect=disabled"
 echo "timed_reboot=disabled"
