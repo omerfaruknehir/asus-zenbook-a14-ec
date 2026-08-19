@@ -23,6 +23,7 @@ CONFIG="/boot/config-$KREL"
 SYSTEM_MAP="/boot/System.map-$KREL"
 BACKUP="/boot/vmlinuz-$KREL.pre-74c9bd5-restore"
 HIST_BASE="$HIST_REPO/scripts/a14-full-acpi-kernel.sh"
+HIST_BASE_CHECKPOINTS="$HIST_REPO/scripts/apply-a14-full-acpi-checkpoints.py"
 HIST_FINAL="$HIST_REPO/scripts/a14-full-acpi-geni-wrapperless-refresh.sh"
 HIST_ENTRY="$HIST_REPO/scripts/a14-full-acpi-unrestricted-entry.sh"
 
@@ -46,7 +47,7 @@ ensure_historical_worktree(){
         [[ ! -e "$HIST_REPO" || -z "$(ls -A "$HIST_REPO" 2>/dev/null || true)" ]] || die "historical worktree path occupied: $HIST_REPO"
         git -C "$ROOT" worktree add --detach "$HIST_REPO" "$GOOD_COMMIT"
     fi
-    for f in "$HIST_BASE" "$HIST_FINAL" "$HIST_ENTRY"; do [[ -f "$f" ]] || die "historical script missing: $f"; done
+    for f in "$HIST_BASE" "$HIST_BASE_CHECKPOINTS" "$HIST_FINAL" "$HIST_ENTRY"; do [[ -f "$f" ]] || die "historical script missing: $f"; done
     say "historical_repo_commit=$GOOD_COMMIT"
 }
 
@@ -71,6 +72,16 @@ space_report(){
     say "full_module_rebuild=false"
 }
 
+verify_base_checkpoint_prerequisite(){
+    local src="$HIST_WORK/linux-7.1.5"
+    grep -q 'void a14_acpi_checkpoint(const char \*stage);' "$src/include/linux/a14_full_acpi.h" || die "historical base checkpoint header missing"
+    grep -q 'a14_acpi_halt_stage' "$src/drivers/acpi/bus.c" || die "historical base checkpoint core missing"
+    grep -q 'acpi-early-enter' "$src/drivers/acpi/bus.c" || die "historical early checkpoint missing"
+    grep -q 'acpi-scan-after' "$src/drivers/acpi/bus.c" || die "historical scan checkpoint missing"
+    grep -q 'pci-acpi-after' "$src/drivers/pci/pci-acpi.c" || die "historical PCI checkpoint missing"
+    say "historical_base_checkpoints=VERIFIED"
+}
+
 verify_final_source(){
     local src="$HIST_WORK/linux-7.1.5"
     grep -q 'A14 ACPI: wrapperless GENI SE, TX FIFO depth' "$src/drivers/i2c/busses/i2c-qcom-geni.c" || die "historical wrapperless GENI marker missing"
@@ -88,11 +99,19 @@ build_good(){
     space_report
     rm -f "$STAMP"
 
-    say "A14_74C9_BUILD_STAGE=1/2 exact-historical-prepare"
+    say "A14_74C9_BUILD_STAGE=1/3 exact-historical-prepare"
     say "note=prepare resets existing source/build in-place; no duplicate Linux tree"
     A14_FULL_ACPI_WORK="$HIST_WORK" bash "$HIST_BASE" prepare
 
-    say "A14_74C9_BUILD_STAGE=2/2 exact-historical-final-Image"
+    # The 74c9 final wrapper is intentionally incremental. At that point in the
+    # historical workflow it expected the base checkpoint implementation to
+    # already be present in the mutable kernel source tree. A fresh prepare()
+    # does not contain it, so seed exactly that prerequisite from 74c9 itself.
+    say "A14_74C9_BUILD_STAGE=2/3 exact-historical-base-checkpoint-prerequisite"
+    python3 "$HIST_BASE_CHECKPOINTS" "$HIST_WORK/linux-7.1.5"
+    verify_base_checkpoint_prerequisite
+
+    say "A14_74C9_BUILD_STAGE=3/3 exact-historical-final-Image"
     say "note=no generic modules build; final historical chain builds Image only"
     set +e
     A14_FULL_ACPI_WORK="$HIST_WORK" bash "$HIST_FINAL" build 2>&1 | tee "$BUILD_LOG"
@@ -100,6 +119,7 @@ build_good(){
     set -e
     (( rc == 0 )) || { tail -n 150 "$BUILD_LOG" >&2 || true; die "74c9 final Image build failed rc=$rc"; }
 
+    verify_base_checkpoint_prerequisite
     verify_final_source
     image="$HIST_WORK/build/arch/arm64/boot/Image"
     [[ -s "$image" ]] || die "final historical Image missing"
@@ -112,6 +132,7 @@ repo_commit=$GOOD_COMMIT
 kernelrelease=$KREL
 image_sha256=$sha
 build_mode=in-place-image-only
+historical_prerequisite=base-checkpoints-from-74c9bd5
 historical_cmdline=earlycon=efifb,ram console=tty0 loglevel=8 ignore_loglevel printk.time=1 acpi=force
 EOF
     say "A14_74C9_BUILD=COMPLETE"
@@ -169,6 +190,7 @@ install_good(){
     [[ "$stamp_commit" == "$GOOD_COMMIT" ]] || die "build stamp commit mismatch"
     [[ "$stamp_krel" == "$KREL" ]] || die "build stamp kernelrelease mismatch"
     [[ -n "$expected_sha" && "$expected_sha" == "$actual_sha" ]] || die "Image changed since successful build"
+    verify_base_checkpoint_prerequisite
     verify_final_source
 
     [[ ! -e "$BACKUP" && -s "$KERNEL" ]] && { cp -a "$KERNEL" "$BACKUP"; say "backup_created=$BACKUP"; }
