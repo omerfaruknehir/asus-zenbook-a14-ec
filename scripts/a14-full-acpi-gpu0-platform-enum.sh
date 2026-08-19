@@ -27,6 +27,7 @@ SYSTEM_MAP="/boot/System.map-$KREL"
 BACKUP_KERNEL="/boot/vmlinuz-$KREL.pre-gpu0-platform-enum"
 BACKUP_CONFIG="/boot/config-$KREL.pre-gpu0-platform-enum"
 BACKUP_MAP="/boot/System.map-$KREL.pre-gpu0-platform-enum"
+MSM_CONFIG_STATE=""
 
 say(){ printf '%s\n' "$*"; }
 die(){ printf 'ERROR: %s\n' "$*" >&2; exit 1; }
@@ -41,7 +42,14 @@ verify_tree(){
     [[ "$actual" == "$KREL" ]] || die "kernelrelease mismatch: expected $KREL, got $actual"
 
     grep -q '^CONFIG_ACPI=y$' "$OUT/.config" || die "CONFIG_ACPI=y required"
-    grep -q '^CONFIG_DRM_MSM=y$' "$OUT/.config" || die "CONFIG_DRM_MSM must remain built-in"
+
+    # The recovered A14 kernel may carry MSM DRM as a module (matching the
+    # distro Snapdragon kernel) or built-in. This enumeration-only layer must
+    # preserve either existing choice; it must never force y over m.
+    msm_line="$(grep -E '^CONFIG_DRM_MSM=[ym]$' "$OUT/.config" || true)"
+    [[ -n "$msm_line" ]] || die "CONFIG_DRM_MSM is disabled; expected existing y or m state"
+    MSM_CONFIG_STATE="${msm_line#CONFIG_DRM_MSM=}"
+
     grep -q '^CONFIG_QCOM_SCM=y$' "$OUT/.config" || die "CONFIG_QCOM_SCM=y required"
     grep -q '^CONFIG_MODULE_ALLOW_BTF_MISMATCH=y$' "$OUT/.config" || die "BTF mismatch compatibility missing"
 
@@ -72,6 +80,8 @@ build_fix(){
     say "live_modalias=LNXVIDEO"
     say "fix=route_QCOM0C36_through_normal_ACPI_platform_enumeration"
     say "iort_identity=preserved"
+    say "drm_msm_config=$MSM_CONFIG_STATE"
+    say "drm_msm_config_preserved=true"
     say "msm_adreno_binding_change=false"
     say "gpu_mmio_access=false"
     say "gpu_power_change=false"
@@ -106,6 +116,8 @@ image_sha256=$sha
 firmware_gpu_hid=QCOM0C36
 platform_enumeration=yes
 iort_identity_preserved=yes
+drm_msm_config=$MSM_CONFIG_STATE
+drm_msm_config_preserved=yes
 msm_adreno_binding_change=no
 gpu_mmio_access=no
 gpu_power_change=no
@@ -116,6 +128,7 @@ EOF
     say "A14_GPU0_PLATFORM_ENUM_BUILD=COMPLETE"
     say "image=$IMAGE"
     say "sha256=$sha"
+    say "drm_msm_config=$MSM_CONFIG_STATE"
     say "compiled_gpu0_platform_enum=VERIFIED"
     say "keyboard_gio0_fix=VERIFIED_PRESERVED"
     say "scm_acpi_fix=VERIFIED_PRESERVED"
@@ -146,6 +159,7 @@ install_fix(){
 
     say "A14_GPU0_PLATFORM_ENUM_INSTALL=COMPLETE"
     say "installed_sha256=$expected"
+    say "drm_msm_config=$MSM_CONFIG_STATE"
     say "previous_working_image=$BACKUP_KERNEL"
     say "modules_unchanged=true"
     say "initramfs_unchanged=true"
