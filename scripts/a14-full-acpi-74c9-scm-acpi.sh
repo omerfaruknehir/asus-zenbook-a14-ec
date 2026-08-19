@@ -3,11 +3,12 @@
 # UX3407RA full-ACPI SCM prerequisite fix on top of the working 74c9+BTF+GIO0 tree.
 #
 # Firmware:  \_SB.SCM0 _HID QCOM04DD
-# Live failure before this patch:
-#   arm-smmu.0.auto: deferred probe pending: arm-smmu: qcom_scm not ready
-#   arm-smmu.1.auto: deferred probe pending: arm-smmu: qcom_scm not ready
+# Proven live failures before this revision:
+#   1) arm-smmu.* deferred forever: qcom_scm not ready
+#   2) after adding the ACPI HID, qcom_scm hit a NULL-of_node panic in
+#      reset_controller_register() because the reset-provider facade is OF-only.
 #
-# This helper changes qcom_scm only.  It does not patch SMMU or GPU yet.
+# This helper changes qcom_scm only. It does not patch SMMU or GPU yet.
 # Image-only build/install: modules, initramfs and GRUB remain untouched.
 set -euo pipefail
 
@@ -46,7 +47,7 @@ verify_tree(){
     grep -q '^CONFIG_QCOM_SCM=y$' "$OUT/.config" || die "CONFIG_QCOM_SCM must be built-in (=y) for this Image-only fix"
     grep -q '^CONFIG_MODULE_ALLOW_BTF_MISMATCH=y$' "$OUT/.config" || die "BTF mismatch compatibility is not enabled"
 
-    # Never lose the keyboard/GIO0 fix while working on SCM.
+    # Never lose the already-working keyboard/GIO0 fix while working on SCM.
     grep -q 'A14_GIO0_SAFE_REGISTRATION_V1' "$SRC/drivers/pinctrl/qcom/pinctrl-msm.c" || die "working GIO0 safe-registration fix missing"
     grep -q 'A14_QCOM_WOA_ACPI_GPIO_XLATE' "$SRC/drivers/gpio/gpiolib-acpi-core.c" || die "working WoA keyboard GPIO translator missing"
     grep -q 'QCOM0C0C' "$SRC/drivers/pinctrl/qcom/pinctrl-x1e80100.c" || die "working GIO0 ACPI binding missing"
@@ -58,9 +59,16 @@ verify_scm_source(){
     grep -q '"QCOM04DD", 0' "$scm" || die "SCM0 QCOM04DD ACPI match missing"
     grep -q 'MODULE_DEVICE_TABLE(acpi, qcom_scm_acpi_match)' "$scm" || die "SCM ACPI module table missing"
     grep -q 'acpi_match_table = ACPI_PTR(qcom_scm_acpi_match)' "$scm" || die "SCM platform driver ACPI match missing"
-    grep -q 'A14 ACPI: SCM0 QCOM04DD, DT-only resources skipped' "$scm" || die "SCM ACPI probe marker missing"
+    grep -q 'A14 ACPI: SCM0 QCOM04DD, DT-only resources skipped' "$scm" || die "SCM ACPI resource guard marker missing"
+    grep -q 'A14 ACPI: SCM OF reset-controller provider skipped' "$scm" || die "SCM ACPI reset-provider guard missing"
+    grep -q 'if (scm->dev->of_node)' "$scm" || die "SCM ACPI waitq OF guard missing"
+    grep -q 'irq = -ENODEV;' "$scm" || die "SCM ACPI waitq fallback marker missing"
+    grep -q 'pdev->dev.of_node &&' "$scm" || die "SCM ACPI DT-property guard missing"
+
     [[ "$(grep -c 'devm_of_icc_get(&pdev->dev, NULL)' "$scm")" -eq 1 ]] || die "unexpected SCM OF ICC lookup count"
+    [[ "$(grep -c 'devm_reset_controller_register(&pdev->dev, &scm->reset)' "$scm")" -eq 1 ]] || die "unexpected SCM reset-controller registration count"
     [[ "$(grep -c 'of_reserved_mem_device_init(scm->dev)' "$scm")" -eq 1 ]] || die "unexpected SCM OF reserved-memory lookup count"
+    [[ "$(grep -c 'qcom_scm_get_waitq_irq(scm)' "$scm")" -eq 1 ]] || die "unexpected SCM OF waitq lookup count"
 }
 
 build_fix(){
@@ -73,8 +81,10 @@ build_fix(){
     say "prerequisite=working_keyboard_GIO0_safe_fix"
     say "firmware_scm_path=\\_SB.SCM0"
     say "firmware_scm_hid=QCOM04DD"
-    say "live_blocker=arm-smmu_qcom_scm_not_ready"
-    say "fix=QCOM04DD_ACPI_match_plus_DT_only_resource_guards"
+    say "proven_crash=reset_controller_register_NULL_of_node"
+    say "fix=QCOM04DD_ACPI_match_plus_all_known_DT_only_probe_guards"
+    say "reset_provider=OF_only"
+    say "waitq_irq=OF_parent_or_platform_resource"
     say "smmu_code_change=false"
     say "gpu_code_change=false"
     say "full_module_rebuild=false"
@@ -83,7 +93,9 @@ build_fix(){
 
     rm -f "$STAMP"
 
-    # Two passes deliberately prove the source transform is idempotent.
+    # Two passes deliberately prove the source transform is idempotent. This
+    # also supports upgrading an already-applied earlier SCM ACPI revision in
+    # place: old guards report current, new guards report applied on pass one.
     python3 "$TRANSFORM" "$SRC"
     python3 "$TRANSFORM" "$SRC"
     verify_scm_source
@@ -98,7 +110,8 @@ build_fix(){
 
     [[ -s "$IMAGE" && -s "$OUT/vmlinux" && -s "$SCM_OBJ" ]] || die "rebuilt Image/vmlinux/qcom_scm.o missing"
     grep -aFq 'QCOM04DD' "$SCM_OBJ" || die "compiled qcom_scm.o lacks QCOM04DD"
-    grep -aFq 'A14 ACPI: SCM0 QCOM04DD, DT-only resources skipped' "$SCM_OBJ" || die "compiled qcom_scm.o lacks ACPI probe path"
+    grep -aFq 'A14 ACPI: SCM0 QCOM04DD, DT-only resources skipped' "$SCM_OBJ" || die "compiled qcom_scm.o lacks ACPI resource guard path"
+    grep -aFq 'A14 ACPI: SCM OF reset-controller provider skipped' "$SCM_OBJ" || die "compiled qcom_scm.o lacks reset-provider guard path"
 
     # Re-verify the already-working keyboard code survived the relink.
     grep -aFq 'A14GIO0FIX: suppressing registration-time eager direction scan' "$OUT/drivers/pinctrl/qcom/pinctrl-msm.o" || die "compiled GIO0 safe-registration object missing"
@@ -112,7 +125,10 @@ firmware_scm_hid=QCOM04DD
 acpi_match=yes
 dt_dload_guard=yes
 dt_icc_guard=yes
+dt_reset_provider_guard=yes
 dt_reserved_mem_guard=yes
+dt_waitq_irq_guard=yes
+dt_sdi_property_guard=yes
 smmu_code_change=no
 gpu_code_change=no
 module_allow_btf_mismatch=yes
@@ -123,6 +139,7 @@ EOF
     say "image=$IMAGE"
     say "sha256=$sha"
     say "compiled_scm_acpi=VERIFIED"
+    say "compiled_reset_provider_guard=VERIFIED"
     say "keyboard_gio0_fix=VERIFIED_PRESERVED"
     say "full_module_rebuild=false"
 }
@@ -140,7 +157,8 @@ install_fix(){
     [[ -n "$expected" && "$expected" == "$actual" ]] || die "Image changed since verified SCM build"
     [[ -s "$KERNEL" ]] || die "experimental kernel missing: $KERNEL"
 
-    # Preserve the currently working keyboard-safe Image exactly once.
+    # Preserve the known keyboard-safe pre-SCM Image exactly once. If this is
+    # an in-place SCM revision update, do not overwrite that known fallback.
     [[ -e "$BACKUP_KERNEL" ]] || cp -a "$KERNEL" "$BACKUP_KERNEL"
     [[ ! -s "$CONFIG" || -e "$BACKUP_CONFIG" ]] || cp -a "$CONFIG" "$BACKUP_CONFIG"
     [[ ! -s "$SYSTEM_MAP" || -e "$BACKUP_MAP" ]] || cp -a "$SYSTEM_MAP" "$BACKUP_MAP"
@@ -153,6 +171,8 @@ install_fix(){
     say "A14_74C9_SCM_ACPI_INSTALL=COMPLETE"
     say "installed_sha256=$expected"
     say "scm_acpi_hid=QCOM04DD"
+    say "reset_provider_guard=true"
+    say "waitq_of_guard=true"
     say "previous_keyboard_safe_image=$BACKUP_KERNEL"
     say "modules_unchanged=true"
     say "initramfs_unchanged=true"
