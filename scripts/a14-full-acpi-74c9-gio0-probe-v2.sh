@@ -55,6 +55,21 @@ verify_grub(){
     say "A14_74C9_COMMANDLINE=VERIFIED"
 }
 
+v2_already_applied(){
+    local msm="$SRC/drivers/pinctrl/qcom/pinctrl-msm.c"
+    local gpio="$SRC/drivers/gpio/gpiolib.c"
+    grep -Fq 'A14_GIO0_PROBE_TRACE_V2' "$msm" &&
+    grep -Fq 'A14GIO0DIR: before gpio=' "$msm" &&
+    grep -Fq 'A14GIO0DIR: after gpio=' "$msm" &&
+    grep -Fq 'A14_GIO0_PROBE_TRACE_V2' "$gpio" &&
+    grep -Fq 'A14GIO0V2: before-valid-mask' "$gpio" &&
+    grep -Fq 'A14GIO0V2: direction-scan-before' "$gpio" &&
+    grep -Fq 'A14GIO0V2: direction-scan-after' "$gpio" &&
+    grep -Fq 'A14GIO0V2: before-acpi-gpiochip-add' "$gpio" &&
+    grep -Fq 'A14GIO0V2: before-add-irqchip' "$gpio" &&
+    grep -Fq 'A14GIO0V2: gpiochip-success' "$gpio"
+}
+
 verify_probe_source(){
     x1="$SRC/drivers/pinctrl/qcom/pinctrl-x1e80100.c"
     msm="$SRC/drivers/pinctrl/qcom/pinctrl-msm.c"
@@ -89,13 +104,17 @@ build_probe(){
     say "grub_unchanged=true"
     say "initramfs_unchanged=true"
 
-    # V1 is idempotent.  Running it first makes V2 work whether the local
+    # V1 is idempotent. Running it first makes this work whether the local
     # recovered tree is pristine 74c9 or already contains the first GIO0 test.
     python3 "$TRANSFORM_V1" "$SRC"
-    python3 "$TRANSFORM_V2" "$SRC"
+    if v2_already_applied; then
+        say "A14_GIO0_PROBE_TRACE_V2=current"
+    else
+        python3 "$TRANSFORM_V2" "$SRC"
+    fi
     verify_probe_source
 
-    # Force every source touched by V1/V2 stale.  In particular, gpiolib.o is
+    # Force every source touched by V1/V2 stale. In particular, gpiolib.o is
     # new in V2 and must not be reused from the prior Image.
     rm -f \
       "$OUT/drivers/pinctrl/qcom/pinctrl-x1e80100.o" \
