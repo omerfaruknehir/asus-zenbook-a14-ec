@@ -163,7 +163,9 @@ install_fix(){
     [[ "$(sha256sum "$MSM_KO" | awk '{print $1}')" == "$expected_msm" ]] || die "msm.ko changed since build"
 
     msm_target="$(installed_msm_path)" || die "cannot locate installed msm module for $KREL"
-    case "$msm_target" in /lib/modules/$KREL/*) ;; *) die "unexpected msm path: $msm_target" ;; esac
+    module_root="$(readlink -f "/lib/modules/$KREL")"
+    [[ -n "$module_root" && -d "$module_root" ]] || die "cannot resolve module root for $KREL"
+    case "$msm_target" in "$module_root"/*) ;; *) die "unexpected msm path: $msm_target (module root: $module_root)" ;; esac
     msm_backup="$msm_target.pre-gpu0-topology-v3"
 
     [[ -e "$BACKUP_KERNEL" ]] || cp -a "$KERNEL" "$BACKUP_KERNEL"
