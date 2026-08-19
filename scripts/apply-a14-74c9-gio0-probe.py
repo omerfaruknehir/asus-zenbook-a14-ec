@@ -92,10 +92,14 @@ def main() -> None:
         "gpio_pin_range_before_trace",
     )
 
+    # msm_gpio_init() returns directly after this block.  Do not anchor this
+    # breadcrumb to msm_pinctrl_probe()'s later dev_dbg(): that is a different
+    # function and caused the first version of this transform to fail after
+    # partially applying all previous edits.
     replace_once(
         msm,
-        '''\t\tif (ret) {\n\t\t\tdev_err(pctrl->dev, "Failed to add pin range\\n");\n\t\t\treturn ret;\n\t\t}\n\t}\n\n\tdev_dbg(pctrl->dev, "Probed Qualcomm pinctrl driver\\n");\n''',
-        '''\t\tdev_info(pctrl->dev, "A14GIO0: after-gpio-pin-range ret=%d\\n", ret);\n\t\tif (ret) {\n\t\t\tdev_err(pctrl->dev, "Failed to add pin range\\n");\n\t\t\treturn ret;\n\t\t}\n\t}\n\n\tdev_dbg(pctrl->dev, "Probed Qualcomm pinctrl driver\\n");\n''',
+        '''\t\tret = gpiochip_add_pin_range(&pctrl->chip,\n\t\t\tdev_name(pctrl->dev), 0, 0, chip->ngpio);\n\t\tif (ret) {\n\t\t\tdev_err(pctrl->dev, "Failed to add pin range\\n");\n\t\t\treturn ret;\n\t\t}\n\t}\n\n\treturn 0;\n}\n''',
+        '''\t\tret = gpiochip_add_pin_range(&pctrl->chip,\n\t\t\tdev_name(pctrl->dev), 0, 0, chip->ngpio);\n\t\tdev_info(pctrl->dev, "A14GIO0: after-gpio-pin-range ret=%d\\n", ret);\n\t\tif (ret) {\n\t\t\tdev_err(pctrl->dev, "Failed to add pin range\\n");\n\t\t\treturn ret;\n\t\t}\n\t}\n\n\treturn 0;\n}\n''',
         "gpio_pin_range_after_trace",
     )
 
@@ -106,7 +110,8 @@ def main() -> None:
     mb = msm.read_text()
     for token in (MARKER, "A14GIO0: mmio-mapped", "A14GIO0: after-platform-get-irq",
                   "A14GIO0: after-pinctrl-register", "A14GIO0: after-gpiochip-add",
-                  "A14GIO0: after-msm-gpio-init", "A14GIO0: probe-complete"):
+                  "A14GIO0: after-gpio-pin-range", "A14GIO0: after-msm-gpio-init",
+                  "A14GIO0: probe-complete"):
         if token not in mb:
             die(f"missing final trace token: {token}")
 
