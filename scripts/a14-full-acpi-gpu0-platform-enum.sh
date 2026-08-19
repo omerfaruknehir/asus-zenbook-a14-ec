@@ -43,12 +43,16 @@ verify_tree(){
 
     grep -q '^CONFIG_ACPI=y$' "$OUT/.config" || die "CONFIG_ACPI=y required"
 
-    # The recovered A14 kernel may carry MSM DRM as a module (matching the
-    # distro Snapdragon kernel) or built-in. This enumeration-only layer must
-    # preserve either existing choice; it must never force y over m.
-    msm_line="$(grep -E '^CONFIG_DRM_MSM=[ym]$' "$OUT/.config" || true)"
-    [[ -n "$msm_line" ]] || die "CONFIG_DRM_MSM is disabled; expected existing y or m state"
-    MSM_CONFIG_STATE="${msm_line#CONFIG_DRM_MSM=}"
+    # This layer only fixes ACPI physical enumeration. It must not constrain or
+    # rewrite the pre-existing MSM DRM choice. Record y/m/disabled verbatim for
+    # the next Adreno-binding layer.
+    if grep -q '^CONFIG_DRM_MSM=y$' "$OUT/.config"; then
+        MSM_CONFIG_STATE="y"
+    elif grep -q '^CONFIG_DRM_MSM=m$' "$OUT/.config"; then
+        MSM_CONFIG_STATE="m"
+    else
+        MSM_CONFIG_STATE="disabled"
+    fi
 
     grep -q '^CONFIG_QCOM_SCM=y$' "$OUT/.config" || die "CONFIG_QCOM_SCM=y required"
     grep -q '^CONFIG_MODULE_ALLOW_BTF_MISMATCH=y$' "$OUT/.config" || die "BTF mismatch compatibility missing"
