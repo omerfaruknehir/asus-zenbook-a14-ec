@@ -52,6 +52,22 @@ def replace_once(path: Path, old: str, new: str, label: str) -> None:
     if new in text:
         print(f"{label}=current")
         return
+
+    # The first SCM ACPI revision used a longer explanatory comment around
+    # the ICC guard.  Detect the *functional* already-applied state instead of
+    # requiring byte-identical replacement text, so an in-place source tree
+    # from that revision can be advanced without reset/reprepare.
+    if label == "acpi_icc_bypass":
+        semantic_markers = (
+            'devm_of_icc_get(&pdev->dev, NULL)',
+            'if (pdev->dev.of_node) {',
+            'scm->path = NULL;',
+            'A14 ACPI: SCM0 QCOM04DD, DT-only resources skipped',
+        )
+        if all(token in text for token in semantic_markers):
+            print(f"{label}=current")
+            return
+
     count = text.count(old)
     if count != 1:
         fail(f"{label}: expected one anchor in {path}, found {count}")
