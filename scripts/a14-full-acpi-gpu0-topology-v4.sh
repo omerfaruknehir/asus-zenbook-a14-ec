@@ -111,13 +111,8 @@ dependency_targets(){
 
 build_fix(){
     need_user
-    for c in python3 make sha256sum grep modinfo modprobe nproc awk mapfile; do
-        if [[ "$c" == mapfile ]]; then
-            type mapfile >/dev/null 2>&1 || die "bash mapfile builtin unavailable"
-        else
-            need "$c"
-        fi
-    done
+    for c in python3 make sha256sum grep modinfo modprobe nproc awk; do need "$c"; done
+    type mapfile >/dev/null 2>&1 || die "bash mapfile builtin unavailable"
     [[ -f "$TRANSFORM" ]] || die "missing V3 transform"
     verify_tree
 
@@ -151,8 +146,11 @@ build_fix(){
 
     [[ -s "$OUT/vmlinux.o" ]] || die "vmlinux.o missing; native MODPOST cannot resolve built-in exports"
 
+    local dep_targets
     local -a targets
-    mapfile -t targets < <(dependency_targets)
+    dep_targets="$(dependency_targets)" || die "failed to derive complete msm dependency closure"
+    mapfile -t targets <<<"$dep_targets"
+    ((${#targets[@]} > 1)) || die "incomplete msm dependency closure"
     say "dependency_module_targets=${#targets[@]}"
     printf 'dependency_target=%s\n' "${targets[@]}"
 
