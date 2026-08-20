@@ -17,6 +17,7 @@ import sys
 KERNEL_VERSION = "7.1.5"
 MARKER = "A14_IORT_NCOMP_NO_TRAILING_V1"
 LOG = "A14IORT: QCOM0C36 normalized path match"
+LOG_ARGS_TYPED = "device_name, (char *)buf.pointer);"
 
 
 def fail(msg: str) -> None:
@@ -42,12 +43,26 @@ def verify(path: Path) -> None:
         "ACPI_FULL_PATHNAME_NO_TRAILING",
         'acpi_dev_hid_uid_match(adev, "QCOM0C36", NULL)',
         LOG,
+        LOG_ARGS_TYPED,
     ]
     missing = [x for x in required if x not in body]
     if missing:
         fail(f"verification missing: {missing}")
     if body.count(MARKER) != 1:
         fail(f"expected exactly one {MARKER} marker")
+
+
+def upgrade_existing(path: Path, body: str) -> str:
+    """Upgrade the already-applied V1 source without changing semantics."""
+    old = "device_name, buf.pointer);"
+    if LOG_ARGS_TYPED in body:
+        return body
+    if old not in body:
+        fail("existing V1 marker found, but pathname log arguments are unexpected")
+    body = body.replace(old, LOG_ARGS_TYPED, 1)
+    path.write_text(body)
+    print("iort_qcom0c36_path_log_cast=upgraded")
+    return body
 
 
 def main() -> None:
@@ -67,8 +82,10 @@ def main() -> None:
 
     body = path.read_text()
     if MARKER in body:
+        body = upgrade_existing(path, body)
         verify(path)
         print("iort_qcom0c36_path_fallback=current")
+        print("iort_qcom0c36_path_log_cast=current")
         print("A14_QCOM0C36_IORT_PATH_V1=APPLIED")
         return
 
@@ -98,7 +115,7 @@ def main() -> None:
 				if (!strcmp(device_name, normalized.pointer)) {
 					dev_info_once(cdev,
 						      "A14IORT: QCOM0C36 normalized path match firmware=%s acpi=%s\n",
-						      device_name, buf.pointer);
+						      device_name, (char *)buf.pointer);
 					status = AE_OK;
 				}
 				acpi_os_free(normalized.pointer);
@@ -114,6 +131,7 @@ def main() -> None:
     path.write_text(body.replace(old, new, 1))
     verify(path)
     print("iort_qcom0c36_path_fallback=applied")
+    print("iort_qcom0c36_path_log_cast=applied")
     print("A14_QCOM0C36_IORT_PATH_V1=APPLIED")
     print("exact_iort_match_preserved=true")
     print("fallback_scope=QCOM0C36_named_component_only")
