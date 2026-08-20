@@ -233,15 +233,19 @@ build_fix(){
         make -C "$SRC" O="$OUT" KBUILD_MODULES=1 modpost
     verify_symvers
 
-    # Phases 4-5: finalize each changed module individually. M= builds import
-    # the freshly regenerated top-level Module.symvers, which supplies the DRM
-    # and other module exports that the old V1 isolated build was missing.
+    # Phases 4-5: finalize each changed module individually as external-module
+    # builds so modpost imports the freshly regenerated top-level Module.symvers.
+    # M= selects the source directory; MO= is required to place external-module
+    # output in the matching O= build directory rather than in the source tree.
     rm -f "$MSM_KO"
     run_kbuild \
         "4/5 Finalize msm.ko" \
         "$LOGDIR/4-msm-ko.log" \
-        make -C "$SRC" O="$OUT" -j"$jobs" M=drivers/gpu/drm/msm msm.ko
-    [[ -s "$MSM_KO" ]] || die "targeted msm.ko build missing"
+        make -C "$SRC" O="$OUT" -j"$jobs" \
+            M="$SRC/drivers/gpu/drm/msm" \
+            MO="$OUT/drivers/gpu/drm/msm" \
+            msm.ko
+    [[ -s "$MSM_KO" ]] || die "targeted msm.ko build missing from O= tree"
     grep -aFq 'A14GPUCC-LIVE: parent proxy' "$MSM_KO" || die "compiled msm.ko lacks parent proxies"
     grep -aFq 'gpucc_live=true' "$MSM_KO" || die "compiled msm.ko lacks live marker"
     modinfo -F alias "$MSM_KO" | grep -Fq 'QCOM0C36' || die "compiled msm.ko lacks QCOM0C36 alias"
@@ -250,8 +254,11 @@ build_fix(){
     run_kbuild \
         "5/5 Finalize gpucc-x1e80100.ko" \
         "$LOGDIR/5-gpucc-ko.log" \
-        make -C "$SRC" O="$OUT" -j"$jobs" M=drivers/clk/qcom gpucc-x1e80100.ko
-    [[ -s "$GPUCC_KO" ]] || die "gpucc-x1e80100.ko build missing"
+        make -C "$SRC" O="$OUT" -j"$jobs" \
+            M="$SRC/drivers/clk/qcom" \
+            MO="$OUT/drivers/clk/qcom" \
+            gpucc-x1e80100.ko
+    [[ -s "$GPUCC_KO" ]] || die "gpucc-x1e80100.ko build missing from O= tree"
     grep -aFq 'A14GPUCC-LIVE: validated firmware-derived MMIO' "$GPUCC_KO" || die "compiled GPUCC module lacks MMIO gate"
     modinfo -F alias "$GPUCC_KO" | grep -Fq 'platform:gpucc-x1e80100' || die "compiled GPUCC module lacks platform alias"
 
