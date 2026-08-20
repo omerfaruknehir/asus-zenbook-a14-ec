@@ -1,32 +1,36 @@
 #!/bin/bash
 # SPDX-License-Identifier: GPL-2.0-only
-# ASUS Zenbook A14 UX3407RA WSA884x speaker hardware-gain calibration.
+# ASUS Zenbook A14 UX3407RA WSA884x speaker gain calibration.
 #
-# Upstream alsa-ucm-conf currently routes the A14 through the shared X1E80100
-# two-speaker profile and programs both WSA884x PA controls to 12.  The WSA884x
-# driver exposes PA gain in 1.5 dB steps.  This helper raises only the physical
-# speaker PA controls, keeps left/right identical, and refuses to act unless the
-# expected smart-amp protection/routing controls are present.
+# Important topology detail:
+#   * SpkrLeft/Right PA Volume are the normal ALSA/PipeWire speaker-volume
+#     controls.  UCM remaps them into the stereo "Speakers Volume" element,
+#     so PipeWire continuously owns/reprograms them.  Do NOT use those as a
+#     fixed board-gain offset.
+#   * WSA_RX0/1 Digital Volume live one stage earlier in the LPASS WSA macro.
+#     UCM initializes them to user value 84, corresponding to 0 dB.  They are
+#     not the PlaybackMixerElem used by PipeWire for the normal volume slider.
+#
+# This helper therefore leaves PA volume under PipeWire control and applies a
+# small, symmetric digital offset to WSA_RX0/1.  Default test is +3 dB.
 set -euo pipefail
 
 ACTION="${1:-status}"
-REQUESTED="${2:-14}"
+REQUESTED_DB="${2:-3}"
 CARD_EXPECT="X1E80100-ASUS-Zenbook-A14"
-BASELINE=12
-DEFAULT=14
-MIN_SAFE=12
-MAX_SAFE=16
+DIGITAL_ZERO=84
+DEFAULT_DB=3
+MIN_DB=0
+MAX_DB=6
 
 say(){ printf '%s\n' "$*"; }
 die(){ printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 need(){ command -v "$1" >/dev/null 2>&1 || die "missing command: $1"; }
 
-need amixer
-need awk
-need grep
+for c in amixer awk grep cat; do need "$c"; done
 
 find_card(){
-    local id name
+    local id name p
     while read -r id _; do
         [[ "$id" =~ ^[0-9]+$ ]] || continue
         name="$(cat "/proc/asound/card${id}/id" 2>/dev/null || true)"
@@ -36,12 +40,10 @@ find_card(){
         fi
     done < <(awk '/^[[:space:]]*[0-9]+ \[/ { gsub(/^[[:space:]]+/, "", $0); split($0,a," "); print a[1], a[2] }' /proc/asound/cards 2>/dev/null)
 
-    # Fallback to long card-name matching if ALSA changes the short ID.
     for p in /proc/asound/card[0-9]*/id; do
         [[ -r "$p" ]] || continue
         id="${p%/id}"; id="${id##*card}"
-        if grep -Fq 'X1E80100' "/proc/asound/card${id}/id" 2>/dev/null &&
-           grep -Fq "$CARD_EXPECT" /proc/asound/cards 2>/dev/null; then
+        if grep -Fq "$CARD_EXPECT" /proc/asound/cards 2>/dev/null; then
             printf '%s\n' "$id"
             return 0
         fi
@@ -57,41 +59,35 @@ ctl_exists(){ amixer -c "$CARD" cget "name='$1'" >/dev/null 2>&1; }
 ctl_value(){
     amixer -c "$CARD" cget "name='$1'" 2>/dev/null | awk -F= '/: values=/{print $2; exit}'
 }
-ctl_db(){
-    # Linux WSA884x exposes -9 dB base plus 1.5 dB per raw PA step.
-    local name="$1" raw
-    raw="$(ctl_value "$name")"
-    awk -v v="$raw" 'BEGIN { printf "%.1f dB", -9.0 + (1.5 * v) }'
+ctl_meta(){
+    amixer -c "$CARD" cget "name='$1'" 2>/dev/null | awk '/; type=/{print; exit}' | sed 's/^[[:space:]]*//'
 }
 
+PA_LEFT='SpkrLeft PA Volume'
+PA_RIGHT='SpkrRight PA Volume'
+DIG0='WSA_RX0 Digital Volume'
+DIG1='WSA_RX1 Digital Volume'
+
 for c in \
-    'SpkrLeft PA Volume' 'SpkrRight PA Volume' \
+    "$PA_LEFT" "$PA_RIGHT" "$DIG0" "$DIG1" \
     'SpkrLeft COMP Switch' 'SpkrRight COMP Switch' \
     'SpkrLeft BOOST Switch' 'SpkrRight BOOST Switch' \
     'SpkrLeft DAC Switch' 'SpkrRight DAC Switch' \
     'SpkrLeft PBR Switch' 'SpkrRight PBR Switch'; do
-    ctl_exists "$c" || die "required WSA884x mixer control missing: $c"
+    ctl_exists "$c" || die "required A14 speaker mixer control missing: $c"
 done
 
-show_status(){
-    local l r
-    l="$(ctl_value 'SpkrLeft PA Volume')"
-    r="$(ctl_value 'SpkrRight PA Volume')"
-    say "A14_SPEAKER_GAIN_STATUS=OK"
-    say "card=$CARD"
-    say "card_name=$CARD_EXPECT"
-    say "left_pa_raw=$l"
-    say "right_pa_raw=$r"
-    say "left_pa_gain=$(ctl_db 'SpkrLeft PA Volume')"
-    say "right_pa_gain=$(ctl_db 'SpkrRight PA Volume')"
-    say "upstream_baseline_raw=$BASELINE"
-    say "upstream_baseline_gain=$(awk -v v="$BASELINE" 'BEGIN { printf "%.1f dB", -9.0 + 1.5*v }')"
-    say "default_a14_raw=$DEFAULT"
-    say "default_a14_gain=$(awk -v v="$DEFAULT" 'BEGIN { printf "%.1f dB", -9.0 + 1.5*v }')"
-    for c in 'COMP' 'BOOST' 'DAC' 'PBR'; do
-        say "left_${c,,}=$(ctl_value "SpkrLeft $c Switch")"
-        say "right_${c,,}=$(ctl_value "SpkrRight $c Switch")"
-    done
+pa_db(){
+    # WSA884x PA TLV is -9 dB + 1.5 dB per exposed ALSA step.
+    local raw="$1"
+    awk -v v="$raw" 'BEGIN { printf "%.1f dB", -9.0 + (1.5 * v) }'
+}
+
+digital_db(){
+    # SOC_SINGLE_S8_TLV exposes -84..+40 dB as user values 0..124,
+    # therefore exposed user value 84 is 0 dB.
+    local raw="$1"
+    awk -v v="$raw" -v z="$DIGITAL_ZERO" 'BEGIN { printf "%+.1f dB", v-z }'
 }
 
 verify_protection(){
@@ -99,31 +95,93 @@ verify_protection(){
     for c in COMP BOOST DAC PBR; do
         l="$(ctl_value "SpkrLeft $c Switch")"
         r="$(ctl_value "SpkrRight $c Switch")"
-        case "$l" in 1|on) ;; *) die "speaker protection/routing '$c' is not enabled on left amp (L=$l); refusing gain change" ;; esac
-        case "$r" in 1|on) ;; *) die "speaker protection/routing '$c' is not enabled on right amp (R=$r); refusing gain change" ;; esac
+        case "$l" in 1|on) ;; *) die "speaker '$c' is not enabled on left amp (L=$l); refusing gain change" ;; esac
+        case "$r" in 1|on) ;; *) die "speaker '$c' is not enabled on right amp (R=$r); refusing gain change" ;; esac
     done
 }
 
-set_gain(){
-    local level="$1"
-    [[ "$level" =~ ^[0-9]+$ ]] || die "gain must be an integer raw PA value"
-    (( level >= MIN_SAFE && level <= MAX_SAFE )) ||
-        die "refusing PA value $level; staged A14 range is $MIN_SAFE..$MAX_SAFE"
+show_status(){
+    local pl pr d0 d1
+    pl="$(ctl_value "$PA_LEFT")"
+    pr="$(ctl_value "$PA_RIGHT")"
+    d0="$(ctl_value "$DIG0")"
+    d1="$(ctl_value "$DIG1")"
+
+    say "A14_SPEAKER_GAIN_STATUS=OK"
+    say "card=$CARD"
+    say "card_name=$CARD_EXPECT"
+    say "pa_volume_owner=PipeWire_ALSA_normal_volume"
+    say "left_pa_raw=$pl"
+    say "right_pa_raw=$pr"
+    say "left_pa_gain=$(pa_db "$pl")"
+    say "right_pa_gain=$(pa_db "$pr")"
+    say "wsa_rx0_raw=$d0"
+    say "wsa_rx1_raw=$d1"
+    say "wsa_rx0_gain=$(digital_db "$d0")"
+    say "wsa_rx1_gain=$(digital_db "$d1")"
+    say "wsa_digital_zero_raw=$DIGITAL_ZERO"
+    say "default_extra_gain=${DEFAULT_DB}dB"
+    say "pa_meta=$(ctl_meta "$PA_LEFT")"
+    say "digital_meta=$(ctl_meta "$DIG0")"
+    for c in COMP BOOST DAC PBR; do
+        say "left_${c,,}=$(ctl_value "SpkrLeft $c Switch")"
+        say "right_${c,,}=$(ctl_value "SpkrRight $c Switch")"
+    done
+}
+
+set_digital_gain(){
+    local db="$1" target before0 before1 after0 after1
+    [[ "$db" =~ ^[0-9]+$ ]] || die "extra gain must be an integer number of dB"
+    (( db >= MIN_DB && db <= MAX_DB )) ||
+        die "refusing +${db} dB; staged A14 test range is +${MIN_DB}..+${MAX_DB} dB"
+
     verify_protection
+    before0="$(ctl_value "$DIG0")"
+    before1="$(ctl_value "$DIG1")"
 
-    say "before_left_raw=$(ctl_value 'SpkrLeft PA Volume')"
-    say "before_right_raw=$(ctl_value 'SpkrRight PA Volume')"
-    amixer -q -c "$CARD" cset "name='SpkrLeft PA Volume'" "$level"
-    amixer -q -c "$CARD" cset "name='SpkrRight PA Volume'" "$level"
+    # Refuse to stack our offset on an unknown pre-existing digital boost.
+    # A previously applied value from this helper is allowed so apply/test is
+    # deterministic rather than cumulative.
+    if (( before0 < DIGITAL_ZERO || before0 > DIGITAL_ZERO + MAX_DB ||
+          before1 < DIGITAL_ZERO || before1 > DIGITAL_ZERO + MAX_DB )); then
+        die "unexpected WSA digital baseline (RX0=$before0 RX1=$before1); expected $DIGITAL_ZERO..$((DIGITAL_ZERO + MAX_DB))"
+    fi
 
-    [[ "$(ctl_value 'SpkrLeft PA Volume')" == "$level" ]] || die "left PA gain did not latch"
-    [[ "$(ctl_value 'SpkrRight PA Volume')" == "$level" ]] || die "right PA gain did not latch"
+    target=$((DIGITAL_ZERO + db))
+    say "before_wsa_rx0_raw=$before0"
+    say "before_wsa_rx1_raw=$before1"
+    say "before_wsa_rx0_gain=$(digital_db "$before0")"
+    say "before_wsa_rx1_gain=$(digital_db "$before1")"
+
+    amixer -q -c "$CARD" cset "name='$DIG0'" "$target"
+    amixer -q -c "$CARD" cset "name='$DIG1'" "$target"
+
+    after0="$(ctl_value "$DIG0")"
+    after1="$(ctl_value "$DIG1")"
+    [[ "$after0" == "$target" ]] || die "WSA_RX0 digital gain did not latch (wanted=$target got=$after0)"
+    [[ "$after1" == "$target" ]] || die "WSA_RX1 digital gain did not latch (wanted=$target got=$after1)"
+
     say "A14_SPEAKER_GAIN_APPLIED=1"
-    say "pa_raw=$level"
-    say "pa_gain=$(awk -v v="$level" 'BEGIN { printf "%.1f dB", -9.0 + 1.5*v }')"
-    say "delta_from_upstream=$(awk -v v="$level" -v b="$BASELINE" 'BEGIN { printf "%+.1f dB", 1.5*(v-b) }')"
-    say "pipewire_software_boost=not_used"
+    say "extra_gain=+${db}dB"
+    say "wsa_rx0_raw=$after0"
+    say "wsa_rx1_raw=$after1"
+    say "wsa_rx0_gain=$(digital_db "$after0")"
+    say "wsa_rx1_gain=$(digital_db "$after1")"
+    say "pa_volume_controls_untouched=yes"
+    say "pipewire_volume_slider_preserved=yes"
     say "left_right_locked=yes"
+}
+
+restore_gain(){
+    amixer -q -c "$CARD" cset "name='$DIG0'" "$DIGITAL_ZERO"
+    amixer -q -c "$CARD" cset "name='$DIG1'" "$DIGITAL_ZERO"
+    [[ "$(ctl_value "$DIG0")" == "$DIGITAL_ZERO" ]] || die "WSA_RX0 restore did not latch"
+    [[ "$(ctl_value "$DIG1")" == "$DIGITAL_ZERO" ]] || die "WSA_RX1 restore did not latch"
+    say "A14_SPEAKER_GAIN_RESTORED=1"
+    say "wsa_rx0_raw=$DIGITAL_ZERO"
+    say "wsa_rx1_raw=$DIGITAL_ZERO"
+    say "digital_gain=+0.0dB"
+    say "pa_volume_controls_untouched=yes"
 }
 
 case "$ACTION" in
@@ -131,21 +189,15 @@ case "$ACTION" in
         show_status
         ;;
     apply)
-        set_gain "$DEFAULT"
+        set_digital_gain "$DEFAULT_DB"
         ;;
     test)
-        set_gain "$REQUESTED"
+        set_digital_gain "$REQUESTED_DB"
         ;;
     restore)
-        # Restore the exact shared-UCM speaker PA setting. Do not require the
-        # protection switches here: restore must remain available even if the
-        # speaker route is currently inactive.
-        amixer -q -c "$CARD" cset "name='SpkrLeft PA Volume'" "$BASELINE"
-        amixer -q -c "$CARD" cset "name='SpkrRight PA Volume'" "$BASELINE"
-        say "A14_SPEAKER_GAIN_RESTORED=1"
-        say "pa_raw=$BASELINE"
+        restore_gain
         ;;
     *)
-        die "usage: $0 {status|apply|test [12..16]|restore}"
+        die "usage: $0 {status|apply|test [0..6 dB]|restore}"
         ;;
 esac
