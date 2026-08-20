@@ -99,14 +99,16 @@ def main() -> None:
         print("speaker_protection_v1=current")
         return
 
-    check = run("git", "apply", "--check", "--ignore-space-change", str(patch),
-                cwd=src, check=False)
+    # This patch is maintained as an auditable hand-written unified diff.  Its
+    # semantic hunk bodies are authoritative; let Git recompute hunk line counts
+    # so stale header counts cannot make an otherwise valid patch look corrupt.
+    apply_args = ("git", "apply", "--recount", "--ignore-space-change")
+    check = run(*apply_args, "--check", str(patch), cwd=src, check=False)
     if check.returncode:
         sys.stdout.write(check.stdout)
         die("A14 VISENSE patch does not apply cleanly to exact Linux 7.1.5")
 
-    apply = run("git", "apply", "--ignore-space-change", str(patch), cwd=src,
-                check=False)
+    apply = run(*apply_args, str(patch), cwd=src, check=False)
     if apply.returncode:
         sys.stdout.write(apply.stdout)
         die("git apply failed")
