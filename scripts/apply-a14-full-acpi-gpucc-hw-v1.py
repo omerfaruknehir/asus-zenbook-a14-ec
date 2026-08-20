@@ -9,15 +9,18 @@ Prerequisites already proven on this machine:
   * no-MMIO GPU/GMU/GPUCC topology bridge
   * GPUCC child resource 0x03d90000 + 0xa000 is inside firmware GFX_REGS
 
-This layer deliberately does NOT bind GMU or Adreno.  It makes the existing
+This layer deliberately does NOT bind GMU or Adreno. It makes the existing
 X1E80100 GPUCC driver usable by the synthetic ACPI GPUCC child, supplies its
 three external input clocks, registers the stock GPUCC clocks/resets/GDSCs,
 and skips only OF-provider publication when no OF node exists.
 
-The two GCC GPU parent clocks are real MMIO-backed gates at the native X1E80100
-GCC register 0x52000 (physical 0x00152000), bits 15 and 16.  Their parent rates
-are the fixed X1E80100 GPLL0 topology also measured on this exact machine under
-the known-good DT kernel: 600 MHz main and 300 MHz /2.  bi_tcxo_div2 is 19.2 MHz.
+The GCC-side bridge is hardware-backed: it maps only GCC 0x00100000..0x00152fff,
+registers the native fixed Lucid-OLE GPLL0, its native /2 post-divider, and the
+two native GPU branch gates at GCC register 0x52000 bits 15/16. The only fixed
+external model is bi_tcxo_div2 at 19.2 MHz, which is itself a fixed-factor clock
+in the X1E80100 DT. The bridge refuses GPUCC bring-up unless hardware GPLL0
+recalculates to the exact 600 MHz / 300 MHz rates independently measured on
+this machine's known-good DT kernel.
 """
 
 from pathlib import Path
@@ -99,15 +102,16 @@ def verify(root: Path) -> None:
     gpucc_req = [
         MARKER,
         '"a14-gpucc-x1e80100-acpi-topology"',
-        "A14_GPUCC_GCC_GATE_PHYS",
-        "0x00152000ULL",
-        "A14_GPUCC_BI_TCXO_DIV2_RATE",
-        "19200000UL",
-        "A14_GPUCC_GPLL0_RATE",
-        "600000000UL",
+        "A14_GPUCC_GCC_BASE",
+        "0x00100000ULL",
+        "A14_GPUCC_GCC_MAP_SIZE",
+        "0x00053000ULL",
+        "clk_alpha_pll_fixed_lucid_ole_ops",
+        "clk_alpha_pll_postdiv_lucid_ole_ops",
         '"a14_gcc_gpu_gpll0_cph_clk_src"',
         '"a14_gcc_gpu_gpll0_div_cph_clk_src"',
-        "devm_clk_hw_register_gate_parent_hw",
+        "A14_GPUCC_EXPECTED_GPLL0_RATE",
+        "600000000UL",
         "device_create_managed_software_node",
         "A14GPUCC: READY",
     ]
@@ -115,8 +119,6 @@ def verify(root: Path) -> None:
         if x not in gpucc:
             fail(f"GPUCC verification missing: {x}")
 
-    # Every external X1E80100 GPUCC parent must retain its DT index while also
-    # gaining a global-name fallback for the no-OF ACPI path.
     if '.index = DT_BI_TCXO, .name = "a14_gpucc_bi_tcxo_div2"' not in gpucc:
         fail("BI_TCXO parent fallback missing")
     if '.index = DT_GPLL0_OUT_MAIN, .name = "a14_gcc_gpu_gpll0_cph_clk_src"' not in gpucc:
@@ -127,18 +129,13 @@ def verify(root: Path) -> None:
     common_req = [
         COMMON_MARKER,
         "reset->rcdev.dev = dev;",
-        "if (dev->of_node)",
         "A14QCOMCC: non-OF clock registration",
     ]
     for x in common_req:
         if x not in common:
             fail(f"common.c verification missing: {x}")
 
-    gdsc_req = [
-        GDSC_MARKER,
-        "A14GDSC: initialized",
-        "if (!dev->of_node)",
-    ]
+    gdsc_req = [GDSC_MARKER, "A14GDSC: initialized", "if (!dev->of_node)"]
     for x in gdsc_req:
         if x not in gdsc:
             fail(f"gdsc.c verification missing: {x}")
@@ -164,8 +161,6 @@ def main() -> None:
         if not path.is_file():
             fail(f"missing {path}")
 
-    # GPUCC needs MMIO for the two native GCC branch gates and a managed
-    # software-node fwnode so the reset framework can identify the provider.
     replace_once(
         gpucc,
         '#include <linux/clk-provider.h>\n#include <linux/mod_devicetable.h>\n',
@@ -173,9 +168,8 @@ def main() -> None:
         "gpucc_acpi_headers",
     )
 
-    # Preserve the normal DT index and add the CCF global-name fallback used
-    # only when there is no OF clock specifier.  Internal PLL parents remain
-    # direct .hw references and are untouched.
+    # Keep the normal DT index and add the CCF global-name fallback used when
+    # there is no OF clock specifier. Internal PLL parents remain direct .hw.
     replace_all(
         gpucc,
         '{ .index = DT_BI_TCXO },',
@@ -200,97 +194,203 @@ def main() -> None:
  * A14_X1E80100_GPUCC_ACPI_HW_V1
  *
  * WoA ACPI exposes GPU0 as one QCOM0C36 device, not as GCC/GPUCC DT clock
- * providers.  The GPUCC register window is nevertheless a firmware-validated
- * subrange of GPU0 GFX_REGS.  Recreate only GPUCC's three external parents:
+ * providers. Recreate only the real X1E80100 GCC pieces GPUCC consumes.
  *
- *   bi_tcxo_div2                         19.2 MHz
- *   GCC_GPU_GPLL0_CPH_CLK_SRC           600 MHz, GCC 0x52000 bit 15
- *   GCC_GPU_GPLL0_DIV_CPH_CLK_SRC       300 MHz, GCC 0x52000 bit 16
- *
- * The 600/300 MHz topology is native X1E80100 GPLL0 + /2 and is independently
- * measured on this exact machine under the known-good DT kernel.  The branch
- * clocks below are real MMIO gates, not fixed fake GPU clocks.  CLK_IGNORE_UNUSED
- * is staging-only protection while GMU/Adreno consumers are intentionally not
- * bound yet.
+ * The mini GCC resource covers GPLL0 at +0x0000, its enable vote at +0x52030,
+ * and the two GPU branch bits at +0x52000. GPLL0 and its /2 output use the
+ * exact native qcom clock ops; only bi_tcxo_div2 is represented as the fixed
+ * 19.2 MHz external clock it is in the X1E80100 DT.
  */
-#define A14_GPUCC_GCC_GATE_PHYS		0x00152000ULL
-#define A14_GPUCC_BI_TCXO_DIV2_RATE	19200000UL
-#define A14_GPUCC_GPLL0_RATE		600000000UL
+#define A14_GPUCC_GCC_BASE			0x00100000ULL
+#define A14_GPUCC_GCC_MAP_SIZE			0x00053000ULL
+#define A14_GPUCC_BI_TCXO_DIV2_RATE		19200000UL
+#define A14_GPUCC_EXPECTED_GPLL0_RATE		600000000UL
+#define A14_GPUCC_EXPECTED_GPLL0_DIV2_RATE	300000000UL
 
-struct a14_gpucc_parent_bridge {
-	void __iomem *gcc_gate_reg;
-	struct clk_hw *bi_tcxo_div2;
-	struct clk_hw *gpll0;
-	struct clk_hw *gpll0_div2;
-	struct clk_hw *gpll0_gpu_gate;
-	struct clk_hw *gpll0_div_gpu_gate;
+static struct clk_alpha_pll a14_gcc_gpll0 = {
+	.offset = 0x0,
+	.regs = clk_alpha_pll_regs[CLK_ALPHA_PLL_TYPE_LUCID_OLE],
+	.clkr = {
+		.enable_reg = 0x52030,
+		.enable_mask = BIT(0),
+		.hw.init = &(const struct clk_init_data) {
+			.name = "a14_gpucc_gpll0",
+			.parent_data = &(const struct clk_parent_data) {
+				.name = "a14_gpucc_bi_tcxo_div2",
+			},
+			.num_parents = 1,
+			.ops = &clk_alpha_pll_fixed_lucid_ole_ops,
+		},
+	},
 };
 
-static int a14_gpucc_register_parent_bridge(struct platform_device *pdev)
-{
-	struct device *dev = &pdev->dev;
-	struct a14_gpucc_parent_bridge *b;
-	u32 gate_state;
+static const struct clk_div_table a14_gpll0_even_table[] = {
+	{ 0x1, 2 },
+	{ }
+};
 
-	b = devm_kzalloc(dev, sizeof(*b), GFP_KERNEL);
-	if (!b)
+static struct clk_alpha_pll_postdiv a14_gcc_gpll0_out_even = {
+	.offset = 0x0,
+	.post_div_shift = 10,
+	.post_div_table = a14_gpll0_even_table,
+	.num_post_div = ARRAY_SIZE(a14_gpll0_even_table),
+	.width = 4,
+	.regs = clk_alpha_pll_regs[CLK_ALPHA_PLL_TYPE_LUCID_OLE],
+	.clkr.hw.init = &(const struct clk_init_data) {
+		.name = "a14_gpucc_gpll0_out_even",
+		.parent_hws = (const struct clk_hw *[]) {
+			&a14_gcc_gpll0.clkr.hw,
+		},
+		.num_parents = 1,
+		.ops = &clk_alpha_pll_postdiv_lucid_ole_ops,
+	},
+};
+
+static struct clk_branch a14_gcc_gpu_gpll0_cph_clk_src = {
+	.halt_reg = 0x52000,
+	.halt_check = BRANCH_HALT_DELAY,
+	.clkr = {
+		.enable_reg = 0x52000,
+		.enable_mask = BIT(15),
+		.hw.init = &(const struct clk_init_data) {
+			.name = "a14_gcc_gpu_gpll0_cph_clk_src",
+			.parent_hws = (const struct clk_hw *[]) {
+				&a14_gcc_gpll0.clkr.hw,
+			},
+			.num_parents = 1,
+			.flags = CLK_SET_RATE_PARENT | CLK_IGNORE_UNUSED,
+			.ops = &clk_branch2_ops,
+		},
+	},
+};
+
+static struct clk_branch a14_gcc_gpu_gpll0_div_cph_clk_src = {
+	.halt_reg = 0x52000,
+	.halt_check = BRANCH_HALT_DELAY,
+	.clkr = {
+		.enable_reg = 0x52000,
+		.enable_mask = BIT(16),
+		.hw.init = &(const struct clk_init_data) {
+			.name = "a14_gcc_gpu_gpll0_div_cph_clk_src",
+			.parent_hws = (const struct clk_hw *[]) {
+				&a14_gcc_gpll0_out_even.clkr.hw,
+			},
+			.num_parents = 1,
+			.flags = CLK_SET_RATE_PARENT | CLK_IGNORE_UNUSED,
+			.ops = &clk_branch2_ops,
+		},
+	},
+};
+
+static const struct regmap_config a14_gcc_gpu_parent_regmap_config = {
+	.reg_bits = 32,
+	.reg_stride = 4,
+	.val_bits = 32,
+	.max_register = 0x52030,
+	.fast_io = true,
+};
+
+struct a14_gpucc_parent_bridge {
+	struct platform_device *pdev;
+};
+
+static void a14_gpucc_unregister_gcc_bridge(void *data)
+{
+	platform_device_unregister(data);
+}
+
+static int a14_gpucc_register_parent_bridge(struct platform_device *gpucc_pdev)
+{
+	struct device *dev = &gpucc_pdev->dev;
+	struct a14_gpucc_parent_bridge *bridge;
+	struct platform_device *pdev;
+	struct resource res = DEFINE_RES_MEM(A14_GPUCC_GCC_BASE,
+					     A14_GPUCC_GCC_MAP_SIZE);
+	void __iomem *base;
+	struct regmap *regmap;
+	struct clk_hw *xo;
+	unsigned long main_rate, div_rate;
+	u32 gate_state, pll_vote_state;
+	int ret;
+
+	bridge = devm_kzalloc(dev, sizeof(*bridge), GFP_KERNEL);
+	if (!bridge)
 		return -ENOMEM;
 
-	/* GCC is not separately described by WoA ACPI.  Map only its GPU vote
-	 * register, whose address/bit assignments come from the native X1E80100
-	 * GCC driver.  No other GCC register is exposed by this bridge.
-	 */
-	b->gcc_gate_reg = devm_ioremap(dev, A14_GPUCC_GCC_GATE_PHYS, sizeof(u32));
-	if (!b->gcc_gate_reg)
-		return dev_err_probe(dev, -ENOMEM, "A14GPUCC: failed to map GCC GPU gate register\n");
+	pdev = platform_device_alloc("a14-gcc-gpu-parent-bridge", PLATFORM_DEVID_NONE);
+	if (!pdev)
+		return -ENOMEM;
+	pdev->dev.parent = dev;
 
-	b->bi_tcxo_div2 = devm_clk_hw_register_fixed_rate(dev,
-					"a14_gpucc_bi_tcxo_div2", NULL, 0,
-					A14_GPUCC_BI_TCXO_DIV2_RATE);
-	if (IS_ERR(b->bi_tcxo_div2))
-		return dev_err_probe(dev, PTR_ERR(b->bi_tcxo_div2),
+	ret = platform_device_add_resources(pdev, &res, 1);
+	if (ret)
+		goto err_put;
+	ret = platform_device_add(pdev);
+	if (ret)
+		goto err_put;
+
+	bridge->pdev = pdev;
+	ret = devm_add_action_or_reset(dev, a14_gpucc_unregister_gcc_bridge, pdev);
+	if (ret)
+		return ret;
+
+	base = devm_platform_ioremap_resource(pdev, 0);
+	if (IS_ERR(base))
+		return dev_err_probe(dev, PTR_ERR(base),
+				     "A14GPUCC: failed to map mini GCC resource\n");
+
+	regmap = devm_regmap_init_mmio(&pdev->dev, base,
+					&a14_gcc_gpu_parent_regmap_config);
+	if (IS_ERR(regmap))
+		return dev_err_probe(dev, PTR_ERR(regmap),
+				     "A14GPUCC: failed to create mini GCC regmap\n");
+
+	xo = devm_clk_hw_register_fixed_rate(&pdev->dev,
+					     "a14_gpucc_bi_tcxo_div2", NULL, 0,
+					     A14_GPUCC_BI_TCXO_DIV2_RATE);
+	if (IS_ERR(xo))
+		return dev_err_probe(dev, PTR_ERR(xo),
 				     "A14GPUCC: failed to register bi_tcxo_div2\n");
 
-	/* X1E80100 GPLL0 is a fixed PLL in the native GCC driver. */
-	b->gpll0 = devm_clk_hw_register_fixed_rate(dev,
-					   "a14_gpucc_gpll0", NULL, 0,
-					   A14_GPUCC_GPLL0_RATE);
-	if (IS_ERR(b->gpll0))
-		return dev_err_probe(dev, PTR_ERR(b->gpll0),
-				     "A14GPUCC: failed to register GPLL0 model\n");
+	ret = devm_clk_register_regmap(&pdev->dev, &a14_gcc_gpll0.clkr);
+	if (ret)
+		return dev_err_probe(dev, ret, "A14GPUCC: failed to register GPLL0\n");
+	ret = devm_clk_register_regmap(&pdev->dev, &a14_gcc_gpll0_out_even.clkr);
+	if (ret)
+		return dev_err_probe(dev, ret, "A14GPUCC: failed to register GPLL0 /2\n");
+	ret = devm_clk_register_regmap(&pdev->dev, &a14_gcc_gpu_gpll0_cph_clk_src.clkr);
+	if (ret)
+		return dev_err_probe(dev, ret, "A14GPUCC: failed to register GPLL0 GPU gate\n");
+	ret = devm_clk_register_regmap(&pdev->dev, &a14_gcc_gpu_gpll0_div_cph_clk_src.clkr);
+	if (ret)
+		return dev_err_probe(dev, ret, "A14GPUCC: failed to register GPLL0 /2 GPU gate\n");
 
-	b->gpll0_div2 = devm_clk_hw_register_fixed_factor_parent_hw(dev,
-						"a14_gpucc_gpll0_out_even",
-						b->gpll0, 0, 1, 2);
-	if (IS_ERR(b->gpll0_div2))
-		return dev_err_probe(dev, PTR_ERR(b->gpll0_div2),
-				     "A14GPUCC: failed to register GPLL0 /2\n");
+	main_rate = clk_hw_get_rate(&a14_gcc_gpll0.clkr.hw);
+	div_rate = clk_hw_get_rate(&a14_gcc_gpll0_out_even.clkr.hw);
+	if (main_rate != A14_GPUCC_EXPECTED_GPLL0_RATE ||
+	    div_rate != A14_GPUCC_EXPECTED_GPLL0_DIV2_RATE)
+		return dev_err_probe(dev, -EINVAL,
+				     "A14GPUCC: refusing GPUCC: GPLL0 rates %lu/%lu, expected %lu/%lu\n",
+				     main_rate, div_rate,
+				     A14_GPUCC_EXPECTED_GPLL0_RATE,
+				     A14_GPUCC_EXPECTED_GPLL0_DIV2_RATE);
 
-	b->gpll0_gpu_gate = devm_clk_hw_register_gate_parent_hw(dev,
-					"a14_gcc_gpu_gpll0_cph_clk_src",
-					b->gpll0,
-					CLK_SET_RATE_PARENT | CLK_IGNORE_UNUSED,
-					b->gcc_gate_reg, 15, 0, NULL);
-	if (IS_ERR(b->gpll0_gpu_gate))
-		return dev_err_probe(dev, PTR_ERR(b->gpll0_gpu_gate),
-				     "A14GPUCC: failed to register GPLL0 GPU gate\n");
+	ret = regmap_read(regmap, 0x52000, &gate_state);
+	if (ret)
+		return ret;
+	ret = regmap_read(regmap, 0x52030, &pll_vote_state);
+	if (ret)
+		return ret;
 
-	b->gpll0_div_gpu_gate = devm_clk_hw_register_gate_parent_hw(dev,
-					"a14_gcc_gpu_gpll0_div_cph_clk_src",
-					b->gpll0_div2,
-					CLK_SET_RATE_PARENT | CLK_IGNORE_UNUSED,
-					b->gcc_gate_reg, 16, 0, NULL);
-	if (IS_ERR(b->gpll0_div_gpu_gate))
-		return dev_err_probe(dev, PTR_ERR(b->gpll0_div_gpu_gate),
-				     "A14GPUCC: failed to register GPLL0 /2 GPU gate\n");
-
-	gate_state = readl(b->gcc_gate_reg);
 	dev_info(dev,
-		 "A14GPUCC: parent bridge READY xo=%lu gpll0=%lu div2=%lu gcc_0x52000=0x%08x\n",
-		 A14_GPUCC_BI_TCXO_DIV2_RATE, A14_GPUCC_GPLL0_RATE,
-		 A14_GPUCC_GPLL0_RATE / 2, gate_state);
-
+		 "A14GPUCC: native GCC parent bridge READY xo=%lu gpll0=%lu div2=%lu gate=0x%08x pll_vote=0x%08x\n",
+		 A14_GPUCC_BI_TCXO_DIV2_RATE, main_rate, div_rate,
+		 gate_state, pll_vote_state);
 	return 0;
+
+err_put:
+	platform_device_put(pdev);
+	return ret;
 }
 
 '''
@@ -322,9 +422,9 @@ static int a14_gpucc_register_parent_bridge(struct platform_device *pdev)
         "gpucc_acpi_driver_id_table",
     )
 
-    # qcom_cc_really_probe(): DT behavior is byte-for-byte preserved in the DT
-    # branch.  A no-OF clock controller has no firmware parent-PD list and no OF
-    # clock provider to publish, but its CCF clocks/resets/GDSCs are still real.
+    # Preserve DT behavior. A no-OF clock controller has no firmware parent-PD
+    # list and no OF clock provider to publish, but its CCF clocks/resets/GDSCs
+    # remain real kernel objects.
     replace_once(
         common,
         '''\tret = devm_pm_domain_attach_list(dev, NULL, &cc->pd_list);\n\tif (ret < 0 && ret != -EEXIST)\n\t\treturn ret;\n''',
@@ -353,9 +453,8 @@ static int a14_gpucc_register_parent_bridge(struct platform_device *pdev)
         "qcom_cc_non_of_clock_provider",
     )
 
-    # GDSCs are fully initialized and retain their real regmap/reset operations;
-    # only OF provider publication is skipped for a no-OF device.  Later GMU
-    # ACPI adaptation can attach these already-live domains directly.
+    # Fully initialize real GDSCs; only OF publication is absent for the ACPI
+    # staging child. Later GMU ACPI adaptation can attach these domains directly.
     replace_once(
         gdsc,
         '''\treturn of_genpd_add_provider_onecell(dev->of_node, data);\n\nerr_pm_subdomain_remove:\n''',
@@ -373,8 +472,11 @@ static int a14_gpucc_register_parent_bridge(struct platform_device *pdev)
     verify(root)
     print("A14_X1E80100_GPUCC_ACPI_HW_V1=APPLIED")
     print("gpucc_mmio=0x03d90000+0x0000a000_firmware_validated_subrange")
-    print("gcc_gpu_gate_mmio=0x00152000_bits_15_16_native_x1e80100")
-    print("parent_rates=19.2MHz_600MHz_300MHz_dt_baseline")
+    print("gcc_mini_mmio=0x00100000+0x00053000_native_x1e80100")
+    print("gcc_gpll0=native_lucid_ole_hardware_model")
+    print("gcc_gpll0_div2=native_lucid_ole_postdiv")
+    print("gcc_gpu_gates=real_regmap_branches_bits_15_16")
+    print("gpll0_runtime_rate_guard=600MHz_300MHz")
     print("stock_gpucc_pll_clock_setup=enabled")
     print("stock_gpucc_gdsc_init=enabled")
     print("of_provider_for_acpi=skipped")
