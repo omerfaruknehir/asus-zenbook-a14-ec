@@ -159,6 +159,22 @@ installed_module_path(){
     readlink -f "$p"
 }
 
+canonical_module_root(){
+    local root
+    root="$(readlink -f "/lib/modules/$KREL" 2>/dev/null || true)"
+    [[ -n "$root" && -d "$root" ]] || return 1
+    printf '%s\n' "$root"
+}
+
+validate_installed_module_path(){
+    local label="$1" path="$2" root
+    root="$(canonical_module_root)" || die "cannot resolve canonical module root for $KREL"
+    case "$path" in
+        "$root"/*) ;;
+        *) die "unexpected $label path outside $root: $path" ;;
+    esac
+}
+
 pack_like(){
     local target="$1" src="$2" dest="$3"
     case "$target" in
@@ -316,8 +332,10 @@ install_fix(){
     msm_target="$(installed_module_path msm)" || die "cannot locate installed msm module for $KREL"
     gpucc_target="$(installed_module_path gpucc_x1e80100)" || die "cannot locate installed gpucc_x1e80100 module for $KREL"
 
-    case "$msm_target" in /lib/modules/$KREL/*) ;; *) die "unexpected msm path: $msm_target" ;; esac
-    case "$gpucc_target" in /lib/modules/$KREL/*) ;; *) die "unexpected gpucc path: $gpucc_target" ;; esac
+    validate_installed_module_path msm "$msm_target"
+    validate_installed_module_path gpucc "$gpucc_target"
+    module_root="$(canonical_module_root)" || die "cannot resolve canonical module root for $KREL"
+    say "canonical_module_root=$module_root"
 
     msm_backup="$msm_target.pre-gpucc-live-v1"
     gpucc_backup="$gpucc_target.pre-gpucc-live-v1"
@@ -373,6 +391,8 @@ restore_previous(){
 
     msm_target="$(installed_module_path msm)" || die "cannot locate installed msm module"
     gpucc_target="$(installed_module_path gpucc_x1e80100)" || die "cannot locate installed gpucc module"
+    validate_installed_module_path msm "$msm_target"
+    validate_installed_module_path gpucc "$gpucc_target"
     msm_backup="$msm_target.pre-gpucc-live-v1"
     gpucc_backup="$gpucc_target.pre-gpucc-live-v1"
 
