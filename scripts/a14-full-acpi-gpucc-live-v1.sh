@@ -2,11 +2,14 @@
 # SPDX-License-Identifier: GPL-2.0-only
 # First live GPUCC stage for ASUS Zenbook A14 QCOM0C36 ACPI on Linux 7.1.5.
 #
-# Rebuilds:
+# Rebuilds only what this stage changes:
 #   * Image, because qcom/common.c + gdsc.c are built in on this config
 #   * msm.ko, because QCOM0C36 topology creates the GPUCC child/proxy parents
 #   * gpucc-x1e80100.ko, because it gains non-DT parent fallback + MMIO gate
 #
+# The full module tree is NOT rebuilt. Instead, Kbuild's normal full modpost
+# pass regenerates Module.symvers from already-built module objects, then the
+# two changed modules are finalized individually against that symbol table.
 # GPU and GMU remain deliberately unbound.
 set -euo pipefail
 
@@ -20,14 +23,19 @@ OUT="$WORK/build"
 
 IMAGE="$OUT/arch/arm64/boot/Image"
 MSM_OBJ="$OUT/drivers/gpu/drm/msm/msm_drv.o"
+MSM_LINK_OBJ="$OUT/drivers/gpu/drm/msm/msm.o"
 MSM_KO="$OUT/drivers/gpu/drm/msm/msm.ko"
 GPUCC_OBJ="$OUT/drivers/clk/qcom/gpucc-x1e80100.o"
 GPUCC_KO="$OUT/drivers/clk/qcom/gpucc-x1e80100.ko"
 COMMON_OBJ="$OUT/drivers/clk/qcom/common.o"
 GDSC_OBJ="$OUT/drivers/clk/qcom/gdsc.o"
+MODULE_SYMVERS="$OUT/Module.symvers"
+MODULES_ORDER="$OUT/modules.order"
 
 TRANSFORM="$ROOT/scripts/apply-a14-full-acpi-gpucc-live-v1.py"
 AUDIT="$ROOT/scripts/a14-acpi-gpucc-live-v1-audit.sh"
+PROGRESS="$ROOT/scripts/a14-kbuild-progress.py"
+LOGDIR="$WORK/gpucc-live-v1-build-logs"
 STAMP="$WORK/gpucc-live-v1.ready"
 
 KERNEL="/boot/vmlinuz-$KREL"
@@ -42,6 +50,31 @@ die(){ printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 need(){ command -v "$1" >/dev/null 2>&1 || die "missing command: $1"; }
 need_user(){ [[ ${EUID:-$(id -u)} -ne 0 ]] || die "build as normal user"; }
 need_root(){ [[ ${EUID:-$(id -u)} -eq 0 ]] || die "install/restore requires sudo/root"; }
+
+run_kbuild(){
+    local label="$1" logfile="$2"; shift 2
+    local -a ps
+    local rc_cmd rc_tee rc_progress
+
+    mkdir -p "$LOGDIR"
+    say "===== $label ====="
+    set +e
+    "$@" 2>&1 | tee "$logfile" | python3 "$PROGRESS" --label "$label" --logfile "$logfile"
+    ps=("${PIPESTATUS[@]}")
+    set -e
+
+    rc_cmd="${ps[0]:-1}"
+    rc_tee="${ps[1]:-1}"
+    rc_progress="${ps[2]:-1}"
+    if (( rc_cmd != 0 || rc_tee != 0 || rc_progress != 0 )); then
+        say "ERROR: build phase failed: $label" >&2
+        say "command_rc=$rc_cmd tee_rc=$rc_tee progress_rc=$rc_progress" >&2
+        say "raw_log=$logfile" >&2
+        tail -n 120 "$logfile" >&2 || true
+        return 1
+    fi
+    say "A14_BUILD_PHASE_COMPLETE=$label"
+}
 
 verify_tree(){
     [[ -f "$SRC/Makefile" && -f "$OUT/.config" && -s "$OUT/vmlinux" ]] || die "A14 build tree missing"
@@ -62,6 +95,7 @@ verify_tree(){
     grep -q 'A14_QCOM0C36_PLATFORM_ENUM_V1' "$SRC/drivers/acpi/scan.c" || die "QCOM0C36 enumeration prerequisite missing"
     grep -q 'A14_ACPI_DMA_IORT_IDS_V1' "$SRC/drivers/acpi/scan.c" || die "topology V3 IORT helper missing"
     grep -q 'A14_QCOM0C36_TOPOLOGY_V1' "$SRC/drivers/gpu/drm/msm/msm_drv.c" || die "GPU topology prerequisite missing"
+    [[ -s "$MODULES_ORDER" ]] || die "full modules.order missing; baseline module build is required"
 }
 
 verify_source(){
@@ -91,6 +125,33 @@ verify_source(){
     grep -q 'A14_GDSC_NON_OF_PROVIDER_V1' "$gdsc" || die "non-OF GDSC guard missing"
 }
 
+verify_full_module_objects(){
+    local obj missing=0 shown=0
+    while IFS= read -r obj; do
+        [[ -n "$obj" ]] || continue
+        if [[ ! -s "$OUT/$obj" ]]; then
+            ((missing += 1))
+            if (( shown < 20 )); then
+                say "missing_module_object=$obj" >&2
+                ((shown += 1))
+            fi
+        fi
+    done < "$MODULES_ORDER"
+    if (( missing != 0 )); then
+        die "modules.order references $missing missing module object(s); stop here rather than falling back to a full module rebuild"
+    fi
+    say "full_module_object_graph=VERIFIED"
+}
+
+verify_symvers(){
+    [[ -s "$MODULE_SYMVERS" ]] || die "Module.symvers missing after full modpost"
+    local sym
+    for sym in drm_dp_clock_recovery_ok drm_sched_entity_push_job drm_dsc_setup_rc_params drm_gpuvm_bo_put of_get_ocmem; do
+        grep -qw "$sym" "$MODULE_SYMVERS" || die "Module.symvers still lacks required export: $sym"
+    done
+    say "module_symvers_dependency_graph=VERIFIED"
+}
+
 installed_module_path(){
     local module="$1" p
     p="$(modinfo -k "$KREL" -n "$module" 2>/dev/null || true)"
@@ -111,9 +172,10 @@ pack_like(){
 
 build_fix(){
     need_user
-    for c in python3 make sha256sum grep modinfo nproc awk; do need "$c"; done
+    for c in python3 make sha256sum grep modinfo nproc awk tee tail; do need "$c"; done
     verify_tree
     [[ -f "$TRANSFORM" ]] || die "missing transform: $TRANSFORM"
+    [[ -f "$PROGRESS" ]] || die "missing progress helper: $PROGRESS"
 
     say "A14_GPUCC_LIVE_V1_BUILD=START"
     say "kernelrelease=$KREL"
@@ -125,34 +187,71 @@ build_fix(){
     say "gmu_live=false"
     say "gcc_live=false"
     say "rpmh_synthesized=false"
-    say "image_rebuild=true"
-    say "modules_rebuilt=msm,gpucc_x1e80100"
+    say "full_module_rebuild=false"
+    say "progress_bar=true"
+    say "modules_rebuilt=msm.ko,gpucc-x1e80100.ko_only"
 
     rm -f "$STAMP"
+    mkdir -p "$LOGDIR"
     python3 "$TRANSFORM" "$SRC"
     python3 "$TRANSFORM" "$SRC"
     verify_source
 
-    # common.c + gdsc.c are built into Image in this kernel config.
-    # Remove their objects explicitly so this build cannot silently reuse the
-    # pre-live-stage versions. Source markers were already verified above.
+    export LOCALVERSION=
+    jobs="${A14_BUILD_JOBS:-$(nproc)}"
+
+    # Phase 1: common.c + gdsc.c are built into the Image. Force only these
+    # objects stale, then let Kbuild relink the Image normally.
     rm -f "$COMMON_OBJ" "$OUT/drivers/clk/qcom/.common.o.cmd"
     rm -f "$GDSC_OBJ" "$OUT/drivers/clk/qcom/.gdsc.o.cmd"
-    export LOCALVERSION=
-    make -C "$SRC" O="$OUT" -j"${A14_BUILD_JOBS:-$(nproc)}" Image
+    run_kbuild \
+        "1/5 Image + non-OF qcom clock core" \
+        "$LOGDIR/1-image.log" \
+        make -C "$SRC" O="$OUT" -j"$jobs" Image
     [[ -s "$IMAGE" && -s "$COMMON_OBJ" && -s "$GDSC_OBJ" ]] || die "rebuilt Image/qcom objects missing"
 
-    rm -f "$MSM_OBJ" "$OUT/drivers/gpu/drm/msm/.msm_drv.o.cmd" \
-          "$OUT/drivers/gpu/drm/msm/msm.o" "$MSM_KO"
-    make -C "$SRC" O="$OUT" -j"${A14_BUILD_JOBS:-$(nproc)}" M=drivers/gpu/drm/msm modules
-    [[ -s "$MSM_KO" && -s "$MSM_OBJ" ]] || die "targeted msm.ko build missing"
+    # Phase 2: rebuild the two changed module objects only. Building .o targets
+    # does not invoke module modpost, so it is safe even though Image generation
+    # has just refreshed vmlinux.symvers.
+    rm -f "$MSM_OBJ" "$OUT/drivers/gpu/drm/msm/.msm_drv.o.cmd" "$MSM_LINK_OBJ"
+    rm -f "$GPUCC_OBJ" "$OUT/drivers/clk/qcom/.gpucc-x1e80100.o.cmd"
+    run_kbuild \
+        "2/5 Changed GPUCC/MSM module objects" \
+        "$LOGDIR/2-module-objects.log" \
+        make -C "$SRC" O="$OUT" -j"$jobs" \
+            drivers/gpu/drm/msm/msm.o \
+            drivers/clk/qcom/gpucc-x1e80100.o
+    [[ -s "$MSM_OBJ" && -s "$MSM_LINK_OBJ" && -s "$GPUCC_OBJ" ]] || die "target module objects missing after rebuild"
+
+    # Phase 3: regenerate the normal in-tree Module.symvers from the already
+    # built module object graph. This is a MODPOST pass only: no full 'modules'
+    # target, no all-module compile/final-link loop.
+    verify_full_module_objects
+    run_kbuild \
+        "3/5 Refresh full Module.symvers (modpost only)" \
+        "$LOGDIR/3-modpost.log" \
+        make -C "$SRC" O="$OUT" KBUILD_MODULES=1 modpost
+    verify_symvers
+
+    # Phases 4-5: finalize each changed module individually. M= builds import
+    # the freshly regenerated top-level Module.symvers, which supplies the DRM
+    # and other module exports that the old V1 isolated build was missing.
+    rm -f "$MSM_KO"
+    run_kbuild \
+        "4/5 Finalize msm.ko" \
+        "$LOGDIR/4-msm-ko.log" \
+        make -C "$SRC" O="$OUT" -j"$jobs" M=drivers/gpu/drm/msm msm.ko
+    [[ -s "$MSM_KO" ]] || die "targeted msm.ko build missing"
     grep -aFq 'A14GPUCC-LIVE: parent proxy' "$MSM_KO" || die "compiled msm.ko lacks parent proxies"
     grep -aFq 'gpucc_live=true' "$MSM_KO" || die "compiled msm.ko lacks live marker"
     modinfo -F alias "$MSM_KO" | grep -Fq 'QCOM0C36' || die "compiled msm.ko lacks QCOM0C36 alias"
 
-    rm -f "$GPUCC_OBJ" "$OUT/drivers/clk/qcom/.gpucc-x1e80100.o.cmd" "$GPUCC_KO"
-    make -C "$SRC" O="$OUT" -j"${A14_BUILD_JOBS:-$(nproc)}" M=drivers/clk/qcom modules
-    [[ -s "$GPUCC_KO" && -s "$GPUCC_OBJ" ]] || die "gpucc-x1e80100.ko build missing"
+    rm -f "$GPUCC_KO"
+    run_kbuild \
+        "5/5 Finalize gpucc-x1e80100.ko" \
+        "$LOGDIR/5-gpucc-ko.log" \
+        make -C "$SRC" O="$OUT" -j"$jobs" M=drivers/clk/qcom gpucc-x1e80100.ko
+    [[ -s "$GPUCC_KO" ]] || die "gpucc-x1e80100.ko build missing"
     grep -aFq 'A14GPUCC-LIVE: validated firmware-derived MMIO' "$GPUCC_KO" || die "compiled GPUCC module lacks MMIO gate"
     modinfo -F alias "$GPUCC_KO" | grep -Fq 'platform:gpucc-x1e80100' || die "compiled GPUCC module lacks platform alias"
 
@@ -165,7 +264,7 @@ build_fix(){
     msm_sha="$(sha256sum "$MSM_KO" | awk '{print $1}')"
     gpucc_sha="$(sha256sum "$GPUCC_KO" | awk '{print $1}')"
 
-    cat >"$STAMP" <<EOF
+    cat >"$STAMP" <<EOSTAMP
 kernelrelease=$KREL
 image_sha256=$image_sha
 msm_ko_sha256=$msm_sha
@@ -176,14 +275,19 @@ gmu_live=no
 gcc_live=no
 rpmh_synthesized=no
 temporary_parent_proxies=19200000,600000000,300000000
-EOF
+full_module_rebuild=no
+module_symvers_refresh=modpost-only
+progress_bar=yes
+EOSTAMP
 
     say "A14_GPUCC_LIVE_V1_BUILD=COMPLETE"
     say "image_sha256=$image_sha"
     say "msm_ko_sha256=$msm_sha"
     say "gpucc_ko_sha256=$gpucc_sha"
+    say "module_symvers=FULL_GRAPH_REFRESHED_WITHOUT_FULL_MODULE_BUILD"
     say "gpucc_platform_alias=VERIFIED"
     say "gpu_gmu_unbound=VERIFIED"
+    say "build_logs=$LOGDIR"
 }
 
 install_fix(){
