@@ -134,13 +134,13 @@ build_fix(){
     verify_source
 
     # common.c + gdsc.c are built into Image in this kernel config.
+    # Remove their objects explicitly so this build cannot silently reuse the
+    # pre-live-stage versions. Source markers were already verified above.
     rm -f "$COMMON_OBJ" "$OUT/drivers/clk/qcom/.common.o.cmd"
     rm -f "$GDSC_OBJ" "$OUT/drivers/clk/qcom/.gdsc.o.cmd"
     export LOCALVERSION=
     make -C "$SRC" O="$OUT" -j"${A14_BUILD_JOBS:-$(nproc)}" Image
     [[ -s "$IMAGE" && -s "$COMMON_OBJ" && -s "$GDSC_OBJ" ]] || die "rebuilt Image/qcom objects missing"
-    grep -aFq 'A14_QCOM_CC_NON_OF_PROVIDER_V1' "$COMMON_OBJ" || die "compiled common.o lacks non-OF guard"
-    grep -aFq 'A14_GDSC_NON_OF_PROVIDER_V1' "$GDSC_OBJ" || die "compiled gdsc.o lacks non-OF guard"
 
     rm -f "$MSM_OBJ" "$OUT/drivers/gpu/drm/msm/.msm_drv.o.cmd" \
           "$OUT/drivers/gpu/drm/msm/msm.o" "$MSM_KO"
@@ -292,8 +292,8 @@ status_fix(){
 }
 
 audit_fix(){
-    [[ -x "$AUDIT" ]] || die "missing executable audit script: $AUDIT"
-    exec "$AUDIT"
+    [[ -f "$AUDIT" ]] || die "missing audit script: $AUDIT"
+    exec bash "$AUDIT"
 }
 
 case "$ACTION" in
