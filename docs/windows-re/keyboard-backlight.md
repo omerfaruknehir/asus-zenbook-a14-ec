@@ -101,8 +101,20 @@ descriptor has Feature report 0x06 with 19 wire bytes and Feature report 0x5a
 with 17 wire bytes.  Both reports read as an all-zero report and remain
 byte-for-byte unchanged while the proven 0B05:0220 controller cycles through
 physical levels 0, 1, 2, and 3.  Therefore 4543 is not a readable brightness
-mirror.  It remains a possible independent write-only transport and must be
-tested with its own descriptor-correct report length.
+mirror.
+
+A descriptor-correct, explicitly acknowledged write test then sent
+`5a ba c5 c4 VALUE` to 4543 without initialization.  Values `00`, `01`, `02`,
+`03`, `04`, `10`, `40`, `7f`, `80`, `c0`, `fe`, and `ff` all produced
+no physical light after the proven 0220 path first selected level zero.  Both
+4543 Feature reports remained all zero, while restoring level one through 0220
+lit the keyboard immediately.  This rules out an uninitialized 4543 backlight
+transport; a session-gated transport remains untested.
+
+The next bounded test sends only the ASUS identity handshake and feature
+configuration query, using the live 17-byte geometry, before trying values
+`00..03`.  It intentionally does not send the unverified `d0 8f`, `d0 85`, or
+Fn-lock feature commands.
 
 A different undocumented report or firmware-internal control path remains
 possible.  It must be identified from the complete HID descriptor or firmware,
