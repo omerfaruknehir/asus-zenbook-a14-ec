@@ -1,0 +1,31 @@
+name: Build A14 EC readback EFI
+
+on:
+  push:
+    branches: [agent/a14-kbd-backlight-255-ec]
+    paths:
+      - 'uefi/a14-ec-readback/**'
+      - '.github/workflows/a14-ec-readback.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install AArch64 PE/COFF toolchain
+        run: sudo apt-get update && sudo apt-get install -y clang lld
+      - name: Build and audit
+        working-directory: uefi/a14-ec-readback
+        run: sh ./build.sh | tee build-report.txt
+      - name: Upload audited EFI application
+        uses: actions/upload-artifact@v4
+        with:
+          name: A14ECReadback-aarch64
+          if-no-files-found: error
+          path: |
+            uefi/a14-ec-readback/dist/A14ECReadback.efi
+            uefi/a14-ec-readback/build-report.txt
