@@ -21,7 +21,12 @@ export GCC5_AARCH64_PREFIX=${GCC5_AARCH64_PREFIX:-aarch64-linux-gnu-}
 export PYTHON_COMMAND=${PYTHON_COMMAND:-python3}
 
 cd "$EDK2_DIR"
+# EDK II's environment script intentionally probes unset optional variables.
+# Keep this wrapper strict everywhere else, but do not make BuildEnv run under
+# POSIX nounset semantics.
+set +u
 . ./edksetup.sh BaseTools >/dev/null
+set -u
 build -a AARCH64 -t GCC5 -b RELEASE \
   -p A14EcReadbackPkg/A14EcReadbackPkg.dsc
 
