@@ -35,7 +35,7 @@ explicit development-only `force=1` module option is used.
 
 ### `hid_asus_ec`
 
-- Keyboard backlight LED class with native 8-bit brightness (0–255)
+- Keyboard backlight LED class with levels 0–3
 - Fn hotkeys for screen brightness, microphone, camera, touchpad, emoji picker,
   programmable key, and performance key
 - Non-blocking Fn+F4 handling
@@ -180,7 +180,7 @@ sudo asus-a14-control profile full-speed
 sudo asus-a14-control auto
 sudo asus-a14-control manual 180
 sudo asus-a14-control fan left 160
-sudo asus-a14-control backlight 170
+sudo asus-a14-control backlight 2
 ```
 
 Direct manual PWM accepts `75–255`; fan-off manual values are rejected. Direct

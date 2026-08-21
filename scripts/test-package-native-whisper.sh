@@ -27,7 +27,6 @@ python3 -m py_compile \
   scripts/apply-a14-whisper.py \
   scripts/apply-a14-hid-fnlock.py \
   scripts/apply-a14-hid-profile-hotkey.py \
-  scripts/apply-a14-kbd-backlight-255.py \
   scripts/asus-zenbook-a14-ppd-bridge.py \
   scripts/asus-zenbook-a14-profile-service.py \
   desktop/resources/apply-a14-cpu-info.py \
@@ -128,22 +127,11 @@ grep -q 'case ASUS_EC_PROFILE_QUIET: next = ASUS_EC_PROFILE_BALANCED' "$ec"
 grep -q 'case ASUS_EC_PROFILE_BALANCED: next = ASUS_EC_PROFILE_PERFORMANCE' "$ec"
 grep -q 'case ASUS_EC_PROFILE_PERFORMANCE: next = ASUS_EC_PROFILE_FULL_SPEED' "$ec"
 grep -q 'default: next = ASUS_EC_PROFILE_WHISPER' "$ec"
-grep -q 'A14_EC_KBD_BACKLIGHT_255' "$ec"
-grep -q '#define EC_REG_KBD_BACKLIGHT_MAJ         0x02' "$ec"
-grep -q '#define EC_REG_KBD_BACKLIGHT_WMIN        0x82' "$ec"
-grep -q 'EXPORT_SYMBOL_GPL(asus_a14_set_keyboard_backlight)' "$ec"
-grep -q 'asus_ec_instance = ec' "$ec"
-
 grep -q 'A14_HID_NATIVE_PROFILE_HOTKEY' "$hid"
 grep -q 'asus_a14_cycle_native_profile();' "$hid"
 grep -q 'schedule_work(&data->profile_work)' "$hid"
-grep -q 'A14_HID_KBD_BACKLIGHT_255' "$hid"
-grep -q '#define A14_EC_MAX_BACKLIGHT            255' "$hid"
-grep -q 'asus_a14_set_keyboard_backlight(brightness)' "$hid"
-grep -q 'asus_hid_set_backlight_fallback' "$hid"
-grep -q 'next = A14_EC_BACKLIGHT_STEP' "$hid"
-grep -q 'next = 2 \* A14_EC_BACKLIGHT_STEP' "$hid"
-grep -q 'next = A14_EC_MAX_BACKLIGHT' "$hid"
+grep -q '#define A14_EC_MAX_BACKLIGHT            3' "$hid"
+grep -q 'unsigned int next = (level + 1) % (A14_EC_MAX_BACKLIGHT + 1)' "$hid"
 
 # Removed policies may still exist as repository history/helper files, but must
 # never appear in the final generated driver source.
@@ -180,6 +168,7 @@ test -x "$root/usr/libexec/asus-zenbook-a14-profile-service"
 test -s "$root/usr/share/gnome-shell/extensions/asus-a14-modes@omerfaruknehir/extension.js"
 grep -Fq 'if [ ! -f "$old_dir/source/dkms.conf" ]; then' "$root/DEBIAN/postinst"
 grep -Fq 'Removing orphaned DKMS state: $module/$old_version' "$root/DEBIAN/postinst"
+grep -Fq 'for old_dir in /var/lib/dkms/$module/[0-9]*; do' "$root/DEBIAN/postinst"
 
 # A composed source package must be independently re-preparable even if a
 # repository-only transform is not present in an installed source tree.
@@ -187,8 +176,9 @@ make -C "$src" prepare
 
 grep -q 'A14_WHISPER_MODE' "$src/asus_zenbook_a14_ec.c"
 grep -q 'A14_HID_NATIVE_PROFILE_HOTKEY' "$src/hid_asus_ec.c"
-grep -q 'A14_EC_KBD_BACKLIGHT_255' "$src/asus_zenbook_a14_ec.c"
-grep -q 'A14_HID_KBD_BACKLIGHT_255' "$src/hid_asus_ec.c"
+grep -q '#define A14_EC_MAX_BACKLIGHT            3' "$src/hid_asus_ec.c"
+! grep -q 'A14_EC_KBD_BACKLIGHT_255' "$src/asus_zenbook_a14_ec.c"
+! grep -q 'A14_HID_KBD_BACKLIGHT_255' "$src/hid_asus_ec.c"
 grep -Fq 'PROFILES = ("whisper", "quiet", "normal", "turbo", "full-speed")' \
   "$root/usr/libexec/asus-zenbook-a14-profile-service"
 

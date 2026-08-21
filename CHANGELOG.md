@@ -1,12 +1,22 @@
 # Changelog
 
+## 0.5.11 — 2026-08-21
+
+- Reverted the unvalidated 0–255 keyboard-backlight ABI after hardware testing
+  showed that it cached requested values without changing the physical LEDs.
+- Restored the proven ASUS HID four-level backlight command and Fn+F4 cycle.
+- Corrected the firmware documentation: ACPI maps four logical levels onto the
+  EC bytes `0x00`, `0x55`, `0xAA`, and `0xFF`; it does not expose 256 levels.
+- Restricted stale DKMS cleanup to version directories so DKMS housekeeping
+  state such as `original_module` is never mistaken for an installed version.
+
 ## 0.5.10 — 2026-08-21
 
 - Fixed upgrades from a damaged older DKMS registration whose source directory
   still exists but no longer contains `dkms.conf`. The package now removes the
   unusable registry entry before DKMS or initramfs hooks enumerate it.
 
-## 0.5.9 — 2026-08-21
+## 0.5.9 — 2026-08-21 (withdrawn)
 
 - Exposed the keyboard backlight as a true 0–255 Linux LED instead of four
   logical values mapped onto the keyboard HID command.
@@ -18,6 +28,9 @@
   preserving arbitrary sysfs brightness values and suspend/resume restoration.
 - Updated the control utility, package composition and regression checks for
   the 8-bit interface.
+
+Hardware validation later disproved this interpretation; 0.5.11 restores the
+supported four-level HID interface.
 
 ## 0.3.0 — 2026-08-15
 

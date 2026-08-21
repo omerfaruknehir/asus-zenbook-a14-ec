@@ -37,8 +37,7 @@ for script in \
   apply-a14-native-mode-names-hotkey.py \
   apply-a14-whisper.py \
   apply-a14-hid-fnlock.py \
-  apply-a14-hid-profile-hotkey.py \
-  apply-a14-kbd-backlight-255.py
+  apply-a14-hid-profile-hotkey.py
 do
   install -m 0755 "$repo/scripts/$script" "$src/scripts/$script"
 done
@@ -142,7 +141,7 @@ if [ ! -e "/lib/modules/\$kernel/build/Makefile" ]; then
   exit 1
 fi
 
-for old_dir in /var/lib/dkms/\$module/*; do
+for old_dir in /var/lib/dkms/\$module/[0-9]*; do
   [ -d "\$old_dir" ] || continue
   old_version=\${old_dir##*/}
   [ "\$old_version" = "\$version" ] && continue

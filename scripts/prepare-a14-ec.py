@@ -60,8 +60,6 @@ def final_missing() -> list[str]:
         "EXPORT_SYMBOL_GPL(asus_a14_cycle_native_profile)",
         "DEVICE_ATTR_RO(whisper_level)",
         "*value = (long)raw * EC_TACH_RPM_MULT;",
-        "A14_EC_KBD_BACKLIGHT_255",
-        "EXPORT_SYMBOL_GPL(asus_a14_set_keyboard_backlight)",
     )
     missing = [token for token in required if token not in s]
 
@@ -280,7 +278,6 @@ def main() -> None:
     compose_ec()
     compose_hid()
     enforce_fnlock_experiment_policy()
-    run("apply-a14-kbd-backlight-255.py")
 
     missing = final_missing()
     if missing:
@@ -303,9 +300,6 @@ def main() -> None:
         "mod_delayed_work(system_wq, &data->fnlock_init_work",
         "schedule_work(&data->fnlock_work);",
         "static bool fnlock_windows_transport_reinit = false;",
-        "A14_HID_KBD_BACKLIGHT_255",
-        "#define A14_EC_MAX_BACKLIGHT            255",
-        "asus_a14_set_keyboard_backlight(brightness)",
     )
     hid_missing = [token for token in hid_required if token not in hid]
     if hid_missing:
