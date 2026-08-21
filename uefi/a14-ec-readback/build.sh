@@ -17,7 +17,7 @@ cp "$ROOT/A14EcReadbackPkg.dsc" "$PACKAGE/"
 
 export WORKSPACE=$EDK2_DIR
 export EDK_TOOLS_PATH=$EDK2_DIR/BaseTools
-export GCC5_AARCH64_PREFIX=${GCC5_AARCH64_PREFIX:-aarch64-linux-gnu-}
+export GCC_AARCH64_PREFIX=${GCC_AARCH64_PREFIX:-aarch64-linux-gnu-}
 export PYTHON_COMMAND=${PYTHON_COMMAND:-python3}
 
 cd "$EDK2_DIR"
@@ -27,7 +27,7 @@ cd "$EDK2_DIR"
 set +u
 . ./edksetup.sh BaseTools >/dev/null
 set -u
-build -a AARCH64 -t GCC5 -b RELEASE \
+build -a AARCH64 -t GCC -b RELEASE \
   -p A14EcReadbackPkg/A14EcReadbackPkg.dsc
 
 BUILT=$(find "$EDK2_DIR/Build/A14EcReadbackPkg" \
