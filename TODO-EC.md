@@ -40,6 +40,9 @@ the interfaces become understood.
   chunks, erases 4 KiB sectors, and retries a failed update up to three times.
 - `ECFlashApp` performs byte-for-byte verification but makes no pre-write backup
   and has no rollback path in its own code.
+- A write-incapable AArch64 UEFI readback application now mirrors the exact
+  Qualcomm I2C/SPI read transport, permits only SPI `0x9f` and `0x0b`, reads the
+  complete 1 MiB device three times, and fails closed on any mismatch.
 - Its raw-payload validation is not cryptographic: `$ECDH$` is used to extract
   a display version and the only enforced identity is `ITE51300-EC-V0.00` at
   image offset `0x50`. Outer capsule authentication is a separate layer.
@@ -105,6 +108,10 @@ the interfaces become understood.
   - [x] Confirm that the updater itself provides neither backup nor rollback.
   - [x] Confirm that the official Windows install scripts only stage the UEFI
     firmware INF and provide no EC backup, checksum generation, or recovery.
+  - [x] Build and CI-audit a write-incapable triple-pass 1 MiB UEFI readback
+    application using the exact ASUS/Qualcomm transport.
+  - [ ] Run the readback on the exact UX3407RA and preserve three identical
+    dumps plus their hashes before investigating any deployment path.
   - [ ] Determine why a JEDEC capacity code for a larger device is accepted
     while only the first 256 KiB is updated.
   - [ ] Determine single-bank versus dual-bank layout and boot-time recovery
