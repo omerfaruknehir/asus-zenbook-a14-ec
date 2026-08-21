@@ -68,8 +68,25 @@ static CHAR16 msg_readonly[] = {'S','P','I',' ','r','e','a','d','-','o','n','l',
 static CHAR16 msg_start[] = {'R','e','a','d','i','n','g',' ','t','h','r','e','e',' ','1',' ','M','i','B',' ','p','a','s','s','e','s','.','.','.','\r','\n',0};
 static CHAR16 msg_ok[] = {'O','K',':',' ','t','h','r','e','e',' ','p','a','s','s','e','s',' ','a','r','e',' ','i','d','e','n','t','i','c','a','l','.','\r','\n',0};
 static CHAR16 msg_fail[] = {'F','A','I','L','-','C','L','O','S','E','D','.',' ','N','o',' ','E','C',' ','f','l','a','s','h',' ','w','r','i','t','e',' ','w','a','s',' ','i','s','s','u','e','d','.','\r','\n',0};
+static CHAR16 err_protocol[] = {'E','R','R',':',' ','Q','u','a','l','c','o','m','m',' ','I','2','C',' ','p','r','o','t','o','c','o','l','.','\r','\n',0};
+static CHAR16 err_i2c_open[] = {'E','R','R',':',' ','I','2','C',' ','i','n','s','t','a','n','c','e',' ','6',' ','o','p','e','n','.','\r','\n',0};
+static CHAR16 err_bridge[] = {'E','R','R',':',' ','E','C',' ','0','x','1','0','5','9',' ','i','s',' ','n','o','t',' ','z','e','r','o',':',' ',0};
+static CHAR16 err_jedec[] = {'E','R','R',':',' ','u','n','e','x','p','e','c','t','e','d',' ','J','E','D','E','C',':',' ',0};
+static CHAR16 err_memory[] = {'E','R','R',':',' ','U','E','F','I',' ','m','e','m','o','r','y',' ','a','l','l','o','c','a','t','i','o','n','.','\r','\n',0};
+static CHAR16 err_read[] = {'E','R','R',':',' ','S','P','I',' ','r','e','a','d',' ','t','r','a','n','s','a','c','t','i','o','n','.','\r','\n',0};
+static CHAR16 err_mismatch[] = {'E','R','R',':',' ','t','h','r','e','e',' ','r','e','a','d',' ','p','a','s','s','e','s',' ','d','i','f','f','e','r','.','\r','\n',0};
+static CHAR16 err_volume[] = {'E','R','R',':',' ','b','o','o','t',' ','F','A','T',' ','v','o','l','u','m','e','.','\r','\n',0};
+static CHAR16 err_save[] = {'E','R','R',':',' ','w','r','i','t','i','n','g',' ','b','a','c','k','u','p',' ','f','i','l','e','s','.','\r','\n',0};
 
 static void print(CHAR16 *s) { st->ConOut->OutputString(st->ConOut, s); }
+static void print_hex_byte(UINT8 value, int newline)
+{
+    static const CHAR16 digits[] = {'0','1','2','3','4','5','6','7','8','9','a','b','c','d','e','f'};
+    CHAR16 out[] = {'0','x','0','0',' ',0,0,0};
+    out[2] = digits[value >> 4]; out[3] = digits[value & 15];
+    if (newline) { out[4] = '\r'; out[5] = '\n'; out[6] = 0; }
+    print(out);
+}
 
 static int bytes_equal(const UINT8 *a, const UINT8 *b, UINTN n)
 {
@@ -197,26 +214,41 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *system_table)
     st = system_table; bs = st->BootServices;
     print(msg_banner); print(msg_readonly);
     status = bs->LocateProtocol(&qcom_i2c_guid, 0, (VOID **)&i2c);
-    if (EFI_ERROR(status) || !i2c || !i2c->open || !i2c->transfer || !i2c->close) goto out;
-    if (i2c->open(I2C_INSTANCE, &i2c_handle) != 0 || !i2c_handle) goto out;
+    if (EFI_ERROR(status) || !i2c || !i2c->open || !i2c->transfer || !i2c->close) {
+        print(err_protocol); goto out;
+    }
+    if (i2c->open(I2C_INSTANCE, &i2c_handle) != 0 || !i2c_handle) {
+        print(err_i2c_open); goto out;
+    }
     status = EFI_ABORTED;
 
     /* Fail closed unless the bridge is already in the stock updater's read
      * mode. This application never changes EC register 0x1059. */
-    if (!ec_register_read(EC_BRIDGE_MODE_REGISTER, &bridge_mode) || bridge_mode != 0) goto close_i2c;
-    if (!spi_read_id(id) || !accepted_id(id)) goto close_i2c;
+    if (!ec_register_read(EC_BRIDGE_MODE_REGISTER, &bridge_mode) || bridge_mode != 0) {
+        print(err_bridge); print_hex_byte(bridge_mode, 1); goto close_i2c;
+    }
+    if (!spi_read_id(id) || !accepted_id(id)) {
+        print(err_jedec); print_hex_byte(id[0], 0); print_hex_byte(id[1], 0);
+        print_hex_byte(id[2], 1); goto close_i2c;
+    }
     if (EFI_ERROR(bs->AllocatePool(EfiLoaderData, FLASH_SIZE, (VOID **)&pass1)) ||
         EFI_ERROR(bs->AllocatePool(EfiLoaderData, FLASH_SIZE, (VOID **)&pass2)) ||
         EFI_ERROR(bs->AllocatePool(EfiLoaderData, FLASH_SIZE, (VOID **)&pass3)) ||
-        EFI_ERROR(bs->AllocatePool(EfiLoaderData, 1024, (VOID **)&report))) goto close_i2c;
+        EFI_ERROR(bs->AllocatePool(EfiLoaderData, 1024, (VOID **)&report))) {
+        print(err_memory); goto close_i2c;
+    }
 
     print(msg_start);
-    if (!read_pass(pass1) || !read_pass(pass2) || !read_pass(pass3)) goto close_i2c;
-    if (!bytes_equal(pass1, pass2, FLASH_SIZE) || !bytes_equal(pass1, pass3, FLASH_SIZE)) goto close_i2c;
+    if (!read_pass(pass1) || !read_pass(pass2) || !read_pass(pass3)) {
+        print(err_read); goto close_i2c;
+    }
+    if (!bytes_equal(pass1, pass2, FLASH_SIZE) || !bytes_equal(pass1, pass3, FLASH_SIZE)) {
+        print(err_mismatch); goto close_i2c;
+    }
     c1 = crc32(pass1, FLASH_SIZE); c2 = crc32(pass2, FLASH_SIZE); c3 = crc32(pass3, FLASH_SIZE);
     if (c1 != c2 || c1 != c3) goto close_i2c;
     status = open_boot_volume(image, &root);
-    if (EFI_ERROR(status)) goto close_i2c;
+    if (EFI_ERROR(status)) { print(err_volume); goto close_i2c; }
     status = EFI_ABORTED;
 
     append_text(report, &rp, "A14 EC readback v1\r\nflash_bytes=0x00100000\r\ni2c_instance=6\r\ni2c_slave=0x5b\r\nbridge_1059=0x");
@@ -230,7 +262,9 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *system_table)
     if (EFI_ERROR(save_file(root, n1, pass1, FLASH_SIZE)) ||
         EFI_ERROR(save_file(root, n2, pass2, FLASH_SIZE)) ||
         EFI_ERROR(save_file(root, n3, pass3, FLASH_SIZE)) ||
-        EFI_ERROR(save_file(root, nr, report, rp))) goto close_i2c;
+        EFI_ERROR(save_file(root, nr, report, rp))) {
+        print(err_save); goto close_i2c;
+    }
     print(msg_ok); status = EFI_SUCCESS;
 
 close_i2c:
