@@ -7,11 +7,12 @@ The live UX3407RA descriptor declares two Feature reports:
 * report 0x5a: 128 payload bits, 17 bytes on the wire including report ID
 
 The ``status`` and ``correlate`` actions never write a feature report to 4543.
-The explicitly acknowledged ``write-sequence-no-init`` action sends only the
-known ASUS keyboard-light command, with the exact 17-byte report geometry.  It
-does not send initialization or Fn-lock commands, resets the proven 0220 path
-to level zero before every candidate, and restores the original physical level
-through both candidate and proven paths in a ``finally`` block.
+The explicitly acknowledged write actions use the exact 17-byte report
+geometry, reset the proven 0220 path to level zero before every candidate, and
+restore the original physical level through both candidate and proven paths in
+a ``finally`` block.  ``write-sequence-session-basic`` sends only the ASUS
+identity handshake and feature-configuration query before trying levels 0..3;
+it deliberately omits the unverified D0 8F, D0 85, and Fn-lock commands.
 """
 
 from __future__ import annotations
@@ -25,6 +26,8 @@ ASUS_VENDOR = 0x0B05
 ASUS_4543 = 0x4543
 FEATURE_REPORTS = ((0x06, 19), (0x5A, 17))
 LED = Path("/sys/class/leds/asus::kbd_backlight")
+SESSION_IDENTITY = b"ASUS Tech.Inc.\x00"
+SESSION_CONFIG = bytes((0x05, 0x20, 0x31, 0x00, 0x08))
 
 _IOC_NRBITS = 8
 _IOC_TYPEBITS = 8
@@ -213,10 +216,65 @@ def write_sequence_no_init(fd: int, delay: float) -> None:
             snapshot(fd, "restored")
 
 
+def write_sequence_session_basic(fd: int, delay: float) -> None:
+    """Test 4543 after only the bounded, known ASUS session preamble."""
+    brightness, original, maximum = led_state()
+    values = (0x00, 0x01, 0x02, 0x03)
+    print(f"proven_led={LED} original={original} max_brightness={maximum}")
+    print("4543_feature_length=17")
+    print("4543_session_writes=identity,config")
+    print("4543_d0_8f_write=NOT_SENT")
+    print("4543_d0_85_write=NOT_SENT")
+    print("4543_fnlock_write=NOT_SENT")
+    print("candidate_values=00,01,02,03")
+    print("each candidate is preceded by proven 0220 level zero")
+    print("observe the physical LEDs immediately after each candidate line")
+    snapshot(fd, "initial")
+    try:
+        sent = feature_set_5a(fd, SESSION_IDENTITY)
+        print(f"session_identity_set={sent.hex(' ')}")
+        time.sleep(0.1)
+        snapshot(fd, "after_identity")
+
+        sent = feature_set_5a(fd, SESSION_CONFIG)
+        print(f"session_config_set={sent.hex(' ')}")
+        time.sleep(0.1)
+        snapshot(fd, "after_config")
+
+        for value in values:
+            brightness.write_text("0\n")
+            time.sleep(0.5)
+            sent = set_4543_backlight(fd, value)
+            print(
+                f"session_candidate_4543=0x{value:02x} "
+                f"set_feature={sent.hex(' ')}"
+            )
+            time.sleep(delay)
+            snapshot(fd, f"session_candidate_{value:02x}")
+    finally:
+        try:
+            sent = set_4543_backlight(fd, original)
+            print(f"restore_4543={sent.hex(' ')}")
+        except OSError as error:
+            print(
+                f"restore_4543=SET_FAILED errno={error.errno} "
+                f"error={error.strerror}"
+            )
+        finally:
+            brightness.write_text(f"{original}\n")
+            time.sleep(0.5)
+            print(
+                f"restored_0220_level={original} "
+                f"reported={brightness.read_text().strip()}"
+            )
+            snapshot(fd, "restored")
+
+
 def usage() -> int:
     print(
         f"usage: sudo {sys.argv[0]} status | correlate [delay] | "
-        "write-sequence-no-init I_UNDERSTAND [delay]",
+        "write-sequence-no-init I_UNDERSTAND [delay] | "
+        "write-sequence-session-basic I_UNDERSTAND [delay]",
         file=sys.stderr,
     )
     return 2
@@ -244,6 +302,16 @@ def main() -> int:
             ):
                 delay = float(sys.argv[3]) if len(sys.argv) == 4 else 2.0
                 write_sequence_no_init(
+                    stream.fileno(), max(1.0, min(10.0, delay))
+                )
+                return 0
+            if (
+                sys.argv[1] == "write-sequence-session-basic"
+                and len(sys.argv) in (3, 4)
+                and sys.argv[2] == "I_UNDERSTAND"
+            ):
+                delay = float(sys.argv[3]) if len(sys.argv) == 4 else 2.0
+                write_sequence_session_basic(
                     stream.fileno(), max(1.0, min(10.0, delay))
                 )
                 return 0
