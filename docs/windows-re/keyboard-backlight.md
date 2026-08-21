@@ -96,6 +96,14 @@ contains Microsoft's generic I2C HID miniport and Qualcomm I2C/GPIO/PEP bus
 drivers, with no additional ASUS keyboard-light driver or firmware-update
 side channel.
 
+The A14 also exposes a separate ASUS I2C HID device, 0B05:4543.  Its live
+descriptor has Feature report 0x06 with 19 wire bytes and Feature report 0x5a
+with 17 wire bytes.  Both reports read as an all-zero report and remain
+byte-for-byte unchanged while the proven 0B05:0220 controller cycles through
+physical levels 0, 1, 2, and 3.  Therefore 4543 is not a readable brightness
+mirror.  It remains a possible independent write-only transport and must be
+tested with its own descriptor-correct report length.
+
 A different undocumented report or firmware-internal control path remains
 possible.  It must be identified from the complete HID descriptor or firmware,
 not by redirecting this proven QTEC command to ASUH2024.
