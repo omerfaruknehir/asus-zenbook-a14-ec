@@ -11,6 +11,9 @@ This is the umbrella checklist for inventorying, reverse-engineering, documentin
 - Confirmed backlight command: `5A BA C5 C4 LEVEL`.
 - The public handler maps logical levels to PWM targets: `0 -> 00`, `1 -> 43`, `2 -> 87`, `3 -> CC`; every other value maps to zero.
 - A separate EC routine ramps PWM channel 4 toward its 8-bit target in steps of 3.
+- Mailbox `01/07` reads PWM channel 4 and `01/87` writes its current duty cycle, but the firmware ramp overwrites that one-shot value.
+- The stable target lives at EC RAM `0x80304a`; stock firmware exposes no host command that writes it raw.
+- A hash- and instruction-gated 10-byte patch is documented and generated without any flashing support.
 - Copied backlight payloads sent to 4543 produced no physical effect, with or without the basic ASUS identity/config session.
 - Firmware flashing/recovery paths are never runtime probe targets.
 
@@ -34,6 +37,11 @@ This is the umbrella checklist for inventorying, reverse-engineering, documentin
 
 - [ ] Keyboard matrix, hotkeys, consumer usages, Fn-lock, and report routing.
 - [ ] Keyboard-backlight raw PWM, logical policy, ramping, Fn+F4, boot, suspend, and resume.
+  - [x] Map the public HID levels, PWM channel, target byte, and ramp routine.
+  - [x] Prove why one-shot mailbox PWM writes are not stable.
+  - [x] Generate the minimal raw-target firmware patch with exact hash/instruction guards.
+  - [ ] Validate a non-destructive EC deployment, backup, and recovery path before enabling the patch.
+  - [ ] Expose `0..255` through LED class only after the patched target path is physically validated.
 - [ ] Fan control, tachometer telemetry, thermal thresholds, and fail-safe behavior.
 - [ ] Power/platform profiles and profile hotkeys.
 - [ ] Battery/charger state, charge limits, AC events, and battery safety.
