@@ -1,0 +1,42 @@
+name: A14 speaker protection V1 patch check
+
+on:
+  push:
+    branches:
+      - agent/a14-speaker-protection-v1
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  patch-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout A14 repository
+        uses: actions/checkout@v4
+
+      - name: Clone exact Linux v7.1.5
+        run: |
+          git clone --depth=1 --branch v7.1.5 --single-branch \
+            https://github.com/gregkh/linux.git /tmp/linux-v7.1.5
+          test "$(git -C /tmp/linux-v7.1.5 rev-parse HEAD)" = \
+            155b42bec9cbb6b8cdc47dd9bd09503a81fbe493
+
+      - name: Apply and verify A14 VISENSE V1
+        run: |
+          python3 scripts/apply-a14-speaker-protection-v1.py /tmp/linux-v7.1.5
+          git -C /tmp/linux-v7.1.5 diff --check
+          git -C /tmp/linux-v7.1.5 diff --stat
+
+      - name: Verify V1 safety caps remain
+        run: |
+          grep -F 'snd_soc_limit_volume(card, "WSA WSA_RX0 Digital Volume", 81);' \
+            /tmp/linux-v7.1.5/sound/soc/qcom/x1e80100.c
+          grep -F 'snd_soc_limit_volume(card, "WSA WSA_RX1 Digital Volume", 81);' \
+            /tmp/linux-v7.1.5/sound/soc/qcom/x1e80100.c
+          grep -F 'snd_soc_limit_volume(card, "SpkrLeft PA Volume", 6);' \
+            /tmp/linux-v7.1.5/sound/soc/qcom/x1e80100.c
+          grep -F 'snd_soc_limit_volume(card, "SpkrRight PA Volume", 6);' \
+            /tmp/linux-v7.1.5/sound/soc/qcom/x1e80100.c
