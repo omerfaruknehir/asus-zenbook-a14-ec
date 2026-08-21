@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""Extract the UX3407RA.313 EC image from an authenticated FMP payload.
+"""Extract a UX3407RA EC image from an authenticated FMP payload.
 
-The parser is intentionally narrow and fail-closed: it recognizes the exact
-FV-image and EC-file GUIDs, LZMA guided-section wrapper, UI name, size, and
-SHA-256 observed in UX3407RA.312. It does not modify its input.
+By default the parser is intentionally narrow and fail-closed: it recognizes
+the exact FV-image and EC-file GUIDs, LZMA guided-section wrapper, UI name,
+size, and SHA-256 observed in UX3407RA.312.  An explicit read-only revision
+inspection mode permits structurally matching official revisions for offline
+comparison.  It never modifies its input.
 """
 
 from __future__ import annotations
@@ -20,8 +22,13 @@ FV_FILE_GUID = uuid.UUID("9e21fd93-9c72-4c15-8c4b-e77f1db2d792")
 EC_FILE_GUID = uuid.UUID("d0472b6a-1710-497b-833a-d9bd3fc11d8b")
 LZMA_GUID = uuid.UUID("ee4e5898-3914-4259-9d6e-dc7bd79403cf")
 EC_UI = "F0184104.UX3407RA.313"
+EC_UI_PREFIX = "F0184104.UX3407RA."
 EC_SIZE = 256 * 1024
 EC_SHA256 = "353eb0d125d76a14f15faa72f2153d57e25efd8d212f42b18a9f11c16e3fc39d"
+EC_IDENTITY = b"ITE51300-EC-V0.00"
+EC_IDENTITY_OFFSET = 0x50
+EC_BOOT_HEADER_OFFSET = 0x40
+EC_BOOT_HEADER_SIZE = 16
 
 
 def u24(data: bytes) -> int:
@@ -71,7 +78,9 @@ def section_at(blob: bytes, offset: int) -> tuple[int, int, int, bytes]:
     return size, kind, header_size, blob[offset + header_size : offset + size]
 
 
-def extract_ec(source: bytes) -> tuple[bytes, dict[str, str | int]]:
+def extract_ec(
+    source: bytes, *, allow_revision: bool = False
+) -> tuple[bytes, dict[str, str | int]]:
     fv_candidates = []
     for candidate in offsets(source, FV_FILE_GUID.bytes_le):
         try:
@@ -90,9 +99,7 @@ def extract_ec(source: bytes) -> tuple[bytes, dict[str, str | int]]:
         except (IndexError, ValueError, SystemExit):
             continue
     if len(fv_candidates) != 1:
-        raise SystemExit(
-            f"expected one LZMA nested-FV FFS file, found {len(fv_candidates)}"
-        )
+        raise SystemExit(f"expected one LZMA nested-FV FFS file, found {len(fv_candidates)}")
     fv_offset, guided_body, section_size, data_offset, attributes = fv_candidates[0]
     compressed = guided_body[data_offset:section_size]
     try:
@@ -119,7 +126,12 @@ def extract_ec(source: bytes) -> tuple[bytes, dict[str, str | int]]:
                         raise ValueError("multiple raw sections")
                     candidate_raw = payload
                 cursor = (cursor + size + 3) & ~3
-            if candidate_ui == EC_UI and candidate_raw is not None:
+            ui_matches = candidate_ui == EC_UI or (
+                allow_revision
+                and candidate_ui is not None
+                and candidate_ui.startswith(EC_UI_PREFIX)
+            )
+            if ui_matches and candidate_raw is not None:
                 ec_candidates.append((candidate, candidate_ui, candidate_raw))
         except (IndexError, UnicodeDecodeError, ValueError, SystemExit):
             continue
@@ -127,8 +139,22 @@ def extract_ec(source: bytes) -> tuple[bytes, dict[str, str | int]]:
         raise SystemExit(f"expected one named EC FFS file, found {len(ec_candidates)}")
     ec_offset, ui, raw = ec_candidates[0]
     digest = hashlib.sha256(raw).hexdigest()
-    if len(raw) != EC_SIZE or digest != EC_SHA256:
-        raise SystemExit(f"EC identity mismatch: size={len(raw)} sha256={digest}")
+    known_reference = len(raw) == EC_SIZE and ui == EC_UI and digest == EC_SHA256
+    if not allow_revision and not known_reference:
+        raise SystemExit(
+            f"EC identity mismatch: size={len(raw)} sha256={digest}"
+        )
+    if allow_revision:
+        identity = raw[
+            EC_IDENTITY_OFFSET : EC_IDENTITY_OFFSET + len(EC_IDENTITY)
+        ]
+        if len(raw) != EC_SIZE or identity != EC_IDENTITY:
+            raise SystemExit(
+                "revision identity mismatch: "
+                f"ui={ui} size={len(raw)} identity={identity!r}"
+            )
+        if raw.find(b"$ECDH$", 0x10000) < 0:
+            raise SystemExit("revision lacks the expected $ECDH$ metadata block")
     return raw, {
         "nested_fv_ffs_offset": fv_offset,
         "guided_attributes": attributes,
@@ -137,21 +163,33 @@ def extract_ec(source: bytes) -> tuple[bytes, dict[str, str | int]]:
         "ec_ui": ui,
         "ec_size": len(raw),
         "ec_sha256": digest,
+        "ec_boot_header": raw[
+            EC_BOOT_HEADER_OFFSET : EC_BOOT_HEADER_OFFSET + EC_BOOT_HEADER_SIZE
+        ].hex(" "),
+        "known_reference": "YES" if known_reference else "NO",
     }
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Extract the exact UX3407RA.313 EC image from an FMP image"
+        description="Extract a UX3407RA EC image from an FMP image"
     )
-    parser.add_argument("input", type=Path, help="UX3407RA.312.fmp-image.bin")
+    parser.add_argument("input", type=Path, help="UX3407RA FMP image")
     parser.add_argument("output", type=Path, help="output EC image")
+    parser.add_argument(
+        "--allow-revision",
+        action="store_true",
+        help=(
+            "read-only extraction of a structurally matching UX3407RA EC "
+            "revision even when its UI name or SHA-256 differs"
+        ),
+    )
     args = parser.parse_args()
     if args.input.resolve() == args.output.resolve():
         raise SystemExit("refusing to overwrite the input")
 
     source = args.input.read_bytes()
-    raw, info = extract_ec(source)
+    raw, info = extract_ec(source, allow_revision=args.allow_revision)
     args.output.write_bytes(raw)
     print(f"source={args.input}")
     print(f"source_sha256={hashlib.sha256(source).hexdigest()}")
