@@ -7,13 +7,15 @@ from __future__ import annotations
 import argparse
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
+from typing import NoReturn
 
 BASE_COMMIT = "155b42bec9cbb6b8cdc47dd9bd09503a81fbe493"
 PATCH_REL = Path("patches/0001-a14-wsa-visense-transport-v1.patch")
 
 
-def die(msg: str) -> "NoReturn":
+def die(msg: str) -> NoReturn:
     raise SystemExit(f"ERROR: {msg}")
 
 
@@ -24,6 +26,36 @@ def run(*args: str, cwd: Path, check: bool = True) -> subprocess.CompletedProces
 
 def has(path: Path, text: str) -> bool:
     return text in path.read_text(errors="strict")
+
+
+def pure_unified_diff(patch: Path) -> str:
+    """Return only the unified-diff body from an email-style patch.
+
+    The V1 patch is intentionally human/auditor-friendly and carries a small
+    mail header plus the conventional git-format-patch footer.  `git apply
+    --recount` recounts hunk bodies and therefore must not be allowed to treat
+    the trailing `-- \n<git-version>` footer as hunk text.
+    """
+    text = patch.read_text(errors="strict")
+    start = text.find("diff --git ")
+    if start < 0:
+        die(f"no unified diff found in {patch}")
+    text = text[start:]
+
+    # Strip the conventional git-format-patch signature only when it is the
+    # final trailer.  Keep every line of the actual diff body byte-for-byte.
+    lines = text.splitlines(keepends=True)
+    if len(lines) >= 2 and lines[-2] in ("-- \n", "-- \r\n"):
+        lines = lines[:-2]
+    elif len(lines) >= 2 and lines[-2].rstrip("\r\n") == "-- ":
+        lines = lines[:-2]
+
+    cleaned = "".join(lines)
+    if not cleaned.endswith("\n"):
+        cleaned += "\n"
+    if "\n2.43.0\n" in cleaned or cleaned.endswith("2.43.0\n"):
+        die("git-format-patch footer leaked into sanitized diff")
+    return cleaned
 
 
 def verify(src: Path) -> None:
@@ -99,19 +131,23 @@ def main() -> None:
         print("speaker_protection_v1=current")
         return
 
-    # This patch is maintained as an auditable hand-written unified diff.  Its
-    # semantic hunk bodies are authoritative; let Git recompute hunk line counts
-    # so stale header counts cannot make an otherwise valid patch look corrupt.
-    apply_args = ("git", "apply", "--recount", "--ignore-space-change")
-    check = run(*apply_args, "--check", str(patch), cwd=src, check=False)
-    if check.returncode:
-        sys.stdout.write(check.stdout)
-        die("A14 VISENSE patch does not apply cleanly to exact Linux 7.1.5")
+    cleaned = pure_unified_diff(patch)
+    with tempfile.TemporaryDirectory(prefix="a14-spkprot-v1-") as td:
+        apply_patch = Path(td) / "a14-wsa-visense-v1.diff"
+        apply_patch.write_text(cleaned)
 
-    apply = run(*apply_args, str(patch), cwd=src, check=False)
-    if apply.returncode:
-        sys.stdout.write(apply.stdout)
-        die("git apply failed")
+        # Hunk bodies are authoritative; --recount makes the hand-maintained
+        # patch insensitive to stale line-count metadata in @@ headers.
+        apply_args = ("git", "apply", "--recount", "--ignore-space-change")
+        check = run(*apply_args, "--check", str(apply_patch), cwd=src, check=False)
+        if check.returncode:
+            sys.stdout.write(check.stdout)
+            die("A14 VISENSE patch does not apply cleanly to exact Linux 7.1.5")
+
+        apply = run(*apply_args, str(apply_patch), cwd=src, check=False)
+        if apply.returncode:
+            sys.stdout.write(apply.stdout)
+            die("git apply failed")
 
     verify(src)
 
