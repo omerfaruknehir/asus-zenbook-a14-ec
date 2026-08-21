@@ -103,6 +103,13 @@ jobs:
           ! grep -Fq 'EC_NATIVE_FAN1_RPM_LO' scripts/prepare-a14-ec.py
           grep -Fq 'automatic (ASUS firmware owns PWM)' scripts/asus-a14-control
 
+      - name: Build and audit write-incapable A14 EC readback EFI
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang lld
+          (cd uefi/a14-ec-readback && sh ./build.sh | tee build-report.txt)
+
       - name: Validate Whisper and native ASUS modes
         run: ./scripts/test-package.sh
 
@@ -131,6 +138,7 @@ jobs:
           grep -q 'DEVICE_ATTR_RO(whisper_level)' "$ec"
           grep -q 'A14_HID_NATIVE_PROFILE_HOTKEY' "$hid"
           grep -q 'asus_a14_cycle_native_profile();' "$hid"
+          grep -q 'asus_emit_key(data->hotkeys, KEY_FN_ESC);' "$hid"
           grep -q 'EC_TACH_RPM_MULT' "$ec"
           ! grep -q 'EC_NATIVE_FAN1_RPM_LO\|asus_ec_read_native_fan1_rpm' "$ec"
 
@@ -159,3 +167,10 @@ jobs:
         with:
           name: asus-zenbook-a14-ec-deb
           path: dist/*.deb
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: A14ECReadback-aarch64
+          path: |
+            uefi/a14-ec-readback/dist/A14ECReadback.efi
+            uefi/a14-ec-readback/build-report.txt
