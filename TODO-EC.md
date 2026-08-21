@@ -29,8 +29,8 @@ the interfaces become understood.
   `flash_ready=NO`.
 - Stock UX3407RA EC revisions preserve the 16-byte header shape but change
   bytes `0x4a..0x4b` (`df e2` in EC `.312`, `f7 bb` in EC `.313`). A related
-  UX3407QA EC `.313` uses `a3 ca`; common checksum models tested so far do not
-  reproduce the field.
+  UX3407QA EC `.313` uses `a3 ca` and its next EC `.314` uses `91 65`;
+  common checksum models tested so far do not reproduce the field.
 - Copied backlight payloads sent to 4543 produced no physical effect, with or
   without the basic ASUS identity/config session.
 - Firmware flashing/recovery paths are never runtime probe targets.
@@ -77,8 +77,8 @@ the interfaces become understood.
   - [x] Prove why one-shot mailbox PWM writes are not stable.
   - [x] Generate the minimal raw-target firmware patch with exact
     hash/instruction guards.
-  - [x] Compare another official UX3407RA EC revision and confirm that header
-    bytes `0x4a..0x4b` are image-dependent.
+  - [x] Compare official UX3407RA and UX3407QA revisions and confirm that
+    header bytes `0x4a..0x4b` vary between revisions of the same model.
   - [ ] Derive the exact meaning/generation of `0x4a..0x4b`, or prove through
     boot-path evidence that modified code does not require regenerating it.
   - [ ] Establish a readback backup and board-level recovery path before any
