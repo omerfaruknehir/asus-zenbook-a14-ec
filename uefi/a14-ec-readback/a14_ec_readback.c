@@ -1,5 +1,7 @@
 #ifdef MDE_CPU_AARCH64
 #include <Uefi.h>
+#include <Protocol/LoadedImage.h>
+#include <Protocol/SimpleFileSystem.h>
 #else
 #include "uefi_min.h"
 #endif
