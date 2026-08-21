@@ -7,7 +7,8 @@ the interfaces become understood.
 
 ## Verified baseline
 
-- `UX3407RA.312` contains a 256 KiB EC image named
+- `UX3407RA.309` contains a 256 KiB EC image named
+  `F0184104.UX3407RA.312`; `UX3407RA.312` contains
   `F0184104.UX3407RA.313`.
 - EC identity: `ITE51300-EC-V0.00`; architecture: RV32IMC.
 - EC-image SHA-256:
@@ -24,7 +25,12 @@ the interfaces become understood.
 - The stable target lives at EC RAM `0x80304a`; stock firmware exposes no host
   command that writes it raw.
 - A hash- and instruction-gated 10-byte patch is documented and generated
-  without any flashing support.
+  without any flashing support. Its output is explicitly marked
+  `flash_ready=NO`.
+- Stock UX3407RA EC revisions preserve the 16-byte header shape but change
+  bytes `0x4a..0x4b` (`df e2` in EC `.312`, `f7 bb` in EC `.313`). A related
+  UX3407QA EC `.313` uses `a3 ca`; common checksum models tested so far do not
+  reproduce the field.
 - Copied backlight payloads sent to 4543 produced no physical effect, with or
   without the basic ASUS identity/config session.
 - Firmware flashing/recovery paths are never runtime probe targets.
@@ -71,8 +77,10 @@ the interfaces become understood.
   - [x] Prove why one-shot mailbox PWM writes are not stable.
   - [x] Generate the minimal raw-target firmware patch with exact
     hash/instruction guards.
-  - [ ] Validate EC boot-header/checksum behavior by comparing at least one
-    other official UX3407RA EC revision.
+  - [x] Compare another official UX3407RA EC revision and confirm that header
+    bytes `0x4a..0x4b` are image-dependent.
+  - [ ] Derive the exact meaning/generation of `0x4a..0x4b`, or prove through
+    boot-path evidence that modified code does not require regenerating it.
   - [ ] Establish a readback backup and board-level recovery path before any
     write.
   - [ ] Physically validate a non-destructive deployment method before enabling
@@ -95,6 +103,8 @@ the interfaces become understood.
   - [x] Map flash range, erase/program granularity, flash-ID allow-list, retry
     limits, and verification behavior.
   - [x] Confirm that the updater itself provides neither backup nor rollback.
+  - [x] Confirm that the official Windows install scripts only stage the UEFI
+    firmware INF and provide no EC backup, checksum generation, or recovery.
   - [ ] Determine why a JEDEC capacity code for a larger device is accepted
     while only the first 256 KiB is updated.
   - [ ] Determine single-bank versus dual-bank layout and boot-time recovery
