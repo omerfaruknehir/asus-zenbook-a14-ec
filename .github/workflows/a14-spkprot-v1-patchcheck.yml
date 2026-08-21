@@ -1,7 +1,10 @@
-name: A14 speaker protection V1 patch check
+name: A14 speaker protection V1 source-transform check
 
 on:
   push:
+    branches:
+      - agent/a14-speaker-protection-v1
+  pull_request:
     branches:
       - agent/a14-speaker-protection-v1
   workflow_dispatch:
@@ -10,12 +13,15 @@ permissions:
   contents: read
 
 jobs:
-  patch-check:
+  source-transform-check:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - name: Checkout A14 repository
         uses: actions/checkout@v4
+
+      - name: Compile-check V1 transformer
+        run: python3 -m py_compile scripts/apply-a14-speaker-protection-v1.py
 
       - name: Clone exact Linux v7.1.5
         run: |
