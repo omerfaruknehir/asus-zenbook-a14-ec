@@ -241,12 +241,16 @@ def run_sequence(fd: int, delay: float, require_ec_status: bool = False) -> None
 def run_raw_sequence(fd: int, delay: float) -> None:
     """Try bounded nonstandard payloads and always restore a proven level."""
     restore = cached_native_level()
+    values = (0x04, 0x10, 0x40, 0x7F, 0x80, 0xC0, 0xFE, 0xFF)
     print(f"restore_level={restore}")
-    print("raw_test_values=04,55,aa,ff")
-    print("observe whether each value changes the physical LEDs")
+    print("raw_test_values=04,10,40,7f,80,c0,fe,ff")
+    print("each raw payload is preceded by proven level 0")
+    print("observe the physical LEDs immediately after each raw_level line")
     prime_like_windows(fd)
     try:
-        for value in (0x04, 0x55, 0xAA, 0xFF):
+        for value in values:
+            set_level(fd, 0)
+            time.sleep(0.5)
             set_raw_level(fd, value)
             time.sleep(delay)
     finally:

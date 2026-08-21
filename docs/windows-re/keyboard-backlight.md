@@ -71,5 +71,7 @@ that the active QTEC HID endpoint accepts arbitrary 8-bit brightness.
 
 An internal PWM engine can still have finer electrical resolution, but access
 would require an undocumented HID command or keyboard-MCU firmware changes.
-The bounded `raw-sequence` probe tests four nonstandard payloads without
+The bounded `raw-sequence` probe resets to known level zero before testing
+`04`, `10`, `40`, `7f`, `80`, `c0`, `fe`, and `ff`. These values distinguish
+ignored, clamped, low-two-bit-masked, and genuinely raw-duty behavior without
 performing a blind 256-value vendor-command sweep.

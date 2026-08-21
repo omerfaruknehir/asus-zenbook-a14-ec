@@ -38,7 +38,7 @@ python3 -m py_compile \
   desktop/resources/repair-a14-cpu-frequency.py \
   desktop/resources/test-frequency-repair.py
 
-grep -q 'raw_test_values=04,55,aa,ff' scripts/a14-kbd-backlight-manual-probe.py
+grep -q 'raw_test_values=04,10,40,7f,80,c0,fe,ff' scripts/a14-kbd-backlight-manual-probe.py
 grep -q 'raw-sequence I_UNDERSTAND' scripts/a14-kbd-backlight-manual-probe.py
 test -s docs/windows-re/keyboard-backlight.md
 
