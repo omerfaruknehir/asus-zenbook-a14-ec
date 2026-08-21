@@ -118,6 +118,25 @@ After success the application resets/reinitializes the EC. After failure it
 runs cleanup/reset writes, but those writes cannot restore sectors already
 erased or partially programmed.
 
+## Readback implementation
+
+The repository now contains `uefi/a14-ec-readback`, a separate AArch64 UEFI
+application reconstructed from this updater's read path. It locates Qualcomm
+I2C protocol `b27ae8b1-3e10-4d07-ab5c-eb9a6dc6fa8f`, opens instance 6 with a
+400 kHz configuration, addresses the EC bridge at `0x5b`, and uses only SPI
+read-ID `0x9f` and fast-read `0x0b`.
+
+The application has no SPI write-enable, erase, page-program, status-register
+write, or fallback initialization routine. It reads EC register `0x1059` and
+continues only if the bridge is already in the zero state used by the ASUS
+updater; it never changes that register. It reads the full 1 MiB capacity three
+times in 64-byte chunks, compares the passes in memory, writes all three dumps
+to the boot FAT volume, and fails closed on any error or mismatch.
+
+CI cross-compiles the app as an AArch64 EFI PE/COFF image and audits its source
+SPI-command allowlist. Physical execution and preservation of three identical
+live dumps remain required before any firmware deployment work.
+
 ## Safety conclusion
 
 The 10-byte raw-backlight patch appears to pass `ECFlashApp`'s own raw-image
