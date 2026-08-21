@@ -34,6 +34,42 @@ payload checksum. This says nothing about a possible validity check performed
 later by the EC's own boot ROM. The stock image also has a 16-byte A5/55-style
 header at offset `0x40`; its exact semantics are not yet proven.
 
+## Cross-revision boot-header evidence
+
+The official UX3407RA BIOS 309 package supplies a second raw EC revision:
+
+| Host package | Embedded EC UI | EC SHA-256 | Header at `0x40..0x4f` |
+| --- | --- | --- | --- |
+| UX3407RA BIOS 309 | `F0184104.UX3407RA.312` | `84867e47ca24e9205b56ddcfdd3b8a90c93e567972e1680f415f21fc2373cdc8` | `a5 a5 a5 a5 a5 a5 a7 94 85 12 df e2 aa b0 55 55` |
+| UX3407RA BIOS 312 | `F0184104.UX3407RA.313` | `353eb0d125d76a14f15faa72f2153d57e25efd8d212f42b18a9f11c16e3fc39d` | `a5 a5 a5 a5 a5 a5 a7 94 85 12 f7 bb aa b0 55 55` |
+
+A third official sample from the closely related UX3407QA BIOS 313 contains
+`F0174104.UX3407QA.313`, SHA-256
+`0284032e712f971cd1b0ac69fc53a199eec8985cc289d47eb50540246249ddd0`,
+and header bytes
+`a5 a5 a5 a5 a5 a5 a7 94 85 12 a3 ca aa b0 55 55`.
+
+The fixed magic and identity remain stable, while bytes `0x4a..0x4b` vary
+between stock images. This proves that the two bytes are not fixed header
+magic. It does **not** yet prove that they are a checksum. Tests against common
+CRC-16 parameter sets, whole-image CRC residues, byte/word sums, XOR,
+Fletcher-16, and CRC-32 halves did not reproduce a shared stock-image rule.
+They may be a proprietary integrity field, a build identifier, or input to an
+EC boot-ROM policy.
+
+The raw-backlight patch currently leaves these bytes unchanged. Its generated
+image is therefore an analysis artifact and is explicitly marked
+`flash_ready=NO` until the field is derived or shown to be irrelevant by
+direct boot-path evidence.
+
+## Windows package staging
+
+The official `Install.bat` only launches the signed `BIOSInstall.ps1`.
+That script discovers the `UEFI\\RES_...` firmware device, removes the
+currently installed firmware INF when necessary, and stages the package's INF
+with `pnputil /add-driver ... /install`. It contains no EC-image checksum
+generator, pre-write backup, direct flash transport, or recovery routine.
+
 ## Flash transport and geometry
 
 The application uses an EC-mediated I2C transport at address `0x5b` to issue
@@ -88,7 +124,8 @@ it were asked to program them. That is not sufficient to flash safely.
 
 Deployment remains blocked on all of the following:
 
-- prove the EC boot-header/checksum policy with another official EC revision;
+- derive the image-dependent EC header field at `0x4a..0x4b`, or prove from
+  boot-path evidence that modified code is accepted without regenerating it;
 - obtain a complete live readback before writing;
 - determine whether the unused flash address space contains recovery data;
 - prove a recovery path that works when the main EC image does not boot;
