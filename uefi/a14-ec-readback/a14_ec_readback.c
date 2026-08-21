@@ -70,6 +70,9 @@ static EFI_GUID simple_fs_guid = {
 };
 
 static CHAR16 msg_banner[] = {'A','1','4',' ','E','C',' ','r','e','a','d','b','a','c','k',' ','v','1','\r','\n',0};
+/* Keep one absolute data initializer so GenFw emits a real .reloc table.
+ * The UX3407RA loader rejected the previous relocation-free PE/COFF image. */
+static CHAR16 * volatile msg_banner_reloc = msg_banner;
 static CHAR16 msg_readonly[] = {'S','P','I',' ','r','e','a','d','-','o','n','l','y',':',' ','0','x','9','f',' ','+',' ','0','x','0','b',' ','o','n','l','y','.','\r','\n',0};
 static CHAR16 msg_start[] = {'R','e','a','d','i','n','g',' ','t','h','r','e','e',' ','1',' ','M','i','B',' ','p','a','s','s','e','s','.','.','.','\r','\n',0};
 static CHAR16 msg_ok[] = {'O','K',':',' ','t','h','r','e','e',' ','p','a','s','s','e','s',' ','a','r','e',' ','i','d','e','n','t','i','c','a','l','.','\r','\n',0};
@@ -224,7 +227,7 @@ EFI_STATUS EFIAPI A14_EFI_ENTRY(EFI_HANDLE image, EFI_SYSTEM_TABLE *system_table
     CHAR16 nr[] = {'A','1','4','E','C','.','T','X','T',0};
 
     st = system_table; bs = st->BootServices;
-    print(msg_banner); print(msg_readonly);
+    print(msg_banner_reloc); print(msg_readonly);
     status = bs->LocateProtocol(&qcom_i2c_guid, 0, (VOID **)&i2c);
     if (EFI_ERROR(status) || !i2c || !i2c->open || !i2c->transfer || !i2c->close) {
         print(err_protocol); goto out;
