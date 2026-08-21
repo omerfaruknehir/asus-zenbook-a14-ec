@@ -1,0 +1,23 @@
+## @file
+# Write-incapable ASUS Zenbook A14 EC readback application.
+#
+# SPDX-License-Identifier: GPL-2.0-or-later
+##
+
+[Defines]
+  INF_VERSION                    = 0x00010005
+  BASE_NAME                      = A14ECReadback
+  FILE_GUID                      = CFC43711-76EE-4EA9-A2DB-C90115EEDB03
+  MODULE_TYPE                    = UEFI_APPLICATION
+  VERSION_STRING                 = 1.1
+  ENTRY_POINT                    = UefiMain
+
+[Sources]
+  a14_ec_readback.c
+
+[Packages]
+  MdePkg/MdePkg.dec
+
+[LibraryClasses]
+  UefiApplicationEntryPoint
+

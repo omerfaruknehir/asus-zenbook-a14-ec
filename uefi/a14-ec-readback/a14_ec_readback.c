@@ -1,4 +1,8 @@
+#ifdef MDE_CPU_AARCH64
+#include <Uefi.h>
+#else
 #include "uefi_min.h"
+#endif
 
 #define FLASH_SIZE       0x100000U
 #define READ_CHUNK       64U
@@ -198,7 +202,13 @@ static int accepted_id(UINT8 id[3])
     return (id[0] == 0xef || id[0] == 0xc8) && id[1] == 0x60 && id[2] == 0x14;
 }
 
-EFI_STATUS EFIAPI efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *system_table)
+#ifdef MDE_CPU_AARCH64
+#define A14_EFI_ENTRY UefiMain
+#else
+#define A14_EFI_ENTRY efi_main
+#endif
+
+EFI_STATUS EFIAPI A14_EFI_ENTRY(EFI_HANDLE image, EFI_SYSTEM_TABLE *system_table)
 {
     EFI_FILE_PROTOCOL *root = 0;
     UINT8 *pass1 = 0, *pass2 = 0, *pass3 = 0, *report = 0;

@@ -25,15 +25,23 @@ Successful output:
 - `A14EC001.BIN`, `A14EC002.BIN`, `A14EC003.BIN` — 1,048,576 bytes each;
 - `A14EC.TXT` — JEDEC ID, bridge state, CRC32 values, and equality result.
 
-Build with Clang and LLD:
+Build with the pinned EDK II `edk2-stable202605` toolchain. The previous
+standalone Clang/LLD link produced a PE image with a nonzero preferred base but
+no base-relocation directory; the UX3407RA firmware rejected that image before
+calling its entry point. The EDK II build emits the 4 KiB-aligned, relocatable
+PE/COFF layout expected by this firmware.
 
 ```sh
+git clone --depth 1 --branch edk2-stable202605 \
+  https://github.com/tianocore/edk2.git /tmp/edk2
+make -C /tmp/edk2/BaseTools -j"$(nproc)"
 cd uefi/a14-ec-readback
-./build.sh
+EDK2_DIR=/tmp/edk2 ./build.sh
 ```
 
-The build runs `audit.py`, which checks the source allowlist and the resulting
-AArch64 EFI PE/COFF identity.
+The build runs `audit.py`, which checks the source allowlist, AArch64 EFI
+identity, 4 KiB section/file alignment, zero image base, and nonempty base
+relocation directory.
 
 Do not run the raw-backlight firmware patch or any updater after readback. First
 return to Linux and validate all three images:

@@ -16,10 +16,19 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - name: Install AArch64 PE/COFF toolchain
-        run: sudo apt-get update && sudo apt-get install -y clang lld
-      - name: Build and audit
+      - name: Install EDK II AArch64 toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential gcc-aarch64-linux-gnu uuid-dev
+      - name: Fetch pinned EDK II
+        run: |
+          git clone --depth 1 --branch edk2-stable202605 \
+            https://github.com/tianocore/edk2.git "$RUNNER_TEMP/edk2"
+          make -C "$RUNNER_TEMP/edk2/BaseTools" -j"$(nproc)"
+      - name: Build and audit with EDK II
         working-directory: uefi/a14-ec-readback
+        env:
+          EDK2_DIR: ${{ runner.temp }}/edk2
         run: sh ./build.sh | tee build-report.txt
       - name: Upload audited EFI application
         uses: actions/upload-artifact@v4
