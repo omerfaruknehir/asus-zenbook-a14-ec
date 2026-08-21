@@ -176,6 +176,13 @@ def set_level(fd: int, level: int) -> None:
     print(f"level={level} set_feature={sent[:12].hex(' ')}")
 
 
+def set_raw_level(fd: int, value: int) -> None:
+    if value not in range(256):
+        raise ValueError("raw brightness payload must be in 0..255")
+    sent = feature_set(fd, BACKLIGHT_PREFIX + bytes((value,)))
+    print(f"raw_level=0x{value:02x} set_feature={sent[:12].hex(' ')}")
+
+
 def cached_native_level() -> int:
     try:
         brightness = int((LED / "brightness").read_text().strip())
@@ -231,6 +238,22 @@ def run_sequence(fd: int, delay: float, require_ec_status: bool = False) -> None
         print("physical_level_restored=yes")
 
 
+def run_raw_sequence(fd: int, delay: float) -> None:
+    """Try bounded nonstandard payloads and always restore a proven level."""
+    restore = cached_native_level()
+    print(f"restore_level={restore}")
+    print("raw_test_values=04,55,aa,ff")
+    print("observe whether each value changes the physical LEDs")
+    prime_like_windows(fd)
+    try:
+        for value in (0x04, 0x55, 0xAA, 0xFF):
+            set_raw_level(fd, value)
+            time.sleep(delay)
+    finally:
+        set_level(fd, restore)
+        print("physical_level_restored=yes")
+
+
 def capture_f4(node: Path, seconds: float) -> bool:
     print(f"Press the keyboard-backlight key / Fn+F4 during the next {seconds:g}s.")
     fd = os.open(node, os.O_RDONLY | os.O_NONBLOCK)
@@ -264,7 +287,8 @@ def capture_f4(node: Path, seconds: float) -> bool:
 def usage() -> int:
     print(
         f"usage: sudo {sys.argv[0]} status | level <0..3> | "
-        "sequence [delay] | correlate [delay] | f4 [seconds]",
+        "sequence [delay] | correlate [delay] | "
+        "raw-sequence I_UNDERSTAND [delay] | f4 [seconds]",
         file=sys.stderr,
     )
     return 2
@@ -298,6 +322,14 @@ def main() -> int:
                 run_sequence(
                     fd, max(0.5, min(10.0, delay)), require_ec_status=True
                 )
+                return 0
+            if (
+                action == "raw-sequence"
+                and len(sys.argv) in (3, 4)
+                and sys.argv[2] == "I_UNDERSTAND"
+            ):
+                delay = float(sys.argv[3]) if len(sys.argv) == 4 else 2.0
+                run_raw_sequence(fd, max(1.0, min(10.0, delay)))
                 return 0
     except KeyboardInterrupt:
         print("A14_KBD_PROBE=INTERRUPTED", file=sys.stderr)
