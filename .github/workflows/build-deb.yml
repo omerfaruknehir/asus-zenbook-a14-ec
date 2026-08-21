@@ -103,21 +103,6 @@ jobs:
           ! grep -Fq 'EC_NATIVE_FAN1_RPM_LO' scripts/prepare-a14-ec.py
           grep -Fq 'automatic (ASUS firmware owns PWM)' scripts/asus-a14-control
 
-      - name: Build and audit write-incapable A14 EC readback EFI
-        shell: bash
-        run: |
-          set -o pipefail
-          sudo apt-get update
-          sudo apt-get install -y build-essential gcc-aarch64-linux-gnu uuid-dev
-          git clone --depth 1 --branch edk2-stable202605 \
-            --recurse-submodules --shallow-submodules \
-            https://github.com/tianocore/edk2.git "$RUNNER_TEMP/edk2"
-          make -C "$RUNNER_TEMP/edk2/BaseTools" -j"$(nproc)"
-          (
-            cd uefi/a14-ec-readback
-            EDK2_DIR="$RUNNER_TEMP/edk2" sh ./build.sh 2>&1 | tee build-report.txt
-          )
-
       - name: Validate Whisper and native ASUS modes
         run: ./scripts/test-package.sh
 
@@ -188,10 +173,3 @@ jobs:
         with:
           name: asus-zenbook-a14-ec-deb
           path: dist/*.deb
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: A14ECReadback-aarch64
-          path: |
-            uefi/a14-ec-readback/dist/A14ECReadback.efi
-            uefi/a14-ec-readback/build-report.txt
