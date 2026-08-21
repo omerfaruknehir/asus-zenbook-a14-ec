@@ -75,3 +75,27 @@ The bounded `raw-sequence` probe resets to known level zero before testing
 `04`, `10`, `40`, `7f`, `80`, `c0`, `fe`, and `ff`. These values distinguish
 ignored, clamped, low-two-bit-masked, and genuinely raw-duty behavior without
 performing a blind 256-value vendor-command sweep.
+
+On UX3407RA, every tested value above three left the physical LEDs off after a
+proven level-zero baseline; restoring value one immediately lit the keyboard.
+That result rules out clamping, low-two-bit masking, and direct 8-bit duty-cycle
+semantics for the `5a ba c5 c4` command.  The controller treats values above
+three as invalid/off.
+
+## Endpoint audit
+
+The working `0..3` command and Fn+F4 input usage `5a c7` are both observed on
+the same Linux node, 0B05:0220.  ASUSOptimization also sends keyboard-light and
+Fn-switch feature reports through the same QTEC HID handle, so that endpoint is
+not a mistaken NumberPad interface.
+
+The separate `ACPI\\ASUH2024` virtual HID stack is backed by ASUS NumberPad
+keyboard/consumer filter drivers.  Its captured binaries contain neither the
+QTEC session prefix nor the keyboard-light command.  The QTEC dependency stack
+contains Microsoft's generic I2C HID miniport and Qualcomm I2C/GPIO/PEP bus
+drivers, with no additional ASUS keyboard-light driver or firmware-update
+side channel.
+
+A different undocumented report or firmware-internal control path remains
+possible.  It must be identified from the complete HID descriptor or firmware,
+not by redirecting this proven QTEC command to ASUH2024.
