@@ -109,11 +109,8 @@ jobs:
       - name: Compile generated DKMS modules
         shell: bash
         run: |
-          sudo apt-get update
-          sudo apt-get install -y linux-headers-generic
-          kdir=$(find /usr/src -maxdepth 1 -type d \
-            -name 'linux-headers-*-generic' -print | sort -V | tail -n 1)
-          test -n "$kdir"
+          kdir="/lib/modules/$(uname -r)/build"
+          test -d "$kdir"
           make KDIR="$kdir" W=1 modules
 
       - name: Verify packaged profile contract
