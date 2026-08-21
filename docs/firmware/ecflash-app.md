@@ -43,15 +43,17 @@ The official UX3407RA BIOS 309 package supplies a second raw EC revision:
 | UX3407RA BIOS 309 | `F0184104.UX3407RA.312` | `84867e47ca24e9205b56ddcfdd3b8a90c93e567972e1680f415f21fc2373cdc8` | `a5 a5 a5 a5 a5 a5 a7 94 85 12 df e2 aa b0 55 55` |
 | UX3407RA BIOS 312 | `F0184104.UX3407RA.313` | `353eb0d125d76a14f15faa72f2153d57e25efd8d212f42b18a9f11c16e3fc39d` | `a5 a5 a5 a5 a5 a5 a7 94 85 12 f7 bb aa b0 55 55` |
 
-A third official sample from the closely related UX3407QA BIOS 313 contains
-`F0174104.UX3407QA.313`, SHA-256
-`0284032e712f971cd1b0ac69fc53a199eec8985cc289d47eb50540246249ddd0`,
-and header bytes
-`a5 a5 a5 a5 a5 a5 a7 94 85 12 a3 ca aa b0 55 55`.
+Two additional official samples from the closely related UX3407QA provide a
+same-model revision comparison:
+
+| Host package | Embedded EC UI | EC SHA-256 | Bytes `0x4a..0x4b` |
+| --- | --- | --- | --- |
+| UX3407QA BIOS 313 | `F0174104.UX3407QA.313` | `0284032e712f971cd1b0ac69fc53a199eec8985cc289d47eb50540246249ddd0` | `a3 ca` |
+| UX3407QA BIOS 315 | `F0174104.UX3407QA.314` | `99a98da4527880285b6189da9456320be9d5a3333488b4f4eeef071988abc5ed` | `91 65` |
 
 The fixed magic and identity remain stable, while bytes `0x4a..0x4b` vary
-between stock images. This proves that the two bytes are not fixed header
-magic. It does **not** yet prove that they are a checksum. Tests against common
+between revisions of the same model as well as between models. This proves
+that the two bytes are neither fixed header magic nor merely a model tag. It does **not** yet prove that they are a checksum. Tests against common
 CRC-16 parameter sets, whole-image CRC residues, byte/word sums, XOR,
 Fletcher-16, and CRC-32 halves did not reproduce a shared stock-image rule.
 They may be a proprietary integrity field, a build identifier, or input to an
