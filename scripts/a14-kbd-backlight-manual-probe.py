@@ -32,6 +32,9 @@ WINDOWS_INIT = bytes((REPORT_ID,)) + b"ASUS Tech.Inc." + b"\x00"
 BACKLIGHT_PREFIX = bytes((REPORT_ID, 0xBA, 0xC5, 0xC4))
 F4_USAGE = 0xC7
 LED = Path("/sys/class/leds/asus::kbd_backlight")
+EC_STATUS = Path(
+    "/sys/bus/platform/devices/asus_zenbook_a14_ec/kbd_backlight_ec_status"
+)
 
 _IOC_NRBITS = 8
 _IOC_TYPEBITS = 8
@@ -184,16 +187,47 @@ def cached_native_level() -> int:
     return max(0, min(3, round(brightness * 3 / maximum)))
 
 
-def run_sequence(fd: int, delay: float) -> None:
+def read_ec_status() -> int | None:
+    try:
+        return int(EC_STATUS.read_text().strip(), 0)
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError) as error:
+        raise RuntimeError(f"cannot read {EC_STATUS}: {error}") from error
+
+
+def print_ec_status(label: str, required: bool = False) -> None:
+    status = read_ec_status()
+    if status is None:
+        if required:
+            raise RuntimeError(
+                f"{EC_STATUS} is missing; install/reload diagnostic version 0.5.12"
+            )
+        print(f"{label}_ec_status=UNAVAILABLE")
+        return
+    masked = status & 0x06
+    logical = masked >> 1
+    print(
+        f"{label}_ec_status=0x{status:02x} "
+        f"masked_0x06=0x{masked:02x} dsdt_logical={logical}"
+    )
+
+
+def run_sequence(fd: int, delay: float, require_ec_status: bool = False) -> None:
     restore = cached_native_level()
     print(f"restore_level={restore}")
     prime_like_windows(fd)
+    print_ec_status("initial", require_ec_status)
     try:
         for level in range(4):
             set_level(fd, level)
-            time.sleep(delay)
+            time.sleep(0.15)
+            print_ec_status(f"level_{level}", require_ec_status)
+            time.sleep(max(0.0, delay - 0.15))
     finally:
         set_level(fd, restore)
+        time.sleep(0.15)
+        print_ec_status("restored", require_ec_status)
         print("physical_level_restored=yes")
 
 
@@ -229,7 +263,8 @@ def capture_f4(node: Path, seconds: float) -> bool:
 
 def usage() -> int:
     print(
-        f"usage: sudo {sys.argv[0]} status | level <0..3> | sequence [delay] | f4 [seconds]",
+        f"usage: sudo {sys.argv[0]} status | level <0..3> | "
+        "sequence [delay] | correlate [delay] | f4 [seconds]",
         file=sys.stderr,
     )
     return 2
@@ -258,6 +293,15 @@ def main() -> int:
                 delay = float(sys.argv[2]) if len(sys.argv) == 3 else 1.5
                 run_sequence(fd, max(0.5, min(10.0, delay)))
                 return 0
+            if action == "correlate" and len(sys.argv) <= 3:
+                delay = float(sys.argv[2]) if len(sys.argv) == 3 else 1.0
+                run_sequence(
+                    fd, max(0.5, min(10.0, delay)), require_ec_status=True
+                )
+                return 0
+    except KeyboardInterrupt:
+        print("A14_KBD_PROBE=INTERRUPTED", file=sys.stderr)
+        return 130
     except (OSError, RuntimeError, ValueError) as error:
         print(f"ERROR={error}", file=sys.stderr)
         return 1

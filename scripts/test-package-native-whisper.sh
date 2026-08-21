@@ -25,8 +25,10 @@ python3 -m py_compile \
   scripts/apply-a14-native-fan-telemetry.py \
   scripts/apply-a14-native-mode-names-hotkey.py \
   scripts/apply-a14-whisper.py \
+  scripts/apply-a14-kbd-backlight-status.py \
   scripts/apply-a14-hid-fnlock.py \
   scripts/apply-a14-hid-profile-hotkey.py \
+  scripts/a14-kbd-backlight-manual-probe.py \
   scripts/asus-zenbook-a14-ppd-bridge.py \
   scripts/asus-zenbook-a14-profile-service.py \
   desktop/resources/apply-a14-cpu-info.py \
@@ -121,6 +123,9 @@ grep -q 'whisper_cpu_hot_percent' "$ec"
 grep -q 'whisper_fan_mc' "$ec"
 grep -q 'whisper_recover_mc' "$ec"
 grep -q 'DEVICE_ATTR_RO(whisper_level)' "$ec"
+grep -q 'A14_EC_KBD_BACKLIGHT_STATUS_DIAGNOSTIC' "$ec"
+grep -q 'DEVICE_ATTR_RO(kbd_backlight_ec_status)' "$ec"
+! grep -q 'kbd_backlight_ec_raw_store' "$ec"
 grep -q 'EXPORT_SYMBOL_GPL(asus_a14_cycle_native_profile)' "$ec"
 grep -q 'case ASUS_EC_PROFILE_WHISPER: next = ASUS_EC_PROFILE_QUIET' "$ec"
 grep -q 'case ASUS_EC_PROFILE_QUIET: next = ASUS_EC_PROFILE_BALANCED' "$ec"
@@ -175,6 +180,9 @@ grep -Fq 'for old_dir in /var/lib/dkms/$module/[0-9]*; do' "$root/DEBIAN/postins
 make -C "$src" prepare
 
 grep -q 'A14_WHISPER_MODE' "$src/asus_zenbook_a14_ec.c"
+grep -q 'A14_EC_KBD_BACKLIGHT_STATUS_DIAGNOSTIC' "$src/asus_zenbook_a14_ec.c"
+grep -q 'DEVICE_ATTR_RO(kbd_backlight_ec_status)' "$src/asus_zenbook_a14_ec.c"
+! grep -q 'kbd_backlight_ec_raw_store' "$src/asus_zenbook_a14_ec.c"
 grep -q 'A14_HID_NATIVE_PROFILE_HOTKEY' "$src/hid_asus_ec.c"
 grep -q '#define A14_EC_MAX_BACKLIGHT            3' "$src/hid_asus_ec.c"
 ! grep -q 'A14_EC_KBD_BACKLIGHT_255' "$src/asus_zenbook_a14_ec.c"

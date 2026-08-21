@@ -59,6 +59,8 @@ def final_missing() -> list[str]:
         "int asus_a14_cycle_native_profile(void);\n\nint asus_a14_cycle_native_profile(void)",
         "EXPORT_SYMBOL_GPL(asus_a14_cycle_native_profile)",
         "DEVICE_ATTR_RO(whisper_level)",
+        "A14_EC_KBD_BACKLIGHT_STATUS_DIAGNOSTIC",
+        "DEVICE_ATTR_RO(kbd_backlight_ec_status)",
         "*value = (long)raw * EC_TACH_RPM_MULT;",
     )
     missing = [token for token in required if token not in s]
@@ -276,6 +278,7 @@ def main() -> None:
         raise SystemExit(f"missing source: {HID_SOURCE}")
 
     compose_ec()
+    run("apply-a14-kbd-backlight-status.py")
     compose_hid()
     enforce_fnlock_experiment_policy()
 

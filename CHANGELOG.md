@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.5.12 — 2026-08-21
+
+- Added a read-only `kbd_backlight_ec_status` diagnostic that reproduces the
+  firmware's exact `ECCR(0xc9, 0xf0)` GET path. It permits correlation with the
+  proven HID brightness command without exposing or performing raw EC writes.
+- Extended the direct firmware probe to report EC status beside every physical
+  HID level and to exit cleanly when an F4 capture is interrupted.
+- Kept the production LED ABI and Fn+F4 cycle at the proven hardware values
+  0–3 while investigation of the keyboard controller's internal PWM continues.
+
 ## 0.5.11 — 2026-08-21
 
 - Reverted the unvalidated 0–255 keyboard-backlight ABI after hardware testing
