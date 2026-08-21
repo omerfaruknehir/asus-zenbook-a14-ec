@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.5.9 — 2026-08-21
+
+- Exposed the keyboard backlight as a true 0–255 Linux LED instead of four
+  logical values mapped onto the keyboard HID command.
+- Used the firmware's native DSDT `ECCW(0x02, 0x82, value)` EC transaction for
+  every brightness value, serialized with the fan/profile EC mailbox.
+- Retained the known-good four-level HID request as a degraded fallback when
+  the direct EC provider is temporarily unavailable.
+- Changed Fn+F4 to cycle the canonical 8-bit values 0, 85, 170 and 255 while
+  preserving arbitrary sysfs brightness values and suspend/resume restoration.
+- Updated the control utility, package composition and regression checks for
+  the 8-bit interface.
+
 ## 0.3.0 — 2026-08-15
 
 - Reworked the A14 power-profile contract into five distinct named policies:

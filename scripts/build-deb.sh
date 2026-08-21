@@ -37,7 +37,8 @@ for script in \
   apply-a14-native-mode-names-hotkey.py \
   apply-a14-whisper.py \
   apply-a14-hid-fnlock.py \
-  apply-a14-hid-profile-hotkey.py
+  apply-a14-hid-profile-hotkey.py \
+  apply-a14-kbd-backlight-255.py
 do
   install -m 0755 "$repo/scripts/$script" "$src/scripts/$script"
 done

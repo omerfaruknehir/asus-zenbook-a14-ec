@@ -127,7 +127,7 @@ Usage:
   sudo asus-a14-control auto
   sudo asus-a14-control manual PWM
   sudo asus-a14-control fan left|right PWM
-  sudo asus-a14-control backlight 0|1|2|3
+  sudo asus-a14-control backlight BRIGHTNESS_0_TO_255
   sudo asus-a14-control profile-backend refresh
   asus-a14-control ppd-bridge status
   sudo asus-a14-control ppd-bridge enable|disable
@@ -194,7 +194,11 @@ case "$cmd" in
   backlight)
     need_root
     level=${2:-}
-    case "$level" in 0|1|2|3) printf '%s\n' "$level" >/sys/class/leds/asus::kbd_backlight/brightness;; *) usage; exit 2;; esac
+    case "$level" in ''|*[!0-9]*) usage; exit 2;; esac
+    if [ "$level" -gt 255 ]; then
+      echo "Keyboard brightness must be 0-255" >&2; exit 2
+    fi
+    printf '%s\n' "$level" >/sys/class/leds/asus::kbd_backlight/brightness
     ;;
   profile-backend)
     case "${2:-}" in refresh) refresh_backend;; *) usage; exit 2;; esac
