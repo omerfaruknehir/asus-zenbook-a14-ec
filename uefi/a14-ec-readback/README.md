@@ -33,6 +33,7 @@ PE/COFF layout expected by this firmware.
 
 ```sh
 git clone --depth 1 --branch edk2-stable202605 \
+  --recurse-submodules --shallow-submodules \
   https://github.com/tianocore/edk2.git /tmp/edk2
 make -C /tmp/edk2/BaseTools -j"$(nproc)"
 cd uefi/a14-ec-readback

@@ -23,6 +23,7 @@ jobs:
       - name: Fetch pinned EDK II
         run: |
           git clone --depth 1 --branch edk2-stable202605 \
+            --recurse-submodules --shallow-submodules \
             https://github.com/tianocore/edk2.git "$RUNNER_TEMP/edk2"
           make -C "$RUNNER_TEMP/edk2/BaseTools" -j"$(nproc)"
       - name: Build and audit with EDK II
