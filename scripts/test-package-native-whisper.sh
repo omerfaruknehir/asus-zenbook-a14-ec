@@ -172,11 +172,14 @@ dpkg-deb --info "$deb" >/dev/null
 root=$(mktemp -d)
 trap 'rm -rf "$root"' EXIT INT TERM
 dpkg-deb -x "$deb" "$root"
+dpkg-deb -e "$deb" "$root/DEBIAN"
 src="$root/usr/src/asus-zenbook-a14-ec-$version"
 test -s "$src/asus_zenbook_a14_ec.c"
 test -s "$src/hid_asus_ec.c"
 test -x "$root/usr/libexec/asus-zenbook-a14-profile-service"
 test -s "$root/usr/share/gnome-shell/extensions/asus-a14-modes@omerfaruknehir/extension.js"
+grep -Fq 'if [ ! -f "$old_dir/source/dkms.conf" ]; then' "$root/DEBIAN/postinst"
+grep -Fq 'Removing orphaned DKMS state: $module/$old_version' "$root/DEBIAN/postinst"
 
 # A composed source package must be independently re-preparable even if a
 # repository-only transform is not present in an installed source tree.

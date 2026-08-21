@@ -146,8 +146,20 @@ for old_dir in /var/lib/dkms/\$module/*; do
   [ -d "\$old_dir" ] || continue
   old_version=\${old_dir##*/}
   [ "\$old_version" = "\$version" ] && continue
+
+  # A failed/downgraded package transaction can leave a DKMS version whose
+  # source symlink still resolves to a directory, but whose dkms.conf has
+  # already disappeared. Calling dkms remove on that state fails and later
+  # initramfs hooks abort while enumerating it. It is not a usable DKMS source,
+  # so remove only that orphaned registry entry before invoking DKMS again.
+  if [ ! -f "\$old_dir/source/dkms.conf" ]; then
+    echo "Removing orphaned DKMS state: \$module/\$old_version" >&2
+    rm -rf "\$old_dir"
+    continue
+  fi
+
   dkms remove -m "\$module" -v "\$old_version" --all >/dev/null 2>&1 || true
-  if [ ! -e "/usr/src/\$module-\$old_version" ]; then
+  if [ ! -f "/usr/src/\$module-\$old_version/dkms.conf" ]; then
     rm -rf "\$old_dir"
   fi
 done

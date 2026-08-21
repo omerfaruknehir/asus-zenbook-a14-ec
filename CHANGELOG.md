@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.10 — 2026-08-21
+
+- Fixed upgrades from a damaged older DKMS registration whose source directory
+  still exists but no longer contains `dkms.conf`. The package now removes the
+  unusable registry entry before DKMS or initramfs hooks enumerate it.
+
 ## 0.5.9 — 2026-08-21
 
 - Exposed the keyboard backlight as a true 0–255 Linux LED instead of four
