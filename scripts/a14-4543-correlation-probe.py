@@ -281,6 +281,14 @@ def usage() -> int:
 
 
 def main() -> int:
+    # stdout becomes block-buffered when the probe is piped through ``tee``.
+    # Each line labels a physical observation window, so delayed output would
+    # make an otherwise correctly timed test impossible to observe reliably.
+    try:
+        sys.stdout.reconfigure(line_buffering=True, write_through=True)
+    except AttributeError:
+        pass
+
     if len(sys.argv) < 2:
         return usage()
     try:
