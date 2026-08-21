@@ -111,10 +111,20 @@ no physical light after the proven 0220 path first selected level zero.  Both
 lit the keyboard immediately.  This rules out an uninitialized 4543 backlight
 transport; a session-gated transport remains untested.
 
-The next bounded test sends only the ASUS identity handshake and feature
-configuration query, using the live 17-byte geometry, before trying values
-`00..03`.  It intentionally does not send the unverified `d0 8f`, `d0 85`, or
-Fn-lock feature commands.
+A second descriptor-correct test sent the ASUS identity handshake and feature
+configuration query before trying values `00..03`.  All four candidates again
+left the physical LEDs off and both Feature reports remained zero.  The final
+visible level-one restoration came from the proven 0220 sysfs write performed
+after the attempted 4543 restoration; it is not evidence that the 4543 restore
+worked.  This rules out both uninitialized and basic-session-initialized 4543
+transport variants for the known keyboard-light command.
+
+The `d0 8f 01` and `d0 85 ff` packets do exist in G-Helper's generic ProArt
+initialization path.  However, its current `AsusHid.WriteInput()` implementation
+filters devices through an explicit PID allow-list that contains neither A14
+PID 0220 nor 4543.  Those packets therefore are not evidence for either live
+A14 endpoint and must not be presented as a verified A14 initialization
+sequence.
 
 A different undocumented report or firmware-internal control path remains
 possible.  It must be identified from the complete HID descriptor or firmware,
