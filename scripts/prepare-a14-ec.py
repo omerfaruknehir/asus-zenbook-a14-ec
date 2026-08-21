@@ -166,6 +166,9 @@ def fnlock_complete() -> bool:
         "INIT_DELAYED_WORK(&data->fnlock_init_work, asus_fnlock_init_work);",
         "mod_delayed_work(system_wq, &data->fnlock_init_work",
         "schedule_work(&data->fnlock_work);",
+        "A14_HID_FNLOCK_SOFTWARE_INVERSION",
+        "asus_invert_standard_fkey",
+        "Fn-lock software row state=",
         "no post-reset POWER_ON",
     )
     if not all(hid_has(token) for token in required):
@@ -302,6 +305,9 @@ def main() -> None:
         "INIT_DELAYED_WORK(&data->fnlock_init_work, asus_fnlock_init_work);",
         "mod_delayed_work(system_wq, &data->fnlock_init_work",
         "schedule_work(&data->fnlock_work);",
+        "A14_HID_FNLOCK_SOFTWARE_INVERSION",
+        "asus_invert_standard_fkey",
+        "Fn-lock software row state=",
         "static bool fnlock_windows_transport_reinit = false;",
     )
     hid_missing = [token for token in hid_required if token not in hid]
@@ -324,7 +330,7 @@ def main() -> None:
     print("a14_profiles=whisper,quiet,normal,turbo,full-speed")
     print("a14_native_profiles=quiet,normal,turbo,full-speed")
     print("a14_fn_f_cycle=whisper,quiet,normal,turbo,full-speed")
-    print("a14_fn_lock=windows-feature-path;windows-transport-reinit=diagnostic-disabled")
+    print("a14_fn_lock=software-row-inversion;windows-feature-init=diagnostic-only")
     print("a14_fn_lock_ec_stage=not-production-disproven-probe-only")
     print("a14_fan_telemetry=selector-calibrated")
     print("a14_ec_stack=current")

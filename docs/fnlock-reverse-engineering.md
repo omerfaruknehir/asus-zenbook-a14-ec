@@ -205,3 +205,21 @@ F-row and must not be presented as fixes:
 
 The exact Linux descriptor also confirms one `ff31:0076` top-level collection
 with 64-byte feature report `5a`.
+
+## Linux production behavior
+
+Because the Windows feature write is accepted but has no physical effect on
+Linux, release 0.5.14 does not use that write as the Fn+Esc state transition.
+The driver instead inverts the reports emitted by the action-primary firmware:
+
+- with Fn lock off, the firmware reports keep their normal ASUS/media actions;
+- with Fn lock on, ASUS vendor and Consumer Page actions are translated to
+  F1–F12;
+- the standard F1–F12 reports produced by Fn+key are translated back to their
+  ASUS/media actions;
+- Fn+Esc still emits `KEY_FN_ESC` after the driver changes state, so the
+  desktop OSD reports the same transition that controls the row.
+
+The startup D0/4E transaction remains diagnostic evidence and an attempt to
+put the device in its known action-primary state. It is not treated as proof
+that the physical firmware row mode changed on Linux.

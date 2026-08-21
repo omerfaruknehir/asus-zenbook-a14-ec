@@ -106,12 +106,30 @@ jobs:
       - name: Build and audit write-incapable A14 EC readback EFI
         shell: bash
         run: |
+          set -o pipefail
           sudo apt-get update
-          sudo apt-get install -y clang lld
-          (cd uefi/a14-ec-readback && sh ./build.sh | tee build-report.txt)
+          sudo apt-get install -y build-essential gcc-aarch64-linux-gnu uuid-dev
+          git clone --depth 1 --branch edk2-stable202605 \
+            --recurse-submodules --shallow-submodules \
+            https://github.com/tianocore/edk2.git "$RUNNER_TEMP/edk2"
+          make -C "$RUNNER_TEMP/edk2/BaseTools" -j"$(nproc)"
+          (
+            cd uefi/a14-ec-readback
+            EDK2_DIR="$RUNNER_TEMP/edk2" sh ./build.sh 2>&1 | tee build-report.txt
+          )
 
       - name: Validate Whisper and native ASUS modes
         run: ./scripts/test-package.sh
+
+      - name: Compile generated DKMS modules
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y linux-headers-generic
+          kdir=$(find /usr/src -maxdepth 1 -type d \
+            -name 'linux-headers-*-generic' -print | sort -V | tail -n 1)
+          test -n "$kdir"
+          make KDIR="$kdir" W=1 modules
 
       - name: Verify packaged profile contract
         shell: bash
@@ -139,6 +157,9 @@ jobs:
           grep -q 'A14_HID_NATIVE_PROFILE_HOTKEY' "$hid"
           grep -q 'asus_a14_cycle_native_profile();' "$hid"
           grep -q 'asus_emit_key(data->hotkeys, KEY_FN_ESC);' "$hid"
+          grep -q 'A14_HID_FNLOCK_SOFTWARE_INVERSION' "$hid"
+          grep -q 'asus_invert_standard_fkey' "$hid"
+          grep -q 'Fn-lock software row state=' "$hid"
           grep -q 'EC_TACH_RPM_MULT' "$ec"
           ! grep -q 'EC_NATIVE_FAN1_RPM_LO\|asus_ec_read_native_fan1_rpm' "$ec"
 

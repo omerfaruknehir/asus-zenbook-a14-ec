@@ -143,6 +143,9 @@ grep -q 'asus_a14_cycle_native_profile();' "$hid"
 grep -q 'schedule_work(&data->profile_work)' "$hid"
 grep -q '#define A14_EC_MAX_BACKLIGHT            3' "$hid"
 grep -q 'unsigned int next = (level + 1) % (A14_EC_MAX_BACKLIGHT + 1)' "$hid"
+grep -q 'A14_HID_FNLOCK_SOFTWARE_INVERSION' "$hid"
+grep -q 'asus_invert_standard_fkey' "$hid"
+grep -q 'Fn-lock software row state=' "$hid"
 
 # Removed policies may still exist as repository history/helper files, but must
 # never appear in the final generated driver source.
@@ -192,6 +195,8 @@ grep -q 'ret = __ec_rb(ec, 0xc4, EC_CC_DATA, status);' "$src/asus_zenbook_a14_ec
 ! grep -q 'kbd_backlight_ec_raw_store' "$src/asus_zenbook_a14_ec.c"
 grep -q 'A14_HID_NATIVE_PROFILE_HOTKEY' "$src/hid_asus_ec.c"
 grep -q '#define A14_EC_MAX_BACKLIGHT            3' "$src/hid_asus_ec.c"
+grep -q 'A14_HID_FNLOCK_SOFTWARE_INVERSION' "$src/hid_asus_ec.c"
+grep -q 'asus_invert_standard_fkey' "$src/hid_asus_ec.c"
 ! grep -q 'A14_EC_KBD_BACKLIGHT_255' "$src/asus_zenbook_a14_ec.c"
 ! grep -q 'A14_HID_KBD_BACKLIGHT_255' "$src/hid_asus_ec.c"
 grep -Fq 'PROFILES = ("whisper", "quiet", "normal", "turbo", "full-speed")' \

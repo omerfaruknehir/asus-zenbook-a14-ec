@@ -65,7 +65,7 @@ MODULE_PARM_DESC(fnlock_arrow_switch,
 
 once(
     '\tstruct work_struct backlight_work;\n\tatomic_t desired_brightness;\n',
-    '\tstruct work_struct backlight_work;\n\tstruct work_struct fnlock_work;\n\tstruct delayed_work fnlock_init_work;\n\tatomic_t desired_brightness;\n\tatomic_t desired_fn_lock;\n\tbool fn_lock;\n\tbool fnlock_ready;\n',
+    '\tstruct work_struct backlight_work;\n\tstruct work_struct fnlock_work;\n\tstruct delayed_work fnlock_init_work;\n\tatomic_t desired_brightness;\n\tatomic_t desired_fn_lock;\n\tbool fn_lock;\n\tbool fnlock_ready;\n\tu8 inverted_fkey;\n',
     'state')
 
 old_initialise = '''static int asus_hid_initialise(struct asus_hid_data *data)\n{\n\tu8 command[A14_EC_REPORT_SIZE] = {\n\t\tA14_EC_REPORT_ID, 0xd0, 0x8f, 0x01,\n\t};\n\n\treturn asus_hid_raw_request(data, command, HID_REQ_SET_REPORT);\n}\n\n'''
@@ -361,7 +361,7 @@ workers = '''static void asus_fnlock_init_work(struct work_struct *work)
 
     data->fn_lock = requested;
     WRITE_ONCE(data->fnlock_ready, true);
-    dev_info(&data->hdev->dev, "Fn-lock hardware path ready, state=%u\\n",
+    dev_info(&data->hdev->dev, "Fn-lock startup complete, software state=%u\\n",
              requested ? 1 : 0);
 
     ret = asus_hid_set_backlight_hw(data, level);
@@ -375,7 +375,6 @@ static void asus_fnlock_work(struct work_struct *work)
     struct asus_hid_data *data = container_of(work, struct asus_hid_data,
                                                fnlock_work);
     bool requested = atomic_read(&data->desired_fn_lock);
-    int ret;
 
     if (READ_ONCE(data->suspended))
         return;
@@ -384,14 +383,11 @@ static void asus_fnlock_work(struct work_struct *work)
         return;
     }
 
-    ret = asus_hid_set_fnlock_hw(data, requested);
-    if (ret) {
-        atomic_set(&data->desired_fn_lock, data->fn_lock);
-        dev_warn(&data->hdev->dev, "Fn-lock update failed: %d\\n", ret);
-        return;
-    }
+    /* D0/4E is accepted but physically ineffective on this A14 under Linux.
+     * The raw-event path below performs the observable row inversion. */
     data->fn_lock = requested;
-    dev_info(&data->hdev->dev, "Fn-lock hardware state=%u\\n",
+    data->inverted_fkey = 0;
+    dev_info(&data->hdev->dev, "Fn-lock software row state=%u\\n",
              requested ? 1 : 0);
 }
 
@@ -401,9 +397,160 @@ if workers not in s:
         raise SystemExit(f'worker insertion: expected one source anchor, found {s.count(anchor)}')
     s = s.replace(anchor, workers + anchor, 1)
 
+software_inversion = r'''#define A14_HID_FNLOCK_SOFTWARE_INVERSION 1
+#define A14_EC_KEYBOARD_REPORT_ID 0x02
+#define A14_EC_CONSUMER_REPORT_ID 0x03
+
+static unsigned int asus_fkey_action_key(unsigned int fkey)
+{
+    switch (fkey) {
+    case 1: return KEY_MUTE;
+    case 2: return KEY_VOLUMEDOWN;
+    case 3: return KEY_VOLUMEUP;
+    case 4: return KEY_KBDILLUMTOGGLE;
+    case 5: return KEY_BRIGHTNESSDOWN;
+    case 6: return KEY_BRIGHTNESSUP;
+    case 7: return KEY_DISPLAY_OFF;
+    case 8: return KEY_EMOJI_PICKER;
+    case 9: return KEY_MICMUTE;
+    case 10: return KEY_CAMERA_ACCESS_TOGGLE;
+    case 11: return KEY_TOUCHPAD_TOGGLE;
+    case 12: return KEY_PROG1;
+    default: return KEY_RESERVED;
+    }
+}
+
+static unsigned int asus_vendor_action_fkey(u8 usage)
+{
+    switch (usage) {
+    case 0xc7: return 4;
+    case 0x10: return 5;
+    case 0x20: return 6;
+    case 0x35: return 7;
+    case 0x7e: return 8;
+    case 0x7c: return 9;
+    case 0x85: return 10;
+    case 0x6b: return 11;
+    case 0x86: return 12;
+    default: return 0;
+    }
+}
+
+static unsigned int asus_consumer_action_fkey(u16 usage)
+{
+    switch (usage) {
+    case 0x00e2: return 1; /* mute */
+    case 0x00ea: return 2; /* volume down */
+    case 0x00e9: return 3; /* volume up */
+    default: return 0;
+    }
+}
+
+static void asus_emit_fkey(struct input_dev *input, unsigned int fkey)
+{
+    asus_emit_key(input, KEY_F1 + fkey - 1);
+}
+
+static void asus_emit_fkey_action(struct asus_hid_data *data,
+                                  unsigned int fkey)
+{
+    unsigned int level;
+    unsigned int next;
+    unsigned int action;
+
+    if (fkey == 4) {
+        level = atomic_read(&data->desired_brightness);
+        next = (level + 1) % (A14_EC_MAX_BACKLIGHT + 1);
+        atomic_set(&data->desired_brightness, next);
+        schedule_work(&data->backlight_work);
+        return;
+    }
+
+    action = asus_fkey_action_key(fkey);
+    if (action != KEY_RESERVED)
+        asus_emit_key(data->hotkeys, action);
+}
+
+static int asus_invert_standard_fkey(struct asus_hid_data *data,
+                                     u8 *raw_data, int size)
+{
+    unsigned int fkey;
+    int index;
+
+    if (size < 4)
+        return 0;
+    for (index = 3; index < size; index++) {
+        if (raw_data[index] < 0x3a || raw_data[index] > 0x45)
+            continue;
+        fkey = raw_data[index] - 0x3a + 1;
+        data->inverted_fkey = fkey;
+        asus_emit_fkey_action(data, fkey);
+        return 1;
+    }
+
+    /* Suppress the matching release report for a key synthesized above. */
+    if (data->inverted_fkey) {
+        data->inverted_fkey = 0;
+        return 1;
+    }
+    return 0;
+}
+
+'''
+raw_anchor = '''static int asus_raw_event(struct hid_device *hdev, struct hid_report *report,
+'''
+if software_inversion not in s:
+    if s.count(raw_anchor) != 1:
+        raise SystemExit(f'software inversion insertion: expected one source anchor, found {s.count(raw_anchor)}')
+    s = s.replace(raw_anchor, software_inversion + raw_anchor, 1)
+
+old_raw_start = '''\tstruct asus_hid_data *data = hid_get_drvdata(hdev);
+\tu8 usage;
+
+\tif (!data || report->id != A14_EC_REPORT_ID || size < 2)
+\t\treturn 0;
+\tusage = raw_data[1];
+'''
+new_raw_start = '''\tstruct asus_hid_data *data = hid_get_drvdata(hdev);
+\tunsigned int fkey;
+\tu16 consumer_usage;
+\tu8 usage;
+
+\tif (!data || size < 2)
+\t\treturn 0;
+
+\tif (atomic_read(&data->desired_fn_lock)) {
+\t\tif (report->id == A14_EC_KEYBOARD_REPORT_ID &&
+\t\t    asus_invert_standard_fkey(data, raw_data, size))
+\t\t\treturn 1;
+\t\tif (report->id == A14_EC_CONSUMER_REPORT_ID && size >= 3) {
+\t\t\tconsumer_usage = get_unaligned_le16(raw_data + 1);
+\t\t\tfkey = asus_consumer_action_fkey(consumer_usage);
+\t\t\tif (fkey) {
+\t\t\t\tasus_emit_fkey(data->hotkeys, fkey);
+\t\t\t\treturn 1;
+\t\t\t}
+\t\t\tif (!consumer_usage)
+\t\t\t\treturn 1;
+\t\t}
+\t\tif (report->id == A14_EC_REPORT_ID) {
+\t\t\tfkey = asus_vendor_action_fkey(raw_data[1]);
+\t\t\tif (fkey) {
+\t\t\t\tasus_emit_fkey(data->hotkeys, fkey);
+\t\t\t\treturn 1;
+\t\t\t}
+\t\t}
+\t}
+
+\tif (report->id != A14_EC_REPORT_ID)
+\t\treturn 0;
+\tusage = raw_data[1];
+'''
+once(old_raw_start, new_raw_start, 'raw report software inversion')
+
 once(
     '\tcase A14_EC_EVT_KEY_FN_ESC:\n\t\tasus_emit_key(data->hotkeys, KEY_FN_ESC);\n\t\treturn 1;\n',
-    '\tcase A14_EC_EVT_KEY_FN_ESC:\n\t\tatomic_set(&data->desired_fn_lock,\n\t\t\t   !atomic_read(&data->desired_fn_lock));\n\t\tschedule_work(&data->fnlock_work);\n\t\t/* Preserve KEY_FN_ESC so desktop media-key handlers show the Fn-lock OSD. */\n\t\tasus_emit_key(data->hotkeys, KEY_FN_ESC);\n\t\treturn 1;\n',
+    '\tcase A14_EC_EVT_KEY_FN_ESC:\n\t\tatomic_set(&data->desired_fn_lock,\n\t\t\t   !atomic_read(&data->desired_fn_lock));\n\t\tschedule_work(&data->fnlock_work);\n\t\t/* KEY_FN_ESC is an OSD notification; row inversion is owned here. */\n\t\tasus_emit_key(data->hotkeys, KEY_FN_ESC);\n\t\treturn 1;\n',
     'Fn+Esc')
 
 once(
@@ -427,8 +574,29 @@ once(old_resume, new_resume, 'resume')
 
 once(
     '\tINIT_WORK(&data->backlight_work, asus_backlight_work);\n\tatomic_set(&data->desired_brightness,\n',
-    '\tINIT_WORK(&data->backlight_work, asus_backlight_work);\n\tINIT_WORK(&data->fnlock_work, asus_fnlock_work);\n\tINIT_DELAYED_WORK(&data->fnlock_init_work, asus_fnlock_init_work);\n\tatomic_set(&data->desired_fn_lock, 0);\n\tdata->fn_lock = false;\n\tdata->fnlock_ready = false;\n\tatomic_set(&data->desired_brightness,\n',
+    '\tINIT_WORK(&data->backlight_work, asus_backlight_work);\n\tINIT_WORK(&data->fnlock_work, asus_fnlock_work);\n\tINIT_DELAYED_WORK(&data->fnlock_init_work, asus_fnlock_init_work);\n\tatomic_set(&data->desired_fn_lock, 0);\n\tdata->fn_lock = false;\n\tdata->fnlock_ready = false;\n\tdata->inverted_fkey = 0;\n\tatomic_set(&data->desired_brightness,\n',
     'probe init')
+
+once(
+    '\tinput_set_capability(data->hotkeys, EV_KEY, KEY_FN_ESC);\n',
+    '\tinput_set_capability(data->hotkeys, EV_KEY, KEY_FN_ESC);\n'
+    '\tinput_set_capability(data->hotkeys, EV_KEY, KEY_MUTE);\n'
+    '\tinput_set_capability(data->hotkeys, EV_KEY, KEY_VOLUMEDOWN);\n'
+    '\tinput_set_capability(data->hotkeys, EV_KEY, KEY_VOLUMEUP);\n'
+    '\tinput_set_capability(data->hotkeys, EV_KEY, KEY_DISPLAY_OFF);\n'
+    '\tinput_set_capability(data->hotkeys, EV_KEY, KEY_F1);\n'
+    '\tinput_set_capability(data->hotkeys, EV_KEY, KEY_F2);\n'
+    '\tinput_set_capability(data->hotkeys, EV_KEY, KEY_F3);\n'
+    '\tinput_set_capability(data->hotkeys, EV_KEY, KEY_F4);\n'
+    '\tinput_set_capability(data->hotkeys, EV_KEY, KEY_F5);\n'
+    '\tinput_set_capability(data->hotkeys, EV_KEY, KEY_F6);\n'
+    '\tinput_set_capability(data->hotkeys, EV_KEY, KEY_F7);\n'
+    '\tinput_set_capability(data->hotkeys, EV_KEY, KEY_F8);\n'
+    '\tinput_set_capability(data->hotkeys, EV_KEY, KEY_F9);\n'
+    '\tinput_set_capability(data->hotkeys, EV_KEY, KEY_F10);\n'
+    '\tinput_set_capability(data->hotkeys, EV_KEY, KEY_F11);\n'
+    '\tinput_set_capability(data->hotkeys, EV_KEY, KEY_F12);\n',
+    'software inversion input capabilities')
 
 once(
     '''\tret = asus_hid_initialise(data);\n\tif (ret)\n\t\tgoto err_led;\n\tret = asus_hid_set_backlight_hw(data,\n\t\t\t\t\tatomic_read(&data->desired_brightness));\n\tif (ret)\n\t\tgoto err_led;\n\n\tif (enable_debug_commands) {\n''',
@@ -453,6 +621,9 @@ required = (
     'struct delayed_work fnlock_init_work;',
     'INIT_DELAYED_WORK(&data->fnlock_init_work, asus_fnlock_init_work);',
     'schedule_work(&data->fnlock_work);',
+    'A14_HID_FNLOCK_SOFTWARE_INVERSION',
+    'asus_invert_standard_fkey',
+    'Fn-lock software row state=',
     'no post-reset POWER_ON',
 )
 missing = [token for token in required if token not in s]
@@ -469,4 +640,4 @@ if stale:
     raise SystemExit('Fn-lock stale/disproven transport path remains: ' + ', '.join(stale))
 
 p.write_text(s)
-print('a14_hid_fnlock=windows-power-on-reset-no-post-power-plus-asus-startup')
+print('a14_hid_fnlock=software-row-inversion-plus-osd')

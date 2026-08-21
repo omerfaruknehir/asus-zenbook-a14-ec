@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.5.14 — 2026-08-21
+
+- Replaced the accepted-but-physically-ineffective Linux 5a d0 4e Fn-switch
+  write with software inversion of the A14's standard keyboard, consumer, and
+  ASUS-vendor F1–F12 input reports.
+- Kept KEY_FN_ESC as an OSD notification after the driver owns the state
+  transition, so desktop feedback no longer substitutes for row switching.
+- Added package-time checks for the complete software-inversion path.
+
+## 0.5.13 — 2026-08-21
+
+- Restored the KEY_FN_ESC desktop event for Fn-lock OSD feedback.
+- Added the first write-incapable UEFI EC full-flash readback utility.
+
 ## 0.5.12 — 2026-08-21
 
 - Added a read-only `kbd_backlight_ec_status` diagnostic that reproduces the

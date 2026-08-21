@@ -18,6 +18,7 @@ cp "$ROOT/A14EcReadbackPkg.dsc" "$PACKAGE/"
 export WORKSPACE=$EDK2_DIR
 export EDK_TOOLS_PATH=$EDK2_DIR/BaseTools
 export GCC5_AARCH64_PREFIX=${GCC5_AARCH64_PREFIX:-aarch64-linux-gnu-}
+export PYTHON_COMMAND=${PYTHON_COMMAND:-python3}
 
 cd "$EDK2_DIR"
 . ./edksetup.sh BaseTools >/dev/null
