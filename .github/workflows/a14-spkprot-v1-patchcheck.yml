@@ -23,10 +23,20 @@ jobs:
       - name: Compile-check V1 transformer
         run: python3 -m py_compile scripts/apply-a14-speaker-protection-v1.py
 
-      - name: Clone exact Linux v7.1.5
+      - name: Sparse-clone exact Linux v7.1.5 inputs
         run: |
-          git clone --depth=1 --branch v7.1.5 --single-branch \
+          git clone --depth=1 --filter=blob:none --no-checkout --branch v7.1.5 --single-branch \
             https://github.com/gregkh/linux.git /tmp/linux-v7.1.5
+          git -C /tmp/linux-v7.1.5 sparse-checkout init --no-cone
+          git -C /tmp/linux-v7.1.5 sparse-checkout set \
+            Documentation/devicetree/bindings/sound/qcom,wsa8840.yaml \
+            arch/arm64/boot/dts/qcom/x1-asus-zenbook-a14.dtsi \
+            drivers/soundwire/qcom.c \
+            sound/soc/codecs/lpass-wsa-macro.c \
+            sound/soc/codecs/wsa884x.c \
+            sound/soc/qcom/qdsp6/q6dsp-lpass-ports.c \
+            sound/soc/qcom/x1e80100.c
+          git -C /tmp/linux-v7.1.5 checkout --detach v7.1.5
           test "$(git -C /tmp/linux-v7.1.5 rev-parse HEAD)" = \
             155b42bec9cbb6b8cdc47dd9bd09503a81fbe493
 
