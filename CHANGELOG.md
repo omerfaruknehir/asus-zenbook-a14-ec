@@ -1,5 +1,86 @@
 # Changelog
 
+## 0.5.16 — 2026-08-22 (hardware-validation candidate)
+
+- Added the exact BIOS 312 DSDT Fn-switch host-enable sequence,
+  `ECCW(02,87,00)` followed by `ECCW(02,86,01)`, through the existing
+  serialized EC mailbox before the real 64-byte `5a d0 4e` HID request.
+- Preserved `KEY_FN_ESC` for the desktop OSD and retained request-only logging;
+  no software F-row inversion and no unverified hardware-state claim is used.
+- Corrected the RV32 `LUI` address model: the Fn queue and gates live in the
+  `0x0080....` shared RAM range, not the previously documented `0x8000....`
+  range.
+- Kept the disproven Windows transport reinitialization disabled by default to
+  avoid the earlier slow post-power-on path.
+- This release remains a candidate until the target laptop physically reverses
+  its F-row and passes cold-boot, reload, and resume checks.
+
+## 0.5.15 — 2026-08-22 (withdrawn)
+
+- Removed the 0.5.14 software Fn-row emulation, but incorrectly treated
+  `5a d0 8f 01` as the missing prerequisite for the real `D0/4E` row request.
+- Hardware testing proved that the EC still accepted and queued every request
+  without changing the physical row. A follow-up Fn+F12 service-gate test also
+  had no effect. This package must not be presented as a working Fn-lock fix.
+- The EC analyzer and clean-room C++ model remain useful, but `D0/8F` is now
+  classified as a separate unknown-purpose timed state machine.
+
+## 0.5.14 — 2026-08-21
+
+- Replaced the accepted-but-physically-ineffective Linux 5a d0 4e Fn-switch
+  write with software inversion of the A14's standard keyboard, consumer, and
+  ASUS-vendor F1–F12 input reports.
+- Kept KEY_FN_ESC as an OSD notification after the driver owns the state
+  transition, so desktop feedback no longer substitutes for row switching.
+- Added package-time checks for the complete software-inversion path.
+
+## 0.5.13 — 2026-08-21
+
+- Restored the KEY_FN_ESC desktop event for Fn-lock OSD feedback.
+- Added the first write-incapable UEFI EC full-flash readback utility.
+
+## 0.5.12 — 2026-08-21
+
+- Added a read-only `kbd_backlight_ec_status` diagnostic that reproduces the
+  firmware's exact `ECCR(0xc9, 0xf0)` GET path. It permits correlation with the
+  proven HID brightness command without exposing or performing raw EC writes.
+- Extended the direct firmware probe to report EC status beside every physical
+  HID level and to exit cleanly when an F4 capture is interrupted.
+- Kept the production LED ABI and Fn+F4 cycle at the proven hardware values
+  0–3 while investigation of the keyboard controller's internal PWM continues.
+
+## 0.5.11 — 2026-08-21
+
+- Reverted the unvalidated 0–255 keyboard-backlight ABI after hardware testing
+  showed that it cached requested values without changing the physical LEDs.
+- Restored the proven ASUS HID four-level backlight command and Fn+F4 cycle.
+- Corrected the firmware documentation: ACPI maps four logical levels onto the
+  EC bytes `0x00`, `0x55`, `0xAA`, and `0xFF`; it does not expose 256 levels.
+- Restricted stale DKMS cleanup to version directories so DKMS housekeeping
+  state such as `original_module` is never mistaken for an installed version.
+
+## 0.5.10 — 2026-08-21
+
+- Fixed upgrades from a damaged older DKMS registration whose source directory
+  still exists but no longer contains `dkms.conf`. The package now removes the
+  unusable registry entry before DKMS or initramfs hooks enumerate it.
+
+## 0.5.9 — 2026-08-21 (withdrawn)
+
+- Exposed the keyboard backlight as a true 0–255 Linux LED instead of four
+  logical values mapped onto the keyboard HID command.
+- Used the firmware's native DSDT `ECCW(0x02, 0x82, value)` EC transaction for
+  every brightness value, serialized with the fan/profile EC mailbox.
+- Retained the known-good four-level HID request as a degraded fallback when
+  the direct EC provider is temporarily unavailable.
+- Changed Fn+F4 to cycle the canonical 8-bit values 0, 85, 170 and 255 while
+  preserving arbitrary sysfs brightness values and suspend/resume restoration.
+- Updated the control utility, package composition and regression checks for
+  the 8-bit interface.
+
+Hardware validation later disproved this interpretation; 0.5.11 restores the
+supported four-level HID interface.
+
 ## 0.3.0 — 2026-08-15
 
 - Reworked the A14 power-profile contract into five distinct named policies:

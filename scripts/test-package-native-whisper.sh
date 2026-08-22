@@ -25,8 +25,10 @@ python3 -m py_compile \
   scripts/apply-a14-native-fan-telemetry.py \
   scripts/apply-a14-native-mode-names-hotkey.py \
   scripts/apply-a14-whisper.py \
+  scripts/apply-a14-kbd-backlight-status.py \
   scripts/apply-a14-hid-fnlock.py \
   scripts/apply-a14-hid-profile-hotkey.py \
+  scripts/a14-kbd-backlight-manual-probe.py \
   scripts/asus-zenbook-a14-ppd-bridge.py \
   scripts/asus-zenbook-a14-profile-service.py \
   desktop/resources/apply-a14-cpu-info.py \
@@ -35,6 +37,10 @@ python3 -m py_compile \
   desktop/resources/repair-a14-gpu-metrics.py \
   desktop/resources/repair-a14-cpu-frequency.py \
   desktop/resources/test-frequency-repair.py
+
+grep -q 'raw_test_values=04,10,40,7f,80,c0,fe,ff' scripts/a14-kbd-backlight-manual-probe.py
+grep -q 'raw-sequence I_UNDERSTAND' scripts/a14-kbd-backlight-manual-probe.py
+test -s docs/windows-re/keyboard-backlight.md
 
 # Keep the existing desktop/resource regression coverage.
 python3 desktop/resources/test-patcher.py
@@ -121,16 +127,38 @@ grep -q 'whisper_cpu_hot_percent' "$ec"
 grep -q 'whisper_fan_mc' "$ec"
 grep -q 'whisper_recover_mc' "$ec"
 grep -q 'DEVICE_ATTR_RO(whisper_level)' "$ec"
+grep -q 'A14_EC_KBD_BACKLIGHT_STATUS_DIAGNOSTIC' "$ec"
+grep -q 'DEVICE_ATTR_RO(kbd_backlight_ec_status)' "$ec"
+grep -q 'EC_REG_KBD_BACKLIGHT_STATUS_MIN);' "$ec"
+grep -q 'ret = __ec_rb(ec, 0xc4, EC_CC_DATA, status);' "$ec"
+! grep -q 'kbd_backlight_ec_raw_store' "$ec"
 grep -q 'EXPORT_SYMBOL_GPL(asus_a14_cycle_native_profile)' "$ec"
+grep -Fq 'ret = __ec_cw(ec, 0x02, 0x87, 0x00);' "$ec"
+grep -Fq 'ret = __ec_cw(ec, 0x02, 0x86, 0x01);' "$ec"
+grep -q 'EXPORT_SYMBOL_GPL(asus_a14_enable_fn_switch_gate)' "$ec"
 grep -q 'case ASUS_EC_PROFILE_WHISPER: next = ASUS_EC_PROFILE_QUIET' "$ec"
 grep -q 'case ASUS_EC_PROFILE_QUIET: next = ASUS_EC_PROFILE_BALANCED' "$ec"
 grep -q 'case ASUS_EC_PROFILE_BALANCED: next = ASUS_EC_PROFILE_PERFORMANCE' "$ec"
 grep -q 'case ASUS_EC_PROFILE_PERFORMANCE: next = ASUS_EC_PROFILE_FULL_SPEED' "$ec"
 grep -q 'default: next = ASUS_EC_PROFILE_WHISPER' "$ec"
-
 grep -q 'A14_HID_NATIVE_PROFILE_HOTKEY' "$hid"
 grep -q 'asus_a14_cycle_native_profile();' "$hid"
 grep -q 'schedule_work(&data->profile_work)' "$hid"
+grep -q '#define A14_EC_MAX_BACKLIGHT            3' "$hid"
+grep -q 'unsigned int next = (level + 1) % (A14_EC_MAX_BACKLIGHT + 1)' "$hid"
+grep -Fq 'A14_EC_REPORT_ID, 0xd0, 0x4e, enabled ? 1 : 0' "$hid"
+grep -q 'extern int asus_a14_enable_fn_switch_gate(void);' "$hid"
+grep -q 'ret = asus_a14_enable_fn_switch_gate();' "$hid"
+grep -q 'Fn-lock request submitted, requested=' "$hid"
+grep -q 'EC acknowledgement unavailable' "$hid"
+grep -q 'asus_emit_key(data->hotkeys, KEY_FN_ESC)' "$hid"
+! grep -q 'A14_HID_FNLOCK_EC_ACTIVATION' "$hid"
+! grep -q 'asus_hid_activate_fn_switch_hw' "$hid"
+! grep -Fq 'A14_EC_REPORT_ID, 0xd0, 0x8f, 0x01' "$hid"
+! grep -q 'Fn-lock hardware state=' "$hid"
+! grep -q 'A14_HID_FNLOCK_SOFTWARE_INVERSION' "$hid"
+! grep -q 'asus_invert_standard_fkey' "$hid"
+! grep -q 'Fn-lock software row state=' "$hid"
 
 # Removed policies may still exist as repository history/helper files, but must
 # never appear in the final generated driver source.
@@ -159,18 +187,42 @@ dpkg-deb --info "$deb" >/dev/null
 root=$(mktemp -d)
 trap 'rm -rf "$root"' EXIT INT TERM
 dpkg-deb -x "$deb" "$root"
+dpkg-deb -e "$deb" "$root/DEBIAN"
 src="$root/usr/src/asus-zenbook-a14-ec-$version"
 test -s "$src/asus_zenbook_a14_ec.c"
 test -s "$src/hid_asus_ec.c"
 test -x "$root/usr/libexec/asus-zenbook-a14-profile-service"
 test -s "$root/usr/share/gnome-shell/extensions/asus-a14-modes@omerfaruknehir/extension.js"
+grep -Fq 'if [ ! -f "$old_dir/source/dkms.conf" ]; then' "$root/DEBIAN/postinst"
+grep -Fq 'Removing orphaned DKMS state: $module/$old_version' "$root/DEBIAN/postinst"
+grep -Fq 'for old_dir in /var/lib/dkms/$module/[0-9]*; do' "$root/DEBIAN/postinst"
 
 # A composed source package must be independently re-preparable even if a
 # repository-only transform is not present in an installed source tree.
 make -C "$src" prepare
 
 grep -q 'A14_WHISPER_MODE' "$src/asus_zenbook_a14_ec.c"
+grep -q 'A14_EC_KBD_BACKLIGHT_STATUS_DIAGNOSTIC' "$src/asus_zenbook_a14_ec.c"
+grep -Fq 'ret = __ec_cw(ec, 0x02, 0x87, 0x00);' "$src/asus_zenbook_a14_ec.c"
+grep -Fq 'ret = __ec_cw(ec, 0x02, 0x86, 0x01);' "$src/asus_zenbook_a14_ec.c"
+grep -q 'EXPORT_SYMBOL_GPL(asus_a14_enable_fn_switch_gate)' "$src/asus_zenbook_a14_ec.c"
+grep -q 'DEVICE_ATTR_RO(kbd_backlight_ec_status)' "$src/asus_zenbook_a14_ec.c"
+grep -q 'ret = __ec_rb(ec, 0xc4, EC_CC_DATA, status);' "$src/asus_zenbook_a14_ec.c"
+! grep -q 'kbd_backlight_ec_raw_store' "$src/asus_zenbook_a14_ec.c"
 grep -q 'A14_HID_NATIVE_PROFILE_HOTKEY' "$src/hid_asus_ec.c"
+grep -q '#define A14_EC_MAX_BACKLIGHT            3' "$src/hid_asus_ec.c"
+grep -Fq 'A14_EC_REPORT_ID, 0xd0, 0x4e, enabled ? 1 : 0' "$src/hid_asus_ec.c"
+grep -q 'extern int asus_a14_enable_fn_switch_gate(void);' "$src/hid_asus_ec.c"
+grep -q 'ret = asus_a14_enable_fn_switch_gate();' "$src/hid_asus_ec.c"
+grep -q 'Fn-lock request submitted, requested=' "$src/hid_asus_ec.c"
+! grep -q 'A14_HID_FNLOCK_EC_ACTIVATION' "$src/hid_asus_ec.c"
+! grep -q 'asus_hid_activate_fn_switch_hw' "$src/hid_asus_ec.c"
+! grep -Fq 'A14_EC_REPORT_ID, 0xd0, 0x8f, 0x01' "$src/hid_asus_ec.c"
+! grep -q 'Fn-lock hardware state=' "$src/hid_asus_ec.c"
+! grep -q 'A14_HID_FNLOCK_SOFTWARE_INVERSION' "$src/hid_asus_ec.c"
+! grep -q 'asus_invert_standard_fkey' "$src/hid_asus_ec.c"
+! grep -q 'A14_EC_KBD_BACKLIGHT_255' "$src/asus_zenbook_a14_ec.c"
+! grep -q 'A14_HID_KBD_BACKLIGHT_255' "$src/hid_asus_ec.c"
 grep -Fq 'PROFILES = ("whisper", "quiet", "normal", "turbo", "full-speed")' \
   "$root/usr/libexec/asus-zenbook-a14-profile-service"
 

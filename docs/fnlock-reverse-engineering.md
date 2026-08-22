@@ -54,8 +54,11 @@ The model-specific battery command in the same function is restricted by the
 binary to UX8406/UX8407/HT7407/UX8200-class model prefixes. It is not part of
 the UX3407RA Fn-switch path.
 
-The old `5a d0 8f 01` command is OOBE-complete behavior, not Fn-lock
-initialization, and must not be used as an Fn-lock prerequisite.
+The original driver also sent `5a d0 8f 01`. BIOS 312 EC disassembly proves that
+its handler sets bit 7, clears bit 6 in `0x008012a0`, and resets an associated
+mode/counter. Further callers show a separate timed state machine, not a proven
+Fn-switch gate. Restoring it before `D0/4E` in package 0.5.15 did not change the
+physical row, so it is disproven as a sufficient prerequisite.
 
 ## Exact Windows HIDI2C SetFeature transport
 
@@ -205,3 +208,32 @@ F-row and must not be presented as fixes:
 
 The exact Linux descriptor also confirms one `ff31:0076` top-level collection
 with 64-byte feature report `5a`.
+
+## Current Linux status after 0.5.15 hardware test
+
+Release 0.5.14's software report inversion was not firmware Fn-lock. Package
+0.5.15 removed that emulation but its `D0/8F` prerequisite theory also failed
+physical testing. Fn+F12 did not open the recovered bit-7 service gate either,
+which proves that internal protocol opcode `0x86` is not the physical key usage
+despite the numeric collision.
+
+The driver must preserve `KEY_FN_ESC` solely for OSD and describe `D0/4E` as a
+submitted request until the EC queue and service result can be acknowledged.
+
+## BIOS 312 EC gate sequence
+
+The full BIOS 312 DSDT contains a separate host-enable branch that was missing
+from the earlier HID-only reconstruction. Under the EC mutex it clears the
+associated mode and enables the Fn-switch service with:
+
+```text
+ECCW(0x02, 0x87, 0x00)
+ECCW(0x02, 0x86, 0x01)
+```
+
+The disable branch sends `ECCW(0x02,0x86,0x00)` and then
+`ECCW(0x02,0x87,0x05)`. This matches the EC firmware independently: internal
+opcode `0x86` with a nonzero argument calls the ready-gate setter used by the
+queued `D0/4E` service, while zero clears it. Package 0.5.16 submits the exact
+enable sequence before the existing Windows-compatible `D0/4E` report. This is
+a physical-validation candidate, not a success claim.

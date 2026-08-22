@@ -106,6 +106,13 @@ jobs:
       - name: Validate Whisper and native ASUS modes
         run: ./scripts/test-package.sh
 
+      - name: Compile generated DKMS modules
+        shell: bash
+        run: |
+          kdir="/lib/modules/$(uname -r)/build"
+          test -d "$kdir"
+          make KDIR="$kdir" W=1 modules
+
       - name: Verify packaged profile contract
         shell: bash
         run: |
@@ -131,6 +138,10 @@ jobs:
           grep -q 'DEVICE_ATTR_RO(whisper_level)' "$ec"
           grep -q 'A14_HID_NATIVE_PROFILE_HOTKEY' "$hid"
           grep -q 'asus_a14_cycle_native_profile();' "$hid"
+          grep -q 'asus_emit_key(data->hotkeys, KEY_FN_ESC);' "$hid"
+          grep -q 'A14_HID_FNLOCK_SOFTWARE_INVERSION' "$hid"
+          grep -q 'asus_invert_standard_fkey' "$hid"
+          grep -q 'Fn-lock software row state=' "$hid"
           grep -q 'EC_TACH_RPM_MULT' "$ec"
           ! grep -q 'EC_NATIVE_FAN1_RPM_LO\|asus_ec_read_native_fan1_rpm' "$ec"
 

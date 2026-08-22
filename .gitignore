@@ -13,3 +13,4 @@ Module.symvers
 .*.cmd
 .cache.mkcheck
 *.dwo
+__pycache__/

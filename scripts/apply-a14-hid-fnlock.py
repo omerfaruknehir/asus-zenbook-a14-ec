@@ -38,6 +38,11 @@ once(
     'transport includes')
 
 once(
+    '#define A14_EC_MAX_BACKLIGHT            3\n',
+    '#define A14_EC_MAX_BACKLIGHT            3\n\nextern int asus_a14_enable_fn_switch_gate(void);\n',
+    'BIOS Fn-switch EC gate export')
+
+once(
     'MODULE_PARM_DESC(enable_debug_commands, "Expose root-only raw EC HID command sysfs+");\n',
     '''MODULE_PARM_DESC(enable_debug_commands, "Expose root-only raw EC HID command sysfs+");
 
@@ -281,6 +286,13 @@ static int asus_hid_windows_common_init(struct asus_hid_data *data,
     int attempt;
     int ret;
 
+    /* BIOS 312 enables the EC Fn-switch service with ECCW(02,87,00) followed
+     * by ECCW(02,86,01).  Without this gate the EC accepts D0/4E but never
+     * applies the queued F-row state. */
+    ret = asus_a14_enable_fn_switch_gate();
+    if (ret)
+        return ret;
+
     /* ASUSOptimization 2.1.75.0 first GETs report 0x5a. It sends the initial
      * ASUS Tech.Inc. feature only when the returned feature family is unknown. */
     ret = asus_hid_raw_request(data, report, HID_REQ_GET_REPORT);
@@ -361,7 +373,8 @@ workers = '''static void asus_fnlock_init_work(struct work_struct *work)
 
     data->fn_lock = requested;
     WRITE_ONCE(data->fnlock_ready, true);
-    dev_info(&data->hdev->dev, "Fn-lock hardware path ready, state=%u\\n",
+    dev_info(&data->hdev->dev,
+             "Fn-lock initial request submitted, requested=%u (EC acknowledgement unavailable)\\n",
              requested ? 1 : 0);
 
     ret = asus_hid_set_backlight_hw(data, level);
@@ -391,7 +404,8 @@ static void asus_fnlock_work(struct work_struct *work)
         return;
     }
     data->fn_lock = requested;
-    dev_info(&data->hdev->dev, "Fn-lock hardware state=%u\\n",
+    dev_info(&data->hdev->dev,
+             "Fn-lock request submitted, requested=%u (EC acknowledgement unavailable)\\n",
              requested ? 1 : 0);
 }
 
@@ -403,7 +417,7 @@ if workers not in s:
 
 once(
     '\tcase A14_EC_EVT_KEY_FN_ESC:\n\t\tasus_emit_key(data->hotkeys, KEY_FN_ESC);\n\t\treturn 1;\n',
-    '\tcase A14_EC_EVT_KEY_FN_ESC:\n\t\tatomic_set(&data->desired_fn_lock,\n\t\t\t   !atomic_read(&data->desired_fn_lock));\n\t\tschedule_work(&data->fnlock_work);\n\t\treturn 1;\n',
+    '\tcase A14_EC_EVT_KEY_FN_ESC:\n\t\tatomic_set(&data->desired_fn_lock,\n\t\t\t   !atomic_read(&data->desired_fn_lock));\n\t\tschedule_work(&data->fnlock_work);\n\t\t/* Preserve KEY_FN_ESC so desktop media-key handlers show the Fn-lock OSD. */\n\t\tasus_emit_key(data->hotkeys, KEY_FN_ESC);\n\t\treturn 1;\n',
     'Fn+Esc')
 
 once(
@@ -443,6 +457,8 @@ once(
 required = (
     'A14_HID_FNLOCK_WINDOWS_FULL_FEATURE_REPORT',
     'A14_HID_FNLOCK_WINDOWS_COMMON_INIT',
+    'extern int asus_a14_enable_fn_switch_gate(void);',
+    'ret = asus_a14_enable_fn_switch_gate();',
     'A14_HID_WINDOWS_POWER_RESET_SEQUENCE',
     'A14_HID_NO_POST_RESET_POWER_ON',
     'static int asus_hid_windows_transport_reinit_hw',
@@ -462,11 +478,18 @@ if missing:
 forbidden = (
     'A14_HID_QTEC_POST_HID_REPOWER',
     'asus_hid_qtec_post_init_repower',
+    'A14_HID_FNLOCK_SOFTWARE_INVERSION',
+    'asus_invert_standard_fkey',
+    'Fn-lock software row state=',
+    'A14_HID_FNLOCK_EC_ACTIVATION',
+    'asus_hid_activate_fn_switch_hw',
     '0xd0, 0x8f, 0x01',
+    'Fn-lock hardware state=',
+    'Fn-lock hardware path ready',
 )
 stale = [token for token in forbidden if token in s]
 if stale:
     raise SystemExit('Fn-lock stale/disproven transport path remains: ' + ', '.join(stale))
 
 p.write_text(s)
-print('a14_hid_fnlock=windows-power-on-reset-no-post-power-plus-asus-startup')
+print('a14_hid_fnlock=d0-4e-request-only-no-false-hardware-ack-with-osd')
