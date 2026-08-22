@@ -7,6 +7,7 @@ all modules: prepare
 
 prepare:
 	python3 scripts/prepare-a14-ec.py
+	@test ! -f scripts/apply-a14-lifecycle-hardening.py || python3 scripts/apply-a14-lifecycle-hardening.py
 
 mainline-check:
 	@test -n "$(KERNEL_SRC)" || { echo "Usage: make mainline-check KERNEL_SRC=/path/to/linux" >&2; exit 2; }
