@@ -19,7 +19,7 @@ done
 
 if [ "$(id -u)" -ne 0 ]; then
     echo '[privilege] Re-running AP-camera release A/B with sudo...'
-    exec sudo env A14_TEST_USER="$(id -un)" A14_TEST_UID="$(id -u)" -- "$0" "$@"
+    exec sudo A14_TEST_USER="$(id -un)" A14_TEST_UID="$(id -u)" "$0" "$@"
 fi
 
 DRV=/sys/bus/i2c/drivers/ov02c10
@@ -56,9 +56,10 @@ user_systemctl() {
     uid=${A14_TEST_UID:-}
     user=${A14_TEST_USER:-}
     [ -n "$uid" ] && [ -n "$user" ] || return 1
-    env XDG_RUNTIME_DIR="/run/user/$uid" \
+    runuser -u "$user" -- env \
+        XDG_RUNTIME_DIR="/run/user/$uid" \
         DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$uid/bus" \
-        runuser -u "$user" -- systemctl --user "$@"
+        systemctl --user "$@"
 }
 
 restore_media() {
