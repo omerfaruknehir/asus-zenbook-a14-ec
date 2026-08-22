@@ -15,6 +15,30 @@ def once(old: str, new: str, label: str) -> None:
     s = s.replace(old, new, 1)
 
 
+# BIOS 312's I2C6.WEBC method initializes BMTR to 0xC8 and waits with
+# Stall(0x64), i.e. 100 microseconds per busy poll (~20 ms total). An earlier
+# reconstruction incorrectly treated this as Sleep(100) / 100 milliseconds,
+# stretching the same mailbox wait to ~20 seconds. Repair both newly composed
+# and already-composed trees here; this compatibility transform is shipped in
+# the DKMS package, so the correction survives future kernel rebuilds.
+wrong_wait = (
+    '#define EC_FW_WAIT_ATTEMPTS              200\n'
+    '/* DSDT WEBC uses Sleep(100): 100 ms per busy poll, not 100 us. */\n'
+    '#define EC_FW_WAIT_MIN_US                100000\n'
+    '#define EC_FW_WAIT_MAX_US                110000\n'
+)
+correct_wait = (
+    '#define EC_FW_WAIT_ATTEMPTS              200\n'
+    '/* BIOS 312 I2C6.WEBC: Stall(0x64) = 100 us, BMTR = 0xC8. */\n'
+    '#define EC_FW_WAIT_MIN_US                100\n'
+    '#define EC_FW_WAIT_MAX_US                200\n'
+)
+if wrong_wait in s:
+    s = s.replace(wrong_wait, correct_wait, 1)
+elif correct_wait not in s:
+    raise SystemExit('BIOS 312 WEBC timing anchor missing')
+
+
 # The A14 has two distinct controls:
 #   1. the low-level EC fan controller AUTO/MANUAL bit, and
 #   2. the native 0x00110019 firmware thermal/fan profile mailbox.
