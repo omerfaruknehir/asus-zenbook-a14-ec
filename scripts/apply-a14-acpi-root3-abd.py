@@ -40,7 +40,7 @@ DRIVER = r'''// SPDX-License-Identifier: GPL-2.0-only
 #define QCOM_ABD_MAX_TRACE_REQUESTS 128
 
 struct qcom_abd {
-	acpi_handle handle;
+	/* ACPICA populates this by treating handler_context as this type. */
 	struct acpi_connection_info info;
 	atomic_t requests;
 };
@@ -128,7 +128,6 @@ static acpi_status qcom_abd_install_one(acpi_handle handle, u32 level,
 	if (!abd)
 		return AE_NO_MEMORY;
 
-	abd->handle = handle;
 	atomic_set(&abd->requests, 0);
 
 	status = acpi_install_address_space_handler(handle,
