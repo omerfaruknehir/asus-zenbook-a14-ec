@@ -10,6 +10,7 @@ prepare:
 	@test ! -f scripts/apply-a14-lifecycle-hardening.py || python3 scripts/apply-a14-lifecycle-hardening.py
 	@test ! -f scripts/apply-a14-hid-reset-resume.py || python3 scripts/apply-a14-hid-reset-resume.py
 	@test ! -f scripts/apply-a14-bios312-coldboot.py || python3 scripts/apply-a14-bios312-coldboot.py
+	@test ! -f scripts/apply-a14-fnlock-state.py || python3 scripts/apply-a14-fnlock-state.py
 	@test ! -f scripts/clean-a14-generated-hid.py || python3 scripts/clean-a14-generated-hid.py
 
 mainline-check:
