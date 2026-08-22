@@ -26,7 +26,8 @@ typedef int a14_iio_event_state_t;
 
 static void disconnect_client(struct a14_ssc_hpd *hpd);
 
-static void reconnect_client_if_possible(struct a14_ssc_hpd *hpd)
+static void reconnect_client_after(struct a14_ssc_hpd *hpd,
+				   unsigned int delay_ms)
 {
 	bool reconnect;
 
@@ -36,7 +37,13 @@ static void reconnect_client_if_possible(struct a14_ssc_hpd *hpd)
 	mutex_unlock(&hpd->lock);
 
 	if (reconnect)
-		queue_work(hpd->wq, &hpd->connect_work);
+		mod_delayed_work(hpd->wq, &hpd->connect_work,
+				 msecs_to_jiffies(delay_ms));
+}
+
+static void reconnect_client_if_possible(struct a14_ssc_hpd *hpd)
+{
+	reconnect_client_after(hpd, 0);
 }
 
 static int hpd_read_raw(struct iio_dev *indio_dev,
@@ -64,12 +71,14 @@ static int hpd_read_event_config(struct iio_dev *indio_dev,
 				 enum iio_event_direction dir)
 {
 	struct a14_ssc_hpd *hpd = iio_priv(indio_dev);
-	int enabled;
+	int requested;
 
+	/* Report the persistent IIO policy rather than the transient QMI client
+	 * subscription, which is intentionally torn down during suspend/recovery. */
 	mutex_lock(&hpd->lock);
-	enabled = hpd->event_enabled;
+	requested = hpd->event_requested;
 	mutex_unlock(&hpd->lock);
-	return enabled;
+	return requested;
 }
 
 static int hpd_write_event_config(struct iio_dev *indio_dev,
@@ -81,6 +90,10 @@ static int hpd_write_event_config(struct iio_dev *indio_dev,
 	struct a14_ssc_hpd *hpd = iio_priv(indio_dev);
 	int ret;
 
+	mutex_lock(&hpd->lock);
+	hpd->event_requested = !!state;
+	mutex_unlock(&hpd->lock);
+
 	if (state) {
 		ret = a14_ssc_enable_hpd(hpd);
 		if (!ret)
@@ -88,13 +101,13 @@ static int hpd_write_event_config(struct iio_dev *indio_dev,
 
 		/* A failed handshake can leave firmware-side request state tied to
 		 * this SSC client ID. Release the complete client immediately and
-		 * rediscover through a fresh client instead of requiring a later
-		 * disable write, module reload, suspend cycle or reboot. */
+		 * rediscover through a fresh client. Keep event_requested set so a
+		 * successful reconnect reconstructs the subscription automatically. */
 		dev_warn(hpd->dev,
 			 "presence activation failed: %d; recycling SSC client\n",
 			 ret);
 		disconnect_client(hpd);
-		reconnect_client_if_possible(hpd);
+		reconnect_client_after(hpd, A14_SSC_RECONNECT_DELAY_MS);
 		return ret;
 	}
 
@@ -162,9 +175,11 @@ static void disconnect_work_fn(struct work_struct *work)
 
 static void connect_work_fn(struct work_struct *work)
 {
-	struct a14_ssc_hpd *hpd = container_of(work, struct a14_ssc_hpd,
+	struct a14_ssc_hpd *hpd = container_of(to_delayed_work(work),
+						struct a14_ssc_hpd,
 						connect_work);
 	struct sockaddr_qrtr sq;
+	bool enable_requested;
 	int ret;
 
 	mutex_lock(&hpd->op_lock);
@@ -181,7 +196,7 @@ static void connect_work_fn(struct work_struct *work)
 	ret = qmi_handle_init(&hpd->client, A14_SSC_DATA_MAX + 64, NULL,
 			      a14_ssc_handlers);
 	if (ret)
-		goto err;
+		goto err_retry;
 
 	mutex_lock(&hpd->lock);
 	hpd->client_initialized = true;
@@ -189,7 +204,7 @@ static void connect_work_fn(struct work_struct *work)
 
 	ret = kernel_connect(hpd->client.sock, (void *)&sq, sizeof(sq), 0);
 	if (ret)
-		goto err_release;
+		goto err_release_retry;
 
 	mutex_lock(&hpd->lock);
 	hpd->connected = true;
@@ -197,30 +212,61 @@ static void connect_work_fn(struct work_struct *work)
 	dev_info(hpd->dev, "connected to SSC QMI service at %u:%u\n",
 		 sq.sq_node, sq.sq_port);
 
+	/* camera_handshake and human_presence_detect are mandatory. A transient
+	 * discovery timeout used to leave a connected-but-unusable client forever;
+	 * release it and retry instead. camera_face_detect remains optional. */
 	ret = a14_ssc_discover_suid(hpd, "camera_handshake",
 			    &hpd->handshake_suid_done, &hpd->handshake_suid);
-	if (ret)
-		dev_err(hpd->dev, "camera_handshake discovery failed: %d\n", ret);
+	if (ret) {
+		dev_warn(hpd->dev, "camera_handshake discovery failed: %d\n", ret);
+		goto err_release_retry;
+	}
 	ret = a14_ssc_discover_suid(hpd, "human_presence_detect",
 			    &hpd->hpd_suid_done, &hpd->hpd_suid);
-	if (ret)
-		dev_err(hpd->dev, "human_presence_detect discovery failed: %d\n", ret);
+	if (ret) {
+		dev_warn(hpd->dev, "human_presence_detect discovery failed: %d\n", ret);
+		goto err_release_retry;
+	}
 	ret = a14_ssc_discover_suid(hpd, "camera_face_detect",
 			    &hpd->face_suid_done, &hpd->face_suid);
 	if (ret)
 		dev_warn(hpd->dev, "camera_face_detect discovery failed: %d\n", ret);
+
+	mutex_lock(&hpd->lock);
+	enable_requested = hpd->event_requested && !hpd->suspended &&
+			   !hpd->shutting_down;
+	mutex_unlock(&hpd->lock);
 	mutex_unlock(&hpd->op_lock);
+
+	if (enable_requested) {
+		ret = a14_ssc_enable_hpd(hpd);
+		if (ret) {
+			dev_warn(hpd->dev,
+				 "automatic HPD restore failed after rediscovery: %d; retrying client\n",
+				 ret);
+			disconnect_client(hpd);
+			reconnect_client_after(hpd, A14_SSC_RECONNECT_DELAY_MS);
+		}
+	}
 	return;
 
-err_release:
+err_release_retry:
 	mutex_lock(&hpd->lock);
 	hpd->connected = false;
+	hpd->event_enabled = false;
+	hpd->presence_valid = false;
 	hpd->client_initialized = false;
+	hpd->handshake_error = -ENOTCONN;
+	hpd->handshake_suid = (struct a14_ssc_suid){};
+	hpd->hpd_suid = (struct a14_ssc_suid){};
+	hpd->face_suid = (struct a14_ssc_suid){};
 	mutex_unlock(&hpd->lock);
 	qmi_handle_release(&hpd->client);
-err:
+err_retry:
 	mutex_unlock(&hpd->op_lock);
-	dev_err(hpd->dev, "failed to connect SSC service: %d\n", ret);
+	dev_warn(hpd->dev, "SSC client setup failed: %d; retrying if service remains\n",
+		 ret);
+	reconnect_client_after(hpd, A14_SSC_RECONNECT_DELAY_MS);
 }
 
 static int new_server(struct qmi_handle *qmi, struct qmi_service *service)
@@ -238,7 +284,7 @@ static int new_server(struct qmi_handle *qmi, struct qmi_service *service)
 	mutex_unlock(&hpd->lock);
 	service->priv = hpd;
 	if (connect)
-		queue_work(hpd->wq, &hpd->connect_work);
+		mod_delayed_work(hpd->wq, &hpd->connect_work, 0);
 	return 0;
 }
 
@@ -282,7 +328,7 @@ static int a14_ssc_hpd_probe(struct platform_device *pdev)
 	hpd->wq = alloc_ordered_workqueue("a14-ssc-hpd", WQ_MEM_RECLAIM);
 	if (!hpd->wq)
 		return -ENOMEM;
-	INIT_WORK(&hpd->connect_work, connect_work_fn);
+	INIT_DELAYED_WORK(&hpd->connect_work, connect_work_fn);
 	INIT_WORK(&hpd->disconnect_work, disconnect_work_fn);
 	init_completion(&hpd->handshake_suid_done);
 	init_completion(&hpd->hpd_suid_done);
@@ -311,7 +357,7 @@ static int a14_ssc_hpd_probe(struct platform_device *pdev)
 	}
 
 	dev_info(&pdev->dev,
-		 "waiting for SSC QMI service 400; IIO activation is manual\n");
+		 "waiting for SSC QMI service 400; IIO activation is persistent across reconnect/resume\n");
 	return 0;
 
 err_destroy_wq:
@@ -322,17 +368,20 @@ err_destroy_wq:
 static int a14_ssc_hpd_suspend(struct device *dev)
 {
 	struct a14_ssc_hpd *hpd = dev_get_drvdata(dev);
+	bool requested;
 
 	if (!hpd)
 		return 0;
 
 	mutex_lock(&hpd->lock);
 	hpd->suspended = true;
+	requested = hpd->event_requested;
 	mutex_unlock(&hpd->lock);
-	cancel_work_sync(&hpd->connect_work);
+	cancel_delayed_work_sync(&hpd->connect_work);
 	cancel_work_sync(&hpd->disconnect_work);
 	disconnect_client(hpd);
-	dev_info(dev, "suspend: SSC client quiesced\n");
+	dev_info(dev, "suspend: SSC client quiesced, HPD requested=%u preserved\n",
+		 requested ? 1 : 0);
 	return 0;
 }
 
@@ -347,7 +396,7 @@ static int a14_ssc_hpd_resume(struct device *dev)
 	hpd->suspended = false;
 	mutex_unlock(&hpd->lock);
 	reconnect_client_if_possible(hpd);
-	dev_info(dev, "resume: SSC rediscovery scheduled\n");
+	dev_info(dev, "resume: SSC rediscovery/HPD restoration scheduled\n");
 	return 0;
 }
 
@@ -362,9 +411,10 @@ static void a14_ssc_hpd_remove(struct platform_device *pdev)
 	mutex_lock(&hpd->lock);
 	hpd->shutting_down = true;
 	hpd->suspended = true;
+	hpd->event_requested = false;
 	mutex_unlock(&hpd->lock);
 	qmi_handle_release(&hpd->lookup);
-	cancel_work_sync(&hpd->connect_work);
+	cancel_delayed_work_sync(&hpd->connect_work);
 	cancel_work_sync(&hpd->disconnect_work);
 	disconnect_client(hpd);
 	destroy_workqueue(hpd->wq);
