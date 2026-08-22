@@ -42,7 +42,11 @@ jobs:
         run: |
           set -euxo pipefail
           sudo apt-get update
-          sudo apt-get install -y linux-headers-generic
+          # The A14 source targets the modern kernel API used by the 7.1.x
+          # test machine. Ubuntu 24.04's GA 6.8 headers predate the platform
+          # remove()/unaligned APIs already used by the existing branch, so use
+          # the current HWE headers as the closest distro compile target.
+          sudo apt-get install -y linux-headers-generic-hwe-24.04
           KDIR=$(find /usr/src -maxdepth 1 -type d -name 'linux-headers-*-generic' | sort -V | tail -n1)
           test -f "$KDIR/Makefile"
           make KDIR="$KDIR" -j2
