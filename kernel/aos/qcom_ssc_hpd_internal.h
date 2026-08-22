@@ -29,7 +29,13 @@
 #define A14_SSC_MSG_HPD_CONFIG          512
 #define A14_SSC_MSG_PRESENCE_EVENT      928
 
-#define A14_SSC_DATA_MAX                1024
+/* Recovered from the sns_client QMI-IDL service object in
+ * qcAlwaysOnSensing.dll: normal payload 1000 B, request max 1009 B,
+ * small-report indication max 1016 B. Jumbo reports are 62016 B but this
+ * driver deliberately leaves use_jumbo_report absent. */
+#define A14_SSC_DATA_MAX                1000
+#define A14_SSC_QMI_REQ_MAX_MSG_LEN     1009
+#define A14_SSC_QMI_REPORT_MAX_MSG_LEN  1016
 #define A14_SSC_TIMEOUT                 (3 * HZ)
 #define A14_SSC_RECONNECT_DELAY_MS      500
 
@@ -40,15 +46,18 @@ struct a14_ssc_suid {
 };
 
 struct a14_ssc_control_req {
-	u8 report_type;
 	u32 data_len;
 	u8 data[A14_SSC_DATA_MAX];
+	u8 use_jumbo_report_valid;
+	u8 use_jumbo_report;
 };
 
 struct a14_ssc_control_resp {
 	struct qmi_response_type_v01 resp;
+	u8 client_id_valid;
 	u64 client_id;
-	u32 response;
+	u8 result_valid;
+	u32 result;
 };
 
 struct a14_ssc_report_ind {
