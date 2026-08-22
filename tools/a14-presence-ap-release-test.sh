@@ -57,15 +57,17 @@ echo '[A/B] It temporarily unbinds only the Linux OV02C10 sensor driver,'
 echo '      retries the corrected SSC handshake, then always rebinds the sensor.'
 echo "[sensor] bound OV02C10=$sensor"
 
-# Refuse if a normal camera node is currently open. This is intentionally broad:
-# disrupting an unrelated active camera session is worse than skipping the test.
+# Refuse if a normal camera/media node is currently open. This is intentionally
+# broad: disrupting an active camera or face-auth session is worse than
+# skipping the test.
 if command -v fuser >/dev/null 2>&1; then
-    busy=$(fuser /dev/video* 2>/dev/null || true)
+    busy=$(fuser /dev/video* /dev/media* 2>/dev/null || true)
     if [ -n "$busy" ]; then
-        echo "FAIL: one or more /dev/video* nodes are in use by PID(s): $busy" >&2
+        echo "FAIL: camera/media nodes are in use by PID(s): $busy" >&2
         echo 'Close camera/face-auth applications and rerun.' >&2
         echo 'Processes:'
-        ps -o pid,comm,args -p $(echo "$busy" | tr -s ' ' ',') 2>/dev/null || true
+        pids=$(printf '%s\n' "$busy" | xargs 2>/dev/null | tr ' ' ',')
+        [ -z "$pids" ] || ps -o pid,comm,args -p "$pids" 2>/dev/null || true
         exit 2
     fi
 fi
