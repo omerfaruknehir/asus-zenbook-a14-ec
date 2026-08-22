@@ -1,0 +1,49 @@
+name: A14 lifecycle hardening
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lifecycle:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compose and validate lifecycle state
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python3 -m py_compile scripts/apply-a14-lifecycle-hardening.py
+          make prepare
+
+          grep -q 'A14_EC_LIFECYCLE_HARDENING' asus_zenbook_a14_ec.c
+          grep -q 'cancel_delayed_work_sync(&ec->whisper_work)' asus_zenbook_a14_ec.c
+          grep -q 'cancel_delayed_work_sync(&ec->resume_work)' asus_zenbook_a14_ec.c
+          grep -q 'INIT_DELAYED_WORK(&ec->resume_work, asus_ec_resume_work)' asus_zenbook_a14_ec.c
+          grep -q 'resume: desired profile could not be restored' asus_zenbook_a14_ec.c
+
+          grep -q 'A14_HID_LIFECYCLE_HARDENING' hid_asus_ec.c
+          grep -q 'A14_HID_INIT_RETRY_MAX' hid_asus_ec.c
+          grep -q '!READ_ONCE(data->fnlock_ready)' hid_asus_ec.c
+          grep -q 'ASUS vendor path ready' hid_asus_ec.c
+
+          grep -q 'bool event_requested;' kernel/aos/qcom_ssc_hpd_internal.h
+          grep -q 'struct delayed_work connect_work;' kernel/aos/qcom_ssc_hpd_internal.h
+          grep -q 'automatic HPD restore failed after rediscovery' kernel/aos/qcom_ssc_hpd.c
+          grep -q 'cancel_delayed_work_sync(&hpd->connect_work)' kernel/aos/qcom_ssc_hpd.c
+
+      - name: Build EC HID and SSC modules
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y linux-headers-generic
+          KDIR=$(find /usr/src -maxdepth 1 -type d -name 'linux-headers-*-generic' | sort -V | tail -n1)
+          test -f "$KDIR/Makefile"
+          make KDIR="$KDIR" -j2
+          make -C kernel/aos KDIR="$KDIR" W=1 -j2
