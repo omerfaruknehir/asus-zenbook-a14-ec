@@ -35,13 +35,15 @@ if [ -z "$sensor" ]; then
     exit 2
 fi
 
-rebound=0
+unbound=0
 cleanup() {
     rc=$?
-    if [ "$rebound" -eq 0 ]; then
+    trap - EXIT INT TERM HUP
+    if [ "$unbound" -eq 1 ]; then
         echo "[cleanup] rebinding OV02C10 $sensor to Linux"
         if printf '%s\n' "$sensor" > "$DRV/bind"; then
-            rebound=1
+            unbound=0
+            echo "[cleanup] rebound $sensor"
         else
             echo "[cleanup] ERROR: failed to rebind $sensor; run: echo $sensor | sudo tee $DRV/bind" >&2
         fi
@@ -62,12 +64,15 @@ if command -v fuser >/dev/null 2>&1; then
     if [ -n "$busy" ]; then
         echo "FAIL: one or more /dev/video* nodes are in use by PID(s): $busy" >&2
         echo 'Close camera/face-auth applications and rerun.' >&2
+        echo 'Processes:'
+        ps -o pid,comm,args -p $(echo "$busy" | tr -s ' ' ',') 2>/dev/null || true
         exit 2
     fi
 fi
 
 echo "[sensor] unbinding $sensor"
 printf '%s\n' "$sensor" > "$DRV/unbind"
+unbound=1
 sleep 1
 
 if [ -e "/sys/bus/i2c/devices/$sensor/driver" ]; then
