@@ -8,33 +8,38 @@ import sys
 KERNEL_VERSION = "7.1.5"
 ABD_V1 = "A14_QCOM_ABD_GSBUS_TRACE_V1"
 ABD_V2 = "A14_QCOM_ABD_PROVIDER4_TRACE_V2"
-SOSI_MARKER = "A14_QCOM_SOSI_READONLY_PROBE_V1"
+SOSI_MARKER = "A14_QCOM_SOSI_READONLY_PROBE_V2"
 
 SOSI_DRIVER = r'''// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Qualcomm WoA SOSI shared-structure read-only probe.
  *
  * The firmware publishes the physical address through the ACPI integer
- * object \\_SB.SOSI.  Qualcomm's Windows qcabd.sys discovers the same value
+ * object \\_SB.SOSI. Qualcomm's Windows qcabd.sys discovers the same value
  * from the DSDT, initially maps 0xb8 bytes, reads two DWORD counts at 0x9c
  * and 0xa4, then remaps 0xb8 + 4 * (count_a + count_b) bytes.
  *
  * This diagnostic follows that sizing algorithm but never writes the mapped
  * range and never treats any field as a provider backend until its semantics
- * are independently proven.
+ * are independently proven. It classifies each requested physical range
+ * against Linux's System RAM resource tree before mapping it, avoiding an
+ * uncached ioremap alias over ordinary RAM.
  */
 
 #include <linux/acpi.h>
 #include <linux/byteorder/generic.h>
 #include <linux/init.h>
 #include <linux/io.h>
+#include <linux/ioport.h>
 #include <linux/kernel.h>
+#include <linux/mm.h>
 #include <linux/printk.h>
 #include <linux/slab.h>
 #include <linux/string.h>
 #include <linux/types.h>
 
 #define A14_QCOM_SOSI_READONLY_PROBE_V1 1
+#define A14_QCOM_SOSI_READONLY_PROBE_V2 1
 #define QCOM_SOSI_HEADER_SIZE 0xb8
 #define QCOM_SOSI_MAX_SIZE    0x4000
 #define QCOM_SOSI_DUMP_LIMIT  0x100
@@ -45,6 +50,51 @@ static u32 qcom_sosi_get_le32(const u8 *p)
 
 	memcpy(&value, p, sizeof(value));
 	return le32_to_cpu(value);
+}
+
+static int qcom_sosi_copy_phys(phys_addr_t phys, size_t size, void *dst,
+			       const char *phase)
+{
+	int ram_state;
+	void *ram_mapping;
+	void __iomem *io_mapping;
+
+	ram_state = region_intersects((resource_size_t)phys, size,
+				      IORESOURCE_SYSTEM_RAM, IORES_DESC_NONE);
+
+	switch (ram_state) {
+	case REGION_INTERSECTS:
+		ram_mapping = memremap(phys, size, MEMREMAP_WB);
+		if (!ram_mapping) {
+			pr_err("A14 SOSI: %s memremap-wb failed phys=%pa size=%#zx\n",
+				phase, &phys, size);
+			return -ENOMEM;
+		}
+		memcpy(dst, ram_mapping, size);
+		memunmap(ram_mapping);
+		pr_info("A14 SOSI: %s mapping=memremap-wb system_ram=true size=%#zx writes=0\n",
+			phase, size);
+		return 0;
+
+	case REGION_DISJOINT:
+		io_mapping = ioremap(phys, size);
+		if (!io_mapping) {
+			pr_err("A14 SOSI: %s ioremap failed phys=%pa size=%#zx\n",
+				phase, &phys, size);
+			return -ENOMEM;
+		}
+		memcpy_fromio(dst, io_mapping, size);
+		iounmap(io_mapping);
+		pr_info("A14 SOSI: %s mapping=ioremap system_ram=false size=%#zx writes=0\n",
+			phase, size);
+		return 0;
+
+	case REGION_MIXED:
+	default:
+		pr_err("A14 SOSI: %s mapping refused: mixed/unknown System RAM classification=%d phys=%pa size=%#zx\n",
+			phase, ram_state, &phys, size);
+		return -EINVAL;
+	}
 }
 
 static void qcom_sosi_log_fields(const u8 *h)
@@ -69,13 +119,13 @@ static int __init qcom_sosi_probe_init(void)
 {
 	unsigned long long firmware_addr = 0;
 	phys_addr_t phys;
-	void __iomem *mapping;
 	u8 header[QCOM_SOSI_HEADER_SIZE];
 	u8 *full = NULL;
 	u32 count_a, count_b, offset_b;
 	u64 total64;
 	size_t total, len;
 	acpi_status status;
+	int ret;
 
 	if (acpi_disabled)
 		return 0;
@@ -102,14 +152,9 @@ static int __init qcom_sosi_probe_init(void)
 	pr_info("A14 SOSI: ACPI \\_SB.SOSI=%#llx read_only=true\n",
 		firmware_addr);
 
-	mapping = ioremap(phys, QCOM_SOSI_HEADER_SIZE);
-	if (!mapping) {
-		pr_err("A14 SOSI: ioremap header failed phys=%pa size=%#x\n",
-			&phys, QCOM_SOSI_HEADER_SIZE);
+	ret = qcom_sosi_copy_phys(phys, sizeof(header), header, "header");
+	if (ret)
 		return 0;
-	}
-	memcpy_fromio(header, mapping, sizeof(header));
-	iounmap(mapping);
 
 	pr_info("A14 SOSI: header mapped size=%#x writes=0\n",
 		QCOM_SOSI_HEADER_SIZE);
@@ -139,14 +184,9 @@ static int __init qcom_sosi_probe_init(void)
 		return 0;
 	}
 
-	mapping = ioremap(phys, total);
-	if (!mapping) {
-		pr_err("A14 SOSI: ioremap full failed phys=%pa size=%#zx\n",
-			&phys, total);
+	ret = qcom_sosi_copy_phys(phys, total, full, "full");
+	if (ret)
 		goto out;
-	}
-	memcpy_fromio(full, mapping, total);
-	iounmap(mapping);
 	pr_info("A14 SOSI: full map copied size=%#zx writes=0\n", total);
 
 	if (count_a && total > QCOM_SOSI_HEADER_SIZE) {
@@ -253,15 +293,23 @@ def main() -> None:
     sosi_body = sosi.read_text()
     required_abd = (ABD_V1, ABD_V2, "A14 ABD P4 TX:", "status = AE_SUPPORT")
     required_sosi = (
+        "A14_QCOM_SOSI_READONLY_PROBE_V1",
         SOSI_MARKER,
         "acpi_evaluate_integer(NULL",
         "_SB.SOSI",
-        "ioremap(phys, QCOM_SOSI_HEADER_SIZE)",
-        "memcpy_fromio(header",
+        "region_intersects((resource_size_t)phys, size",
+        "IORESOURCE_SYSTEM_RAM",
+        "REGION_INTERSECTS",
+        "REGION_DISJOINT",
+        "REGION_MIXED",
+        "memremap(phys, size, MEMREMAP_WB)",
+        "memcpy_fromio(dst",
         "QCOM_SOSI_MAX_SIZE",
         "count_a = qcom_sosi_get_le32(header + 0x9c)",
         "count_b = qcom_sosi_get_le32(header + 0xa4)",
         "offset_b = qcom_sosi_get_le32(header + 0xa8)",
+        "mapping=memremap-wb",
+        "mapping=ioremap",
         "writes=0",
     )
     missing = [x for x in required_abd if x not in abd_body]
@@ -278,6 +326,7 @@ def main() -> None:
     print("sosi_address_source=ACPI_\\_SB.SOSI")
     print("sosi_header_size=0xb8")
     print("sosi_derived_size_cap=0x4000")
+    print("sosi_mapping_policy=SystemRAM_memremapWB__nonRAM_ioremap__mixed_refuse")
     print("sosi_writes=false")
     print("provider4_backend=still_trace_only_AE_SUPPORT")
 
