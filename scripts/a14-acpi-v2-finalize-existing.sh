@@ -15,7 +15,7 @@ INNER_STAMP="$WORK/checkpoint-build.ready"
 FINAL_STAMP="$WORK/74c9bd5-build.ready"
 
 die(){ printf 'ERROR: %s\n' "$*" >&2; exit 1; }
-say(){ printf '%s\n' "$*; }
+say(){ printf '%s\n' "$*"; }
 
 [[ ${EUID:-$(id -u)} -ne 0 ]] || die "run as your normal user, not root"
 for c in make sha256sum awk grep; do command -v "$c" >/dev/null 2>&1 || die "missing command: $c"; done
