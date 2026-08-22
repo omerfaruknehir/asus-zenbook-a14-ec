@@ -8,6 +8,7 @@ all modules: prepare
 prepare:
 	python3 scripts/prepare-a14-ec.py
 	@test ! -f scripts/apply-a14-lifecycle-hardening.py || python3 scripts/apply-a14-lifecycle-hardening.py
+	@test ! -f scripts/apply-a14-hid-reset-resume.py || python3 scripts/apply-a14-hid-reset-resume.py
 	@test ! -f scripts/clean-a14-generated-hid.py || python3 scripts/clean-a14-generated-hid.py
 
 mainline-check:
