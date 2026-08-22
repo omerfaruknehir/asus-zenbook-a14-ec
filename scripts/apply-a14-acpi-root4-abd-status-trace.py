@@ -57,6 +57,19 @@ def main() -> None:
         fail("ROOT3 qcom_abd.c is missing")
 
     text = driver.read_text()
+
+    # Keep the generated kernel source independent of transitive includes.
+    if "#include <linux/printk.h>" not in text:
+        text = replace_once(
+            text,
+            "#include <linux/kernel.h>\n",
+            "#include <linux/kernel.h>\n#include <linux/printk.h>\n#include <linux/string.h>\n",
+            "explicit printk/string includes",
+        )
+        print("qcom_abd_trace_includes=applied")
+    else:
+        print("qcom_abd_trace_includes=current")
+
     if NEW_MARKER in text:
         print("qcom_abd_status_trace=current")
     else:
@@ -85,12 +98,15 @@ def main() -> None:
             "install banner",
         )
 
-        driver.write_text(text)
         print("qcom_abd_status_trace=applied")
+
+    driver.write_text(text)
 
     body = driver.read_text()
     required = (
         NEW_MARKER,
+        "#include <linux/printk.h>",
+        "#include <linux/string.h>",
         "QCOM_ABD_MAX_DUMP_BYTES",
         'print_hex_dump(KERN_INFO, "A14 ABD payload: "',
         "memset(gsb->data, 0, info->access_length)",
