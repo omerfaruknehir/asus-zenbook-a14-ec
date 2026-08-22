@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-2.0-only
-# Reconstruct the 7.1.5 full-F0 + corrected SSC wire-format retest tree.
+# Reconstruct the 7.1.5 full-F0 + Windows-correct SSC wire-format retest tree.
+# Keep the exact INIT576 payload already proven to reach ACK832: ov02c10,
+# restart_count=0, camera_id=2.  The only discriminator in this branch is the
+# validated full-F0 resource hold; the CPAS ownership mux remains untouched.
 set -Eeuo pipefail
 
 repo=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
@@ -60,7 +63,7 @@ func = r'''int a14_ssc_enable_hpd(struct a14_ssc_hpd *hpd)
 
 	ret = a14_ssc_camss_acquire(hpd);
 	if (ret) {
-		dev_err(hpd->dev, "failed to hand camera path to AON: %d\n", ret);
+		dev_err(hpd->dev, "failed to establish full-F0 camera-platform hold: %d\n", ret);
 		goto out_unlock_op;
 	}
 
@@ -112,14 +115,18 @@ out_unlock_op:
 p.write_text(prefix + func)
 PY
 
+# Assert that this retest keeps the same handshake payload that already reached
+# ACK832 on hardware.  Do not mutate restart_count or camera_id here.
 python3 - <<'PY'
 from pathlib import Path
 p = Path('kernel/aos/qcom_ssc_hpd_protocol.c')
 s = p.read_text()
-old = '\tpayload[p++] = 0x10;\n\tpayload[p++] = 0x00;\n\tpayload[p++] = 0x18;\n\tpayload[p++] = 0x02;\n'
-new = '\tpayload[p++] = 0x10;\n\tpayload[p++] = 0x05;\n\tpayload[p++] = 0x18;\n\tpayload[p++] = 0x02;\n'
-assert s.count(old) == 1
-p.write_text(s.replace(old, new, 1))
+seq = '\tpayload[p++] = 0x10;\n\tpayload[p++] = 0x00;\n\tpayload[p++] = 0x18;\n\tpayload[p++] = 0x02;\n'
+assert s.count(seq) == 1, 'expected exactly one INIT576 restart_count=0,camera_id=2 sequence'
+assert 'payload[p++] = 0x05;' not in s, 'restart_count=5 contamination present'
+assert 'sns_std_request' in s, 'Windows-correct sns_std_request wrapper missing'
+print('init576_payload=ov02c10,restart_count=0,camera_id=2')
+print('ssc_wire_framing=windows-correct')
 PY
 
 python3 - <<'PY'
@@ -153,8 +160,9 @@ fi
 [ -n "$source_version" ] || fail "could not resolve package version for $image_pkg"
 printf 'image_package=%s\\n' "$image_pkg"
 '''
-assert old in s
-p.write_text(s.replace(old, new, 1))
+if old in s:
+    s = s.replace(old, new, 1)
+p.write_text(s)
 PY
 
 python3 - <<'PY'
@@ -165,8 +173,9 @@ s = s.replace('for tool in awk cam cat date find fuser grep insmod journalctl ls
               'for tool in awk cam cat date find fuser grep insmod journalctl lsmod mktemp modprobe rmmod \\\n            readlink rm seq sleep sort sudo sync systemctl tee timeout uname; do')
 old = "printf '\\n%s\\n' '===== LOAD MANUALLY-GATED HPD MODULE ====='\nsudo insmod \"$stage/qcom_ssc_hpd.ko\" allow_unrouted_handshake_probe=1\n"
 new = "printf '\\n%s\\n' '===== LOAD SSC/IIO CORE DEPENDENCIES ====='\nsudo modprobe qmi_helpers\nsudo modprobe industrialio\nprintf '%s\\n' 'ssc_iio_dependencies=ready'\n\nprintf '\\n%s\\n' '===== LOAD MANUALLY-GATED HPD MODULE ====='\nsudo insmod \"$stage/qcom_ssc_hpd.ko\" allow_unrouted_handshake_probe=1\n"
-assert old in s
-p.write_text(s.replace(old, new, 1))
+if old in s:
+    s = s.replace(old, new, 1)
+p.write_text(s)
 PY
 
 git add \
@@ -178,5 +187,7 @@ git add \
 
 git diff --cached --check
 
-echo 'f0_wirefix_reconstruction=ready'
+echo 'f0_corrected_reconstruction=ready'
+echo 'single_test_variable=full_f0_resource_hold'
+echo 'cpas_ownership_mux_access=false'
 git status --short
