@@ -16,7 +16,7 @@ The QTEC HID handler at `0xed70` recognizes `5A BA C5 C4 VALUE` and jumps to
 | `3` | `0xcc` |
 | any other value | `0x00` |
 
-The target is stored at EC RAM `0x80304a`. The periodic routine at `0xff62`
+The target is stored at EC RAM `0x0080304a`. The periodic routine at `0xff62`
 reads PWM channel 4 and moves it toward that target in increments of three.
 This explains both observed facts: values above three turn the keyboard off,
 and a one-shot raw PWM write does not create a stable brightness.
@@ -24,7 +24,7 @@ and a one-shot raw PWM write does not create a stable brightness.
 The ordinary host mailbox exposes channel 4 at major `0x01`, read minor
 `0x07`, and write minor `0x87`. The write calls the generic PWM setter at
 `0x15698`, but it changes the current duty cycle rather than the target at
-`0x80304a`; the ramp loop therefore overwrites it. No host-visible handler in
+`0x0080304a`; the ramp loop therefore overwrites it. No host-visible handler in
 this firmware writes an arbitrary value to the target.
 
 ## Minimal real fix

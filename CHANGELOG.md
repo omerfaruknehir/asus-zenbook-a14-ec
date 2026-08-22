@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.5.16 — 2026-08-22 (hardware-validation candidate)
+
+- Added the exact BIOS 312 DSDT Fn-switch host-enable sequence,
+  `ECCW(02,87,00)` followed by `ECCW(02,86,01)`, through the existing
+  serialized EC mailbox before the real 64-byte `5a d0 4e` HID request.
+- Preserved `KEY_FN_ESC` for the desktop OSD and retained request-only logging;
+  no software F-row inversion and no unverified hardware-state claim is used.
+- Corrected the RV32 `LUI` address model: the Fn queue and gates live in the
+  `0x0080....` shared RAM range, not the previously documented `0x8000....`
+  range.
+- Kept the disproven Windows transport reinitialization disabled by default to
+  avoid the earlier slow post-power-on path.
+- This release remains a candidate until the target laptop physically reverses
+  its F-row and passes cold-boot, reload, and resume checks.
+
+## 0.5.15 — 2026-08-22 (withdrawn)
+
+- Removed the 0.5.14 software Fn-row emulation, but incorrectly treated
+  `5a d0 8f 01` as the missing prerequisite for the real `D0/4E` row request.
+- Hardware testing proved that the EC still accepted and queued every request
+  without changing the physical row. A follow-up Fn+F12 service-gate test also
+  had no effect. This package must not be presented as a working Fn-lock fix.
+- The EC analyzer and clean-room C++ model remain useful, but `D0/8F` is now
+  classified as a separate unknown-purpose timed state machine.
+
 ## 0.5.14 — 2026-08-21
 
 - Replaced the accepted-but-physically-ineffective Linux 5a d0 4e Fn-switch

@@ -58,6 +58,10 @@ def final_missing() -> list[str]:
         'return sysfs_emit(buf, "whisper quiet normal turbo full-speed\\n");',
         "int asus_a14_cycle_native_profile(void);\n\nint asus_a14_cycle_native_profile(void)",
         "EXPORT_SYMBOL_GPL(asus_a14_cycle_native_profile)",
+        "int asus_a14_enable_fn_switch_gate(void);",
+        "ret = __ec_cw(ec, 0x02, 0x87, 0x00);",
+        "ret = __ec_cw(ec, 0x02, 0x86, 0x01);",
+        "EXPORT_SYMBOL_GPL(asus_a14_enable_fn_switch_gate)",
         "DEVICE_ATTR_RO(whisper_level)",
         "A14_EC_KBD_BACKLIGHT_STATUS_DIAGNOSTIC",
         "DEVICE_ATTR_RO(kbd_backlight_ec_status)",
@@ -162,13 +166,14 @@ def fnlock_complete() -> bool:
         "atomic_t desired_fn_lock;",
         "static int asus_hid_windows_transport_reinit_hw",
         "static int asus_hid_windows_common_init",
+        "extern int asus_a14_enable_fn_switch_gate(void);",
+        "ret = asus_a14_enable_fn_switch_gate();",
         "static int asus_hid_set_fnlock_hw",
         "INIT_DELAYED_WORK(&data->fnlock_init_work, asus_fnlock_init_work);",
         "mod_delayed_work(system_wq, &data->fnlock_init_work",
         "schedule_work(&data->fnlock_work);",
-        "A14_HID_FNLOCK_SOFTWARE_INVERSION",
-        "asus_invert_standard_fkey",
-        "Fn-lock software row state=",
+        "Fn-lock request submitted, requested=",
+        "EC acknowledgement unavailable",
         "no post-reset POWER_ON",
     )
     if not all(hid_has(token) for token in required):
@@ -177,10 +182,14 @@ def fnlock_complete() -> bool:
     hid = HID_SOURCE.read_text()
     forbidden = (
         "static int asus_hid_initialise",
-        "0xd0, 0x8f, 0x01",
         "A14_HID_FNLOCK_WINDOWS_INIT_INPUT",
         "A14_HID_QTEC_POST_HID_REPOWER",
         "asus_hid_qtec_post_init_repower",
+        "A14_HID_FNLOCK_EC_ACTIVATION",
+        "asus_hid_activate_fn_switch_hw",
+        "0xd0, 0x8f, 0x01",
+        "Fn-lock hardware state=",
+        "Fn-lock hardware path ready",
     )
     return not any(token in hid for token in forbidden)
 
@@ -300,14 +309,15 @@ def main() -> None:
         "A14_HID_NO_POST_RESET_POWER_ON",
         "static int asus_hid_windows_transport_reinit_hw",
         "static int asus_hid_windows_common_init",
+        "extern int asus_a14_enable_fn_switch_gate(void);",
+        "ret = asus_a14_enable_fn_switch_gate();",
         "static int asus_hid_set_fnlock_hw",
         "struct delayed_work fnlock_init_work;",
         "INIT_DELAYED_WORK(&data->fnlock_init_work, asus_fnlock_init_work);",
         "mod_delayed_work(system_wq, &data->fnlock_init_work",
         "schedule_work(&data->fnlock_work);",
-        "A14_HID_FNLOCK_SOFTWARE_INVERSION",
-        "asus_invert_standard_fkey",
-        "Fn-lock software row state=",
+        "Fn-lock request submitted, requested=",
+        "EC acknowledgement unavailable",
         "static bool fnlock_windows_transport_reinit = false;",
     )
     hid_missing = [token for token in hid_required if token not in hid]
@@ -316,7 +326,14 @@ def main() -> None:
 
     hid_forbidden = (
         "static int asus_hid_initialise",
+        "A14_HID_FNLOCK_SOFTWARE_INVERSION",
+        "asus_invert_standard_fkey",
+        "Fn-lock software row state=",
+        "A14_HID_FNLOCK_EC_ACTIVATION",
+        "asus_hid_activate_fn_switch_hw",
         "0xd0, 0x8f, 0x01",
+        "Fn-lock hardware state=",
+        "Fn-lock hardware path ready",
         "A14_HID_FNLOCK_WINDOWS_INIT_INPUT",
         "static int asus_hid_windows_init_input",
         "A14_HID_QTEC_POST_HID_REPOWER",
@@ -330,7 +347,7 @@ def main() -> None:
     print("a14_profiles=whisper,quiet,normal,turbo,full-speed")
     print("a14_native_profiles=quiet,normal,turbo,full-speed")
     print("a14_fn_f_cycle=whisper,quiet,normal,turbo,full-speed")
-    print("a14_fn_lock=software-row-inversion;windows-feature-init=diagnostic-only")
+    print("a14_fn_lock=d0-4e-request-only;ack=unavailable;osd=key-fn-esc")
     print("a14_fn_lock_ec_stage=not-production-disproven-probe-only")
     print("a14_fan_telemetry=selector-calibrated")
     print("a14_ec_stack=current")

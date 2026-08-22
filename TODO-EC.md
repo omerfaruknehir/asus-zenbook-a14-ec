@@ -22,7 +22,7 @@ the interfaces become understood.
   3.
 - Mailbox `01/07` reads PWM channel 4 and `01/87` writes its current duty cycle,
   but the firmware ramp overwrites that one-shot value.
-- The stable target lives at EC RAM `0x80304a`; stock firmware exposes no host
+- The stable target lives at EC RAM `0x0080304a`; stock firmware exposes no host
   command that writes it raw.
 - A hash- and instruction-gated 10-byte patch is documented and generated
   without any flashing support. Its output is explicitly marked
@@ -46,6 +46,15 @@ the interfaces become understood.
 - Its raw-payload validation is not cryptographic: `$ECDH$` is used to extract
   a display version and the only enforced identity is `ITE51300-EC-V0.00` at
   image offset `0x50`. Outer capsule authentication is a separate layer.
+- Confirmed Fn-switch command: `5A D0 4E STATE`; state zero requests action
+  keys and state one requests F1-F12.
+- Fn-switch requests are queued in `0x00803049` and are serviced only while
+  `0x00800410 == 0` and bit 7 of `0x0080041a` is set.
+- Confirmed auxiliary command: `5A D0 8F 01`; it sets bit 7, clears bit 6 at
+  `0x008012a0`, and clears an associated mode/counter. Hardware testing
+  disproved it as a sufficient Fn-switch prerequisite.
+- A SHA-locked RV32IMC analyzer and compiled C++ behavioral reconstruction now
+  validate these recovered paths without embedding or modifying ASUS firmware.
 
 ## 1. Reproducible firmware inventory
 
@@ -54,7 +63,7 @@ the interfaces become understood.
 - [x] Add exact, fail-closed FMP, EC-image, and `ECFlashApp` extractors.
 - [ ] Record hashes, offsets, GUIDs, UI names, compression types, and module
   identities in generated output.
-- [ ] Add a pinned RV32IMC disassembly workflow.
+- [x] Add a SHA-locked RV32IMC disassembly workflow for recovered handlers.
 - [ ] Generate an EC function, call, and data-reference map.
 - [ ] Compare future firmware revisions without committing proprietary firmware
   blobs.
@@ -74,6 +83,22 @@ the interfaces become understood.
 ## 3. Feature coverage
 
 - [ ] Keyboard matrix, hotkeys, consumer usages, Fn-lock, and report routing.
+  - [x] Locate the exact `D0/4E` parser, request-bit handlers, current-state
+    bit, asynchronous service routine, and its two gates.
+  - [x] Locate the `D0/8F/01` auxiliary timed-state handler and disprove it as
+    the missing gate through hardware testing.
+  - [x] Disprove physical Fn+F12 as the producer of internal protocol opcode
+    `0x86`; the identical number is a collision between two namespaces.
+  - [x] Identify BIOS 312's real host-enable producer: serialized
+    `ECCW(02,87,00)` then `ECCW(02,86,01)`; the latter reaches internal opcode
+    `0x86` and sets gate bit 7. The controller record is at `0x00800430`.
+  - [ ] Physically validate the exact DSDT gate sequence plus `D0/4E` on cold
+    boot, warm boot, module reload, and resume.
+  - [ ] Add safe readback for the queued request, current state, and gate state.
+  - [ ] Restore hardware Fn-lock only after the activation sequence is verified
+    on cold boot, warm boot, module reload, and resume.
+  - [ ] Preserve `KEY_FN_ESC` strictly as an OSD notification; do not substitute
+    software Fn-row rewriting for firmware Fn-lock.
 - [ ] Keyboard-backlight raw PWM, logical policy, ramping, Fn+F4, boot, suspend,
   and resume.
   - [x] Map the public HID levels, PWM channel, target byte, and ramp routine.
