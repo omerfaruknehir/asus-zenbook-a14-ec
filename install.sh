@@ -70,10 +70,12 @@ case "$deb" in
   *) echo "build-deb.sh returned a non-DEB path: $deb" >&2; exit 1;;
 esac
 
-# Explicitly reinstall even when the local package version matches. The A14
-# package carries GNOME assets, so a same-version development rebuild must not
-# leave stale icon files from an earlier build on disk.
-sudo apt-get install -y --reinstall "$deb"
+# Explicitly reinstall even when the local package version matches. This is a
+# development-tree installer, so also allow an intentional downgrade when the
+# checked-out branch carries an older package version than another experiment
+# already installed on the machine. apt still resolves the exact local DEB;
+# --allow-downgrades only removes the otherwise-fatal version-direction guard.
+sudo apt-get install -y --reinstall --allow-downgrades "$deb"
 
 icon_dest=/usr/share/icons/hicolor/scalable/status
 ext_dest=/usr/share/gnome-shell/extensions/asus-a14-modes@omerfaruknehir/icons

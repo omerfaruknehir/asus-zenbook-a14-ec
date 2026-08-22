@@ -31,6 +31,7 @@
 
 #define A14_SSC_DATA_MAX                1024
 #define A14_SSC_TIMEOUT                 (3 * HZ)
+#define A14_SSC_RECONNECT_DELAY_MS      500
 
 struct a14_ssc_suid {
 	u64 field1;
@@ -72,7 +73,7 @@ struct a14_ssc_hpd {
 	struct mutex lock;
 	struct mutex op_lock;
 	struct workqueue_struct *wq;
-	struct work_struct connect_work;
+	struct delayed_work connect_work;
 	struct work_struct disconnect_work;
 
 	struct completion handshake_suid_done;
@@ -88,6 +89,10 @@ struct a14_ssc_hpd {
 	int presence;
 	bool presence_valid;
 	bool event_enabled;
+	/* Logical IIO request. Unlike event_enabled, this survives QMI client
+	 * teardown, service loss and suspend so the hardware subscription can be
+	 * reconstructed after rediscovery. */
+	bool event_requested;
 };
 
 size_t a14_ssc_build_suid_request(u8 *dst, size_t cap, const char *datatype);

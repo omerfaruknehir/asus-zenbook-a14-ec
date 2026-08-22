@@ -9,7 +9,7 @@ case "$model" in
     ;;
 esac
 
-# X1E CPU DVFS is SCMI Performance over the Qualcomm CPUCP mailbox.  Ubuntu's
+# X1E CPU DVFS is SCMI Performance over the Qualcomm CPUCP mailbox. Ubuntu's
 # 7.1.x build carries the mailbox and cpufreq clients as modules, so make a
 # best-effort attempt to register the three Oryon cpufreq policies early.
 modprobe qcom_cpucp_mbox 2>/dev/null || true
@@ -17,20 +17,90 @@ modprobe scmi_transport_mailbox 2>/dev/null || true
 modprobe scmi_cpufreq 2>/dev/null || true
 
 # The direct EC client must not probe during the earliest boot phase. Wait for
-# the Qualcomm I2C controller to be fully registered before loading it.
+# the Qualcomm I2C controller to be registered and let outstanding udev work
+# settle before establishing A14 ownership. Alias-driven autoload of our two
+# modules is blacklisted in /etc/modprobe.d/asus-zenbook-a14-ec.conf; explicit
+# module-name loads below remain permitted.
 i=0
 while [ ! -e /sys/bus/platform/devices/b94000.i2c ]; do
   i=$((i + 1))
-  [ "$i" -ge 40 ] && { echo "EC I2C controller did not appear" >&2; exit 1; }
+  [ "$i" -ge 80 ] && { echo "EC I2C controller did not appear" >&2; exit 1; }
+  sleep 0.25
+done
+if command -v udevadm >/dev/null 2>&1; then
+  udevadm settle --timeout=10 2>/dev/null || true
+fi
+
+# Fn+F in the generated HID module calls asus_a14_cycle_native_profile(), which
+# is exported by the EC module. Load EC first deliberately.
+modprobe asus_zenbook_a14_ec
+
+# Wait until EC probe completed rather than treating module insertion as proof
+# that the direct mailbox is ready. This is the state consumed by the profile
+# service and by Fn+F.
+i=0
+while [ ! -e /sys/devices/platform/asus_zenbook_a14_ec/profile ]; do
+  i=$((i + 1))
+  [ "$i" -ge 80 ] && { echo "A14 EC profile interface did not appear" >&2; exit 1; }
   sleep 0.25
 done
 
-# Fn+F in the generated HID module calls asus_a14_cycle_native_profile(), which
-# is exported by the EC module.  Load EC first deliberately; relying on
-# modules.dep here could probe EC before the late-I2C guard above has completed.
-modprobe asus_zenbook_a14_ec
 if ! modprobe hid_asus_ec; then
   echo "Failed to load A14 HID hotkey module after EC module" >&2
   modprobe -r asus_zenbook_a14_ec 2>/dev/null || true
   exit 1
 fi
+
+# With alias autoload suppressed, hid-generic may have claimed the keyboard
+# before the A14-specific module became available. Hand ownership over exactly
+# once at cold boot. This is intentionally NOT a suspend/resume workaround: the
+# driver's .reset_resume callback owns all later lifecycle recovery.
+hiddev=""
+i=0
+while [ -z "$hiddev" ]; do
+  for path in /sys/bus/hid/devices/*0B05:0220*; do
+    [ -e "$path" ] || continue
+    hiddev=${path##*/}
+    break
+  done
+  [ -n "$hiddev" ] && break
+  i=$((i + 1))
+  [ "$i" -ge 80 ] && { echo "A14 keyboard HID device did not appear" >&2; exit 1; }
+  sleep 0.25
+done
+
+special_driver=/sys/bus/hid/drivers/hid_asus_zenbook_a14_ec
+hidpath=/sys/bus/hid/devices/$hiddev
+current_driver=""
+if [ -L "$hidpath/driver" ]; then
+  current_driver=$(basename "$(readlink -f "$hidpath/driver")")
+fi
+
+if [ "$current_driver" != hid_asus_zenbook_a14_ec ]; then
+  if [ -n "$current_driver" ] && [ -w "$hidpath/driver/unbind" ]; then
+    printf '%s\n' "$hiddev" >"$hidpath/driver/unbind"
+  fi
+  i=0
+  while [ ! -w "$special_driver/bind" ]; do
+    i=$((i + 1))
+    [ "$i" -ge 40 ] && { echo "A14 HID driver bind interface did not appear" >&2; exit 1; }
+    sleep 0.25
+  done
+  printf '%s\n' "$hiddev" >"$special_driver/bind"
+fi
+
+# Verify ownership before declaring the boot service ready. The HID driver does
+# its ASUS feature initialization asynchronously, so this validates binding;
+# its own retry-capable worker validates the vendor protocol itself.
+i=0
+while :; do
+  if [ -L "$hidpath/driver" ] &&
+     [ "$(basename "$(readlink -f "$hidpath/driver")")" = hid_asus_zenbook_a14_ec ]; then
+    break
+  fi
+  i=$((i + 1))
+  [ "$i" -ge 40 ] && { echo "A14 HID driver did not retain keyboard ownership" >&2; exit 1; }
+  sleep 0.25
+done
+
+echo "A14 boot ownership ready: EC first, HID=$hiddev"

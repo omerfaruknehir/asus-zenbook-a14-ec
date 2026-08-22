@@ -1,4 +1,5 @@
 import Gio from 'gi://Gio';
+import GLib from 'gi://GLib';
 import GObject from 'gi://GObject';
 
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
@@ -9,6 +10,8 @@ import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
 const BUS_NAME = 'io.github.omerfaruknehir.AsusA14';
 const OBJECT_PATH = '/io/github/omerfaruknehir/AsusA14';
 const NATIVE_UI_MARKER = '/usr/share/asus-zenbook-a14-ec/native-gnome-five-profile';
+const HID_SYSFS_ROOT = '/sys/bus/hid/devices';
+const FNLOCK_POLL_MS = 200;
 
 const ProfileIface = `
 <node>
@@ -63,6 +66,101 @@ function showProfileOsd(profile) {
         Main.osdWindowManager.showAll(gicon, label, null, -1);
     else
         Main.osdWindowManager.show(-1, gicon, label, null, -1);
+}
+
+function showFnLockOsd(enabled) {
+    const gicon = new Gio.ThemedIcon({name: 'input-keyboard-symbolic'});
+    const label = enabled ? 'Fn Lock On' : 'Fn Lock Off';
+
+    if (typeof Main.osdWindowManager.showAll === 'function')
+        Main.osdWindowManager.showAll(gicon, label, null, -1);
+    else
+        Main.osdWindowManager.show(-1, gicon, label, null, -1);
+}
+
+class FnLockOsdListener {
+    constructor() {
+        this._path = null;
+        this._state = null;
+        this._sourceId = GLib.timeout_add(
+            GLib.PRIORITY_DEFAULT,
+            FNLOCK_POLL_MS,
+            () => this._poll());
+        this._poll();
+    }
+
+    _findPath() {
+        const root = Gio.File.new_for_path(HID_SYSFS_ROOT);
+        try {
+            const enumerator = root.enumerate_children(
+                'standard::name', Gio.FileQueryInfoFlags.NONE, null);
+            let info;
+            while ((info = enumerator.next_file(null)) !== null) {
+                const name = info.get_name();
+                if (!name.includes('0B05:0220'))
+                    continue;
+                const candidate = `${HID_SYSFS_ROOT}/${name}/fn_lock`;
+                if (Gio.File.new_for_path(candidate).query_exists(null)) {
+                    enumerator.close(null);
+                    return candidate;
+                }
+            }
+            enumerator.close(null);
+        } catch (error) {
+            logError(error, 'ASUS A14 Fn-lock sysfs discovery');
+        }
+        return null;
+    }
+
+    _readState() {
+        if (!this._path)
+            this._path = this._findPath();
+        if (!this._path)
+            return null;
+
+        try {
+            const [ok, contents] = GLib.file_get_contents(this._path);
+            if (!ok)
+                return null;
+            const value = new TextDecoder().decode(contents).trim();
+            if (value === '-1')
+                return null;
+            if (value === '0')
+                return false;
+            if (value === '1')
+                return true;
+        } catch (_error) {
+            // Driver reloads change the HID instance path. Rediscover it on the
+            // next poll instead of spamming the GNOME Shell journal.
+            this._path = null;
+        }
+        return null;
+    }
+
+    _poll() {
+        const state = this._readState();
+        if (state === null)
+            return GLib.SOURCE_CONTINUE;
+
+        if (this._state === null) {
+            this._state = state;
+            return GLib.SOURCE_CONTINUE;
+        }
+
+        if (state !== this._state) {
+            this._state = state;
+            showFnLockOsd(state);
+        }
+        return GLib.SOURCE_CONTINUE;
+    }
+
+    destroy() {
+        if (this._sourceId)
+            GLib.source_remove(this._sourceId);
+        this._sourceId = 0;
+        this._path = null;
+        this._state = null;
+    }
 }
 
 class ProfileOsdListener {
@@ -233,10 +331,14 @@ class A14Indicator extends QuickSettings.SystemIndicator {
 
 export default class AsusA14ModesExtension extends Extension {
     enable() {
+        // Fn-lock is not a standard GNOME power-profile signal. Watch the
+        // driver's authoritative hardware state and provide our own OSD.
+        this._fnLockOsdListener = new FnLockOsdListener();
+
         const nativeFiveProfile = Gio.File.new_for_path(NATIVE_UI_MARKER).query_exists(null);
         if (nativeFiveProfile) {
             // Patched GNOME owns the one native Power Mode tile. Keep this
-            // extension loaded only to present an OSD for hardware Fn+F events.
+            // extension loaded to present OSD for hardware state changes.
             this._osdListener = new ProfileOsdListener();
             return;
         }
@@ -252,5 +354,7 @@ export default class AsusA14ModesExtension extends Extension {
         this._indicator = null;
         this._osdListener?.destroy();
         this._osdListener = null;
+        this._fnLockOsdListener?.destroy();
+        this._fnLockOsdListener = null;
     }
 }
