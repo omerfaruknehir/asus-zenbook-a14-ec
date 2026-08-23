@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-2.0-only
-# ACPI ROOT13B: correct module-name normalization and audit the minimal
-# Kconfig dependency chain needed to make LEDS_QCOM_FLASH built-in.
+# ACPI ROOT13B: corrected read-only module-request normalization and
+# Kconfig dependency audit for LEDS_QCOM_FLASH=y.
 #
 # Safety invariants:
 #   - no kernel/Image build
@@ -12,7 +12,7 @@
 #   - no reboot
 #
 # Persistent write: only ~/Downloads/a14-acpi-root13b-module-kconfig-audit.txt
-# Temporary writes live below /tmp and are removed automatically.
+# Temporary writes are confined to /tmp and removed automatically.
 set -euo pipefail
 
 ACTION="${1:-audit}"
@@ -38,7 +38,6 @@ NORMAL_KERNEL="${A14_NORMAL_KERNEL:-7.1.5-070105-generic}"
 ARCH_NAME="${A14_ARCH:-arm64}"
 REPORT="$OWNER_HOME/Downloads/a14-acpi-root13b-module-kconfig-audit.txt"
 TARGETS=(hid_asus_ec hm1092 qcom_cci_sync leds_qcom_flash)
-
 REQUEST_FILES=(
     /etc/modules
     /etc/modules-load.d/asus-zenbook-a14-ec.conf
@@ -54,7 +53,7 @@ REQUEST_DIRS=(
     /etc/dracut.conf.d
 )
 
-for c in bash cat cp find getent grep id make mktemp modinfo rm sed sort tail tr uname wc; do
+for c in bash cat cp date find getent grep head id make mkdir mktemp modinfo rm sed sort tail uname wc; do
     have "$c" || die "missing command: $c"
 done
 
@@ -66,7 +65,21 @@ cleanup(){
     [[ -n "${INITRD_EXTRACT:-}" && -d "$INITRD_EXTRACT" ]] && rm -rf -- "$INITRD_EXTRACT"
     [[ -n "${INITRD_HITS:-}" && -f "$INITRD_HITS" ]] && rm -f -- "$INITRD_HITS"
 }
-trap cleanup EXIT INT TERM
+finalize(){
+    cleanup
+    [[ -f "$REPORT" ]] && chown "$OWNER:$OWNER" "$REPORT" 2>/dev/null || true
+}
+trap finalize EXIT INT TERM
+
+module_pattern(){
+    case "$1" in
+        hid_asus_ec)     printf '%s\n' 'hid[-_]asus[-_]ec' ;;
+        hm1092)          printf '%s\n' 'hm1092' ;;
+        qcom_cci_sync)   printf '%s\n' 'qcom[-_]cci[-_]sync' ;;
+        leds_qcom_flash) printf '%s\n' 'leds[-_]qcom[-_]flash' ;;
+        *) die "unknown module target: $1" ;;
+    esac
+}
 
 cfg_val(){
     local cfg="$1" sym="$2"
@@ -77,22 +90,9 @@ cfg_val(){
     fi
 }
 
-name_regex(){
-    local n="$1" hyphen underscore
-    hyphen="${n//_/-}"
-    underscore="${n//-/_}"
-    printf '(^|[^[:alnum:]_%-])(%s|%s)([^[:alnum:]_%-]|$)' "$hyphen" "$underscore"
-}
-
-file_has_module_name(){
-    local file="$1" name="$2" re
-    re="$(name_regex "$name")"
-    [[ -r "$file" ]] && grep -Eiq -- "$re" "$file"
-}
-
 scan_host_request(){
     local name="$1" re f d
-    re="$(name_regex "$name")"
+    re="$(module_pattern "$name")"
     for f in "${REQUEST_FILES[@]}"; do
         if [[ -r "$f" ]] && grep -Eiq -- "$re" "$f"; then
             say "HOST_REQUEST_HIT=$f"
@@ -101,7 +101,7 @@ scan_host_request(){
     done
     for d in "${REQUEST_DIRS[@]}"; do
         [[ -d "$d" ]] || continue
-        grep -RInIE -- "$re" "$d" 2>/dev/null || true
+        grep -RInIE --exclude='*.ko' --exclude='*.zst' -- "$re" "$d" 2>/dev/null || true
     done
 }
 
@@ -140,12 +140,12 @@ extract_initrd_requests(){
 
 classify_request(){
     local name="$1" re host=0 initrd=0 f d
-    re="$(name_regex "$name")"
+    re="$(module_pattern "$name")"
     for f in "${REQUEST_FILES[@]}"; do
-        [[ -r "$f" ]] && grep -Eiq -- "$re" "$f" && host=1
+        [[ -r "$f" ]] && grep -Eiq -- "$re" "$f" && host=1 || true
     done
     for d in "${REQUEST_DIRS[@]}"; do
-        [[ -d "$d" ]] && grep -RIIEq -- "$re" "$d" 2>/dev/null && host=1
+        [[ -d "$d" ]] && grep -RIIEq --exclude='*.ko' --exclude='*.zst' -- "$re" "$d" 2>/dev/null && host=1 || true
     done
     if [[ -n "$INITRD_HITS" && -s "$INITRD_HITS" ]] && grep -Eiq -- "$re" "$INITRD_HITS"; then
         initrd=1
@@ -187,7 +187,7 @@ apply_config_op(){
 
 kconfig_case(){
     local label="$1"; shift
-    local dir="$SCRATCH/$label" cfg log spec
+    local dir="$SCRATCH/$label" cfg log spec flash
     mkdir -p "$dir"
     cfg="$dir/.config"
     log="$dir/olddefconfig.log"
@@ -208,7 +208,6 @@ kconfig_case(){
     fi
 
     show_key_config "$cfg"
-    local flash
     flash="$(cfg_val "$cfg" LEDS_QCOM_FLASH)"
     if [[ "$flash" == 'CONFIG_LEDS_QCOM_FLASH=y' ]]; then
         say "${label}_result=FLASH_Y"
@@ -220,13 +219,15 @@ kconfig_case(){
 source_provenance_focus(){
     section "focused source provenance"
     say "--- hid_asus_ec DKMS/source"
-    find /usr/src/asus-zenbook-a14-ec-* /var/lib/dkms/asus-zenbook-a14-ec \
-        -xdev -maxdepth 6 -type f \
-        \( -name 'hid_asus_ec.c' -o -name 'asus_zenbook_a14_ec.c' -o -name 'dkms.conf' -o -name 'Kbuild' \) \
-        -print 2>/dev/null | sort || true
+    local p root hm
+    for p in /usr/src/asus-zenbook-a14-ec-* /var/lib/dkms/asus-zenbook-a14-ec; do
+        [[ -e "$p" ]] || continue
+        find "$p" -xdev -maxdepth 6 -type f \
+            \( -name 'hid_asus_ec.c' -o -name 'asus_zenbook_a14_ec.c' -o -name 'dkms.conf' -o -name 'Kbuild' \) \
+            -print 2>/dev/null | sort || true
+    done
 
     say "--- HM1092 / qcom-cci-sync source candidates under home"
-    local root
     for root in \
         "$OWNER_HOME/hm1092-bringup" \
         "$OWNER_HOME/hm1092-v6.3-source-bundle" \
@@ -238,18 +239,13 @@ source_provenance_focus(){
     done
 
     say "--- installed hm1092 debug compilation-directory hints"
-    local hm
     hm="$(modinfo -k "$NORMAL_KERNEL" -F filename hm1092 2>/dev/null | tail -n1 || true)"
     say "hm1092_module=$hm"
-    if [[ "$hm" == /* && -r "$hm" ]]; then
-        if have readelf; then
-            readelf --debug-dump=info "$hm" 2>/dev/null \
-                | grep -E 'DW_AT_(comp_dir|name)' \
-                | grep -Ei 'hm1092|bringup|linux|/home/|drivers/media' \
-                | head -n 120 || true
-        else
-            say "readelf_available=false"
-        fi
+    if [[ "$hm" == /* && -r "$hm" ]] && have readelf; then
+        readelf --debug-dump=info "$hm" 2>/dev/null \
+            | grep -E 'DW_AT_(comp_dir|name)' \
+            | grep -Ei 'hm1092|bringup|linux|/home/|drivers/media' \
+            | head -n 120 || true
     fi
 }
 
@@ -274,7 +270,7 @@ audit(){
         section "normalized host request hits"
         local name
         for name in "${TARGETS[@]}"; do
-            say "--- module=$name underscore=${name//-/_} hyphen=${name//_/-}"
+            say "--- module=$name pattern=$(module_pattern "$name")"
             scan_host_request "$name"
         done
 
@@ -292,7 +288,7 @@ audit(){
             say "root11_config_missing=true"
         fi
 
-        section "LEDS_QCOM_FLASH direct Kconfig"
+        section "LEDS_QCOM_FLASH dependency Kconfig context"
         if [[ -d "$SRC" ]]; then
             grep -RIn -A14 -B4 --include='Kconfig*' 'config LEDS_QCOM_FLASH' "$SRC/drivers" 2>/dev/null || true
             say "--- MFD_SPMI_PMIC Kconfig"
