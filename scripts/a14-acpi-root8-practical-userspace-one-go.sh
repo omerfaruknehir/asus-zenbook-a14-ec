@@ -82,6 +82,39 @@ cfg_set_y(){ sudo -u "$OWNER" "$SRC/scripts/config" --file "$CONFIG" --enable "$
 cfg_set_m(){ sudo -u "$OWNER" "$SRC/scripts/config" --file "$CONFIG" --module "$1" || true; }
 cfg_val(){ grep -E "^(CONFIG_$1=|# CONFIG_$1 is not set)" "$CONFIG" | tail -n1 || true; }
 
+force_localversion(){
+    [[ -r "$CONFIG" ]] || die "missing config: $CONFIG"
+    sudo -u "$OWNER" python3 - "$CONFIG" "$LOCALVER" <<'PY'
+from pathlib import Path
+import sys
+path = Path(sys.argv[1])
+localver = sys.argv[2]
+lines = path.read_text().splitlines()
+out = []
+seen_lv = False
+seen_auto = False
+for line in lines:
+    if line.startswith('CONFIG_LOCALVERSION=') or line == '# CONFIG_LOCALVERSION is not set':
+        if not seen_lv:
+            out.append(f'CONFIG_LOCALVERSION="{localver}"')
+            seen_lv = True
+        continue
+    if line.startswith('CONFIG_LOCALVERSION_AUTO=') or line == '# CONFIG_LOCALVERSION_AUTO is not set':
+        if not seen_auto:
+            out.append('# CONFIG_LOCALVERSION_AUTO is not set')
+            seen_auto = True
+        continue
+    out.append(line)
+if not seen_lv:
+    out.append(f'CONFIG_LOCALVERSION="{localver}"')
+if not seen_auto:
+    out.append('# CONFIG_LOCALVERSION_AUTO is not set')
+path.write_text('\n'.join(out) + '\n')
+PY
+    say "forced_localversion=$(cfg_val LOCALVERSION)"
+    say "forced_localversion_auto=$(cfg_val LOCALVERSION_AUTO)"
+}
+
 build_module_dir(){
     local rel="$1"
     local srcdir="$SRC/$rel"
@@ -149,20 +182,24 @@ prepare(){
     cfg_set_m QCOM_CCI_SYNC
     cfg_set_m VIDEO_HM1092
     cfg_set_m HM1092
-    sudo -u "$OWNER" "$SRC/scripts/config" --file "$CONFIG" --set-str LOCALVERSION "$LOCALVER"
-    sudo -u "$OWNER" "$SRC/scripts/config" --file "$CONFIG" --disable LOCALVERSION_AUTO
-    sudo -u "$OWNER" "$SRC/scripts/config" --file "$CONFIG" --disable DEBUG_INFO
-    sudo -u "$OWNER" "$SRC/scripts/config" --file "$CONFIG" --enable DEBUG_INFO_NONE
-    sudo -u "$OWNER" "$SRC/scripts/config" --file "$CONFIG" --disable DEBUG_INFO_BTF
+    sudo -u "$OWNER" "$SRC/scripts/config" --file "$CONFIG" --set-str LOCALVERSION "$LOCALVER" || true
+    sudo -u "$OWNER" "$SRC/scripts/config" --file "$CONFIG" --disable LOCALVERSION_AUTO || true
+    force_localversion
+    sudo -u "$OWNER" "$SRC/scripts/config" --file "$CONFIG" --disable DEBUG_INFO || true
+    sudo -u "$OWNER" "$SRC/scripts/config" --file "$CONFIG" --enable DEBUG_INFO_NONE || true
+    sudo -u "$OWNER" "$SRC/scripts/config" --file "$CONFIG" --disable DEBUG_INFO_BTF || true
 
     say "A14_ACPI_ROOT8_STAGE=1 olddefconfig-and-Image"
     sudo -u "$OWNER" env HOME="$OWNER_HOME" LOCALVERSION= make -C "$SRC" O="$OUT" olddefconfig
+    force_localversion
+    sudo -u "$OWNER" env HOME="$OWNER_HOME" LOCALVERSION= make -C "$SRC" O="$OUT" olddefconfig
+    force_localversion
+    sudo -u "$OWNER" env HOME="$OWNER_HOME" LOCALVERSION= make -C "$SRC" O="$OUT" prepare
     release="$(sudo -u "$OWNER" env HOME="$OWNER_HOME" LOCALVERSION= make -s -C "$SRC" O="$OUT" kernelrelease)"
-    [[ "$release" == "$KREL" ]] || die "kernelrelease mismatch: $release"
+    [[ "$release" == "$KREL" ]] || die "kernelrelease mismatch after forced localversion: $release"
     for s in QRTR AUTOFS_FS I2C_CHARDEV QRTR_SMD QRTR_MHI QRTR_TUN HID_ASUS_EC HID_ASUS_ZENBOOK_A14_EC LEDS_QCOM_FLASH I2C_QCOM_CCI QCOM_CCI_SYNC VIDEO_HM1092 HM1092; do
         say "config_${s}=$(cfg_val "$s")"
     done
-    sudo -u "$OWNER" env HOME="$OWNER_HOME" LOCALVERSION= make -C "$SRC" O="$OUT" prepare
     sudo -u "$OWNER" env HOME="$OWNER_HOME" LOCALVERSION= make -C "$SRC" O="$OUT" -j"${A14_BUILD_JOBS:-$(nproc)}" Image
     [[ -s "$IMAGE" && -s "$VMLINUX" ]] || die "ROOT8 Image/vmlinux missing"
     grep -aFq 'A14_QCOM_ABD_PROVIDER4_STATUS_SHIM_V3' "$VMLINUX" || die "compiled kernel lacks ROOT5 provider-4 shim"
