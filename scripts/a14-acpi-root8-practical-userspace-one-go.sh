@@ -147,7 +147,7 @@ prepare(){
 
     [[ -f "$SRC/Makefile" && -f "$CONFIG" && -s "$IMAGE" && -s "$VMLINUX" ]] || die "compact build tree missing under $WORK"
     [[ -r "$SRC/drivers/acpi/arm64/qcom_abd.c" ]] || die "ABD source missing; run ROOT5 prepare first"
-    grep -Fq 'A14_QCOM_ABD_PROVIDER4_STATUS_SHIM_V3' "$SRC/drivers/acpi/arm64/qcom_abd.c" || die "ROOT5 provider-4 shim missing"
+    grep -Fq 'A14_QCOM_ABD_PROVIDER4_STATUS_SHIM_V3' "$SRC/drivers/acpi/arm64/qcom_abd.c" || die "ROOT5 provider-4 shim source marker missing"
     grep -Fq 'A14_QCOM_SOSI_READONLY_PROBE_V2' "$SRC/drivers/acpi/arm64/qcom_sosi_probe.c" || die "ROOT4/5 SOSI probe missing"
     grep -Fq 'A14_QCOM_WOA_ACPI_GPIO_EVENT_XLATE' "$SRC/drivers/gpio/gpiolib-acpi-core.c" || die "ROOT2 GPIO event fix missing"
     grep -Fq 'A14_QCOM_SCM_ACPI_QCOM04DD' "$SRC/drivers/firmware/qcom/qcom_scm.c" || die "ROOT2 SCM fix missing"
@@ -202,7 +202,10 @@ prepare(){
     done
     sudo -u "$OWNER" env HOME="$OWNER_HOME" LOCALVERSION= make -C "$SRC" O="$OUT" -j"${A14_BUILD_JOBS:-$(nproc)}" Image
     [[ -s "$IMAGE" && -s "$VMLINUX" ]] || die "ROOT8 Image/vmlinux missing"
-    grep -aFq 'A14_QCOM_ABD_PROVIDER4_STATUS_SHIM_V3' "$VMLINUX" || die "compiled kernel lacks ROOT5 provider-4 shim"
+    grep -Fq 'A14_QCOM_ABD_PROVIDER4_STATUS_SHIM_V3' "$SRC/drivers/acpi/arm64/qcom_abd.c" || die "ROOT5 provider-4 shim source marker disappeared"
+    grep -aFq 'A14 ABD P4: read-status-failure' "$VMLINUX" || die "compiled kernel lacks ROOT5 provider-4 read runtime trace"
+    grep -aFq 'A14 ABD P4: write-accepted' "$VMLINUX" || die "compiled kernel lacks ROOT5 provider-4 write runtime trace"
+    say "provider4_shim_binary_check=runtime_strings_present"
 
     say "A14_ACPI_ROOT8_STAGE=2 targeted-module-build-install"
     rm -rf "$MODDIR"
