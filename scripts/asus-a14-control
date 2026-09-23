@@ -4,6 +4,7 @@ set -eu
 EC_SERVICE=asus-zenbook-a14-ec.service
 BRIDGE_SERVICE=asus-zenbook-a14-ppd-bridge.service
 PPD_SERVICE=power-profiles-daemon.service
+KBD_RECOVER=/usr/libexec/asus-a14-kbd-recover
 
 find_hwmon() {
   for d in /sys/class/hwmon/hwmon*; do
@@ -105,6 +106,7 @@ Usage:
   sudo asus-a14-control manual PWM
   sudo asus-a14-control fan left|right PWM
   sudo asus-a14-control backlight 0|1|2|3
+  sudo asus-a14-control kbd-recover
   asus-a14-control ppd-bridge status
   sudo asus-a14-control ppd-bridge enable
   sudo asus-a14-control ppd-bridge disable
@@ -160,6 +162,11 @@ case "$cmd" in
     need_root
     level=${2:-}
     case "$level" in 0|1|2|3) printf '%s\n' "$level" >/sys/class/leds/asus::kbd_backlight/brightness;; *) usage; exit 2;; esac
+    ;;
+  kbd-recover)
+    need_root
+    [ -x "$KBD_RECOVER" ] || { echo "$KBD_RECOVER is not installed" >&2; exit 1; }
+    "$KBD_RECOVER" --force
     ;;
   ppd-bridge)
     case "${2:-status}" in
