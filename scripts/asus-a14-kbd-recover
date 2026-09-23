@@ -1,0 +1,87 @@
+#!/bin/sh
+set -eu
+
+LED=/sys/class/leds/asus::kbd_backlight/brightness
+MAX_WAIT_STEPS=40
+STEP_SLEEP=0.25
+force=0
+
+case "${1:-}" in
+  "") ;;
+  --force) force=1 ;;
+  *) echo "Usage: $0 [--force]" >&2; exit 2 ;;
+esac
+
+model=$(tr -d '\000' </proc/device-tree/model 2>/dev/null || true)
+case "$model" in
+  *"ASUS Zenbook A14"*"UX3407RA"*|*"ASUS Zenbook A14"*"UX3407QA"*) ;;
+  *) echo "Refusing keyboard recovery on unsupported model: ${model:-unknown}" >&2; exit 1 ;;
+esac
+
+hid_present() {
+  for d in /sys/bus/hid/devices/*:0B05:0220.*; do
+    [ -e "$d" ] && return 0
+  done
+  return 1
+}
+
+wait_for_hid() {
+  i=0
+  while ! hid_present; do
+    i=$((i + 1))
+    [ "$i" -ge "$MAX_WAIT_STEPS" ] && return 1
+    sleep "$STEP_SLEEP"
+  done
+}
+
+wait_for_led() {
+  i=0
+  while [ ! -e "$LED" ]; do
+    i=$((i + 1))
+    [ "$i" -ge 12 ] && return 1
+    sleep "$STEP_SLEEP"
+  done
+}
+
+saved_level=1
+if [ -r "$LED" ]; then
+  saved_level=$(cat "$LED" 2>/dev/null || printf '1')
+  case "$saved_level" in 0|1|2|3) ;; *) saved_level=1 ;; esac
+  if [ "$force" -eq 0 ]; then
+    echo "Keyboard backlight already initialized at level $saved_level/3."
+    exit 0
+  fi
+fi
+
+if ! wait_for_hid; then
+  echo "ASUS EC HID device 0B05:0220 did not appear within 10 seconds." >&2
+  exit 1
+fi
+
+# A plain modprobe handles the common case where the module simply was not loaded.
+modprobe hid_asus_ec || true
+if [ "$force" -eq 0 ] && wait_for_led; then
+  echo "Keyboard backlight initialized."
+  exit 0
+fi
+
+# If module insertion succeeded but probe failed transiently, insertion itself
+# returns success while no LED class device exists. Reload only the HID half;
+# do not disturb the direct EC fan/profile driver.
+if grep -q '^hid_asus_ec ' /proc/modules 2>/dev/null; then
+  modprobe -r hid_asus_ec
+fi
+sleep 0.25
+modprobe hid_asus_ec
+
+if ! wait_for_led; then
+  echo "hid_asus_ec reloaded, but asus::kbd_backlight still did not register." >&2
+  exit 1
+fi
+
+# Preserve the previous logical level when this was a forced reinitialization.
+if [ "$force" -eq 1 ]; then
+  printf '%s\n' "$saved_level" >"$LED" || true
+fi
+
+echo "Keyboard backlight recovered at level $(cat "$LED")/3."
