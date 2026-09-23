@@ -20,4 +20,11 @@ while [ ! -e /sys/bus/platform/devices/b94000.i2c ]; do
   [ "$i" -ge 40 ] && { echo "EC I2C controller did not appear" >&2; exit 1; }
   sleep 0.25
 done
+
+# If hid_asus_ec loaded before 0B05:0220 was fully ready, module insertion can
+# succeed while the keyboard LED class device never registers. Recover only
+# the HID helper here; never bounce the direct EC fan/profile driver.
+/usr/libexec/asus-a14-kbd-recover || \
+  echo "Keyboard-backlight recovery failed; continuing with EC driver load" >&2
+
 modprobe asus_zenbook_a14_ec
